@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#e7ebea">
+    <title>Plane Display</title>
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.0/dist/maplibre-gl.css">
+    <link rel="stylesheet" href="/app.css">
+  </head>
+  <body>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <div id="map" hidden aria-label="Map showing the display's tracking area"></div>
+    <div id="mapHud" hidden>
+      <p>TRACKING AREA</p>
+      <strong id="mapRadius">100 km radius</strong>
+      <button id="fitMap" type="button" aria-label="Center map on tracking area">Center</button>
+      <span id="planeStatus" role="status" aria-live="polite" hidden></span>
+    </div>
+    <main>
+      <section id="welcome" class="card">
+        <div class="mark">✦</div>
+        <p class="eyebrow">LED PLANE DISPLAY</p>
+        <h1>Your sky, on display.</h1>
+        <p>Press the display’s setup button, then scan its one-time QR code. The link works once and expires after five minutes.</p>
+        <button id="demo" hidden>Try the local demo</button>
+      </section>
+      <section id="settings" class="bottom-sheet" hidden>
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <div class="section-head"><div><p class="eyebrow">CONNECTED DISPLAY</p><h1 id="deviceName">My plane display</h1></div><button class="ghost compact" id="logout" type="button">Sign out</button></div>
+        <div class="tab-list" role="tablist" aria-label="Display controls"><button class="tab active" type="button" role="tab" aria-selected="true" aria-controls="displayTab" id="displayTabButton" data-tab="displayTab">Display</button><button class="tab" type="button" role="tab" aria-selected="false" aria-controls="trackedTab" id="trackedTabButton" data-tab="trackedTab">Special flights</button></div>
+        <section id="displayTab" role="tabpanel" aria-labelledby="displayTabButton">
+          <p class="map-tip">Drag the pin to move your tracking location.</p>
+          <form id="settingsForm">
+            <label>Display name<input name="name" maxlength="80" required autocomplete="off"></label>
+            <div class="grid"><label>Latitude<input name="latitude" type="number" step="any" min="-90" max="90" inputmode="decimal" required></label><label>Longitude<input name="longitude" type="number" step="any" min="-180" max="180" inputmode="decimal" required></label></div>
+            <label class="range-label">Tracking radius <output id="radiusOut">100 km</output><input name="radiusKm" type="range" min="1" max="100" step="1"></label>
+            <label class="toggle"><input name="includeGrounded" type="checkbox"><span>Include aircraft on the ground</span></label>
+            <button type="submit">Save display settings</button>
+          </form>
+          <hr>
+          <div class="danger"><div><h2>Rotate device key</h2><p>Use this if you think the display’s network key was copied. The display will replace it at its next check-in.</p></div><button class="ghost" id="rotate" type="button">Request rotation</button></div>
+        </section>
+        <section class="tracked-flights" id="trackedTab" role="tabpanel" aria-labelledby="trackedTabButton" hidden>
+          <div class="section-head"><div><p class="eyebrow">SPECIAL FLIGHTS</p><h2 id="trackedFlightsHeading">Track a flight</h2></div></div>
+          <p class="tracked-help">Pick the travel date and enter the flight number from the ticket. We’ll translate it to the live ADS-B callsign, while keeping the ticket number for arrival-time updates.</p>
+          <form id="trackedFlightForm" class="tracked-form">
+            <label>Title<input name="title" type="text" maxlength="80" placeholder="Mom’s trip home" required autocomplete="off"></label>
+            <div class="grid"><label>Date<input name="flightDate" type="date" required></label><label>Track by<select name="identifierType"><option value="flightNumber">Flight number</option><option value="tailNumber">Tail number</option></select></label></div>
+            <label id="trackedIdentifierLabel">Flight number on the ticket<input name="flightInput" type="text" maxlength="12" placeholder="WS1098" required autocapitalize="characters" autocomplete="off"></label>
+            <input name="identifier" type="hidden"><input name="statusIdentifier" type="hidden">
+            <div id="flightMatch" class="flight-match" aria-live="polite" hidden></div>
+            <button type="submit">Track this flight</button>
+          </form>
+          <div id="trackedFlightList" class="tracked-list" aria-live="polite"></div>
+        </section>
+      </section>
+    </main>
+    <script src="https://unpkg.com/maplibre-gl@5.7.0/dist/maplibre-gl.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>

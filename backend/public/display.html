@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#080f0d">
+    <title>Plane Display Simulator</title>
+    <link rel="stylesheet" href="/display.css">
+  </head>
+  <body>
+    <main>
+      <header><div><p class="eyebrow">DISPLAY SIMULATOR</p><h1 id="savedName">Unconfigured display</h1></div><span id="connection" class="connection">OFFLINE</span></header>
+
+      <section class="screen" aria-live="polite">
+        <div class="scanlines" aria-hidden="true"></div>
+        <p class="screen-label" id="screenLabel">WAITING FOR DEVICE KEY</p>
+        <div id="flightCard" class="flight-card">
+          <img id="airlineLogo" class="airline-logo" alt="Aircraft">
+          <div class="flight-copy">
+            <strong id="flightNumber">—</strong>
+            <p class="company" id="company">—</p>
+            <p class="aircraft-type" id="aircraftType">—</p>
+            <p class="registration" id="registration">—</p>
+            <p id="route">Add a device key below</p>
+            <p id="flightStatus" class="flight-status" hidden></p>
+            <div class="progress"><span id="progressBar"></span></div>
+            <p class="progress-text" id="progressText">—</p>
+          </div>
+          <dl class="flight-telemetry" aria-label="Flight telemetry">
+            <div><dt>HEADING</dt><dd id="heading">—</dd></div>
+            <div><dt>ALTITUDE</dt><dd id="altitude">—</dd></div>
+            <div><dt>SPEED</dt><dd id="speed">—</dd></div>
+            <div><dt>VERT SPEED</dt><dd id="verticalSpeed">—</dd></div>
+          </dl>
+        </div>
+        <div id="idleFlight" class="idle-flight" hidden>
+          <div class="idle-flight-path" aria-hidden="true">
+            <span class="idle-cloud idle-cloud-one"></span>
+            <span class="idle-cloud idle-cloud-two"></span>
+            <svg class="idle-plane" viewBox="0 0 96 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M50 4c-3 0-5 2.2-5.7 6.2l-3.2 17.2L8 35.5v5.2l33.2-3.6-3 10.1-9.4 2.8V52l18-1.8L61.5 52v-1.9l-9.4-2.9-3-10.1 33.1 3.6v-5.2l-33.1-8.1-3.3-17.2C45 6.2 47 4 50 4Z" fill="currentColor"/>
+              <path d="M6 38h-5M20 31h-9M31 23h-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity=".45"/>
+            </svg>
+          </div>
+          <p>NO NEARBY PLANES</p>
+          <span>Watching the sky</span>
+        </div>
+        <p class="cycle-status" id="cycleStatus">No flight data yet</p>
+      </section>
+
+      <div class="actions"><button id="nextFlight" type="button">Next aircraft</button><button id="refresh" type="button">Refresh now</button><button id="manage" type="button">Manage display</button></div>
+
+      <section class="settings" aria-labelledby="settingsTitle">
+        <h2 id="settingsTitle">Simulator identity</h2>
+        <p>This browser stores its own device key and remembers the latest payload. It polls like a display: once per minute.</p>
+        <form id="identityForm">
+          <label>Device key<input name="deviceKey" type="password" autocomplete="off" placeholder="Paste device key" required></label>
+          <label>Local display name<input name="localName" type="text" maxlength="80" autocomplete="off" placeholder="Desk simulator"></label>
+          <label class="simulator-toggle"><input id="forceEmptySky" type="checkbox"><span><strong>Simulate an empty sky</strong>Ignore received aircraft in this browser only.</span></label>
+          <button type="submit">Save &amp; connect</button>
+        </form>
+      </section>
+
+      <section class="debug" aria-labelledby="debugTitle">
+        <div><h2 id="debugTitle">Device debug log</h2><button id="clearLog" type="button">Clear</button></div>
+        <pre id="savedConfig">No saved configuration.</pre>
+        <ol id="eventLog"></ol>
+      </section>
+    </main>
+    <dialog id="pairingDialog" aria-labelledby="pairingTitle">
+      <button class="close-dialog" id="closePairing" type="button" aria-label="Close">×</button>
+      <p class="eyebrow">ONE-TIME SETUP LINK</p>
+      <h2 id="pairingTitle">Open display settings</h2>
+      <p id="pairingStatus">Creating a secure link…</p>
+      <canvas id="pairCode" width="240" height="240" aria-label="QR code for display settings"></canvas>
+      <label>Copyable setup link<input id="pairLink" type="text" readonly></label>
+      <button id="copyPairLink" type="button">Copy link</button>
+    </dialog>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script>
+    <script src="/display.js"></script>
+  </body>
+</html>

@@ -1,0 +1,11 @@
+{
+  "name": "plane-display-backend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node src/dev-server.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "description": "Cloudflare Worker API and local demo for the LED plane display"
+}
