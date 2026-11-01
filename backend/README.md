@@ -96,4 +96,4 @@ Create a GitHub environment named `production` and add these environment secrets
 - `CLOUDFLARE_ACCOUNT_ID`: the Cloudflare account ID that owns this Worker and D1 database.
 - `CLOUDFLARE_API_TOKEN`: a token scoped to that account, with permission to update the existing Worker and edit the `plane-display` D1 database.
 
-Create the `plane-display` D1 database and an empty `plane-display-api` Worker once in the target Cloudflare dashboard before enabling the workflow. This permits a narrowly scoped deployment token: Worker **Editor** for only `plane-display-api`, plus D1 **Edit** for only `plane-display`. Keep OpenSky and AirLabs keys as Cloudflare Worker secrets, not GitHub secrets; ordinary deploys preserve those values.
+Create the `plane-display` D1 database and an empty `winglet` Worker once in the target Cloudflare dashboard before enabling the workflow. This permits a narrowly scoped deployment token: Worker **Editor** for only `winglet`, plus D1 **Edit** for only `plane-display`. Keep OpenSky and AirLabs keys as Cloudflare Worker secrets, not GitHub secrets; ordinary deploys preserve those values.

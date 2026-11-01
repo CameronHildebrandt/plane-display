@@ -1,4 +1,4 @@
-name: Test and deploy plane display
+name: Test and deploy Winglet
 
 on:
   push:
