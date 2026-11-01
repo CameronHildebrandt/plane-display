@@ -18,8 +18,8 @@ let rotateTimer;
 let airlineLogoCodes = new Set();
 
 function loadState() {
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || { deviceKey: window.__LOCAL_DEMO_KEY__ || "", localName: "", deviceConfig: null, payload: null, events: [] }; }
-  catch { return { deviceKey: window.__LOCAL_DEMO_KEY__ || "", localName: "", deviceConfig: null, payload: null, events: [] }; }
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || { deviceKey: window.__LOCAL_DEMO_KEY__ || "", deviceConfig: null, payload: null, events: [] }; }
+  catch { return { deviceKey: window.__LOCAL_DEMO_KEY__ || "", deviceConfig: null, payload: null, events: [] }; }
 }
 function saveState() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
 function maskedKey(value) { return value ? `${value.slice(0, 6)}…${value.slice(-4)}` : null; }
@@ -86,9 +86,8 @@ function render() {
   const specialMode = currentSpecialFlights.length > 0;
   const availableFlights = specialMode ? currentSpecialFlights : currentFlights;
   const showingIdleFlight = Boolean(state.forceEmptySky || (state.deviceKey && state.payload && !currentFlights.length));
-  $("#savedName").textContent = state.deviceConfig?.name || state.localName || "Unconfigured display";
+  $("#savedName").textContent = state.deviceConfig?.name || "Unconfigured display";
   $("#identityForm").elements.deviceKey.value = state.deviceKey;
-  $("#identityForm").elements.localName.value = state.localName || "";
   $("#forceEmptySky").checked = Boolean(state.forceEmptySky);
   $(".screen").classList.toggle("is-idle", showingIdleFlight);
   for (const node of [$("#screenLabel"), $("#flightCard"), $("#cycleStatus")]) {
@@ -162,7 +161,7 @@ async function loadLogoRegistry() {
 }
 
 function renderDebug() {
-  const safeConfig = { localName: state.localName || null, deviceKey: maskedKey(state.deviceKey), deviceConfig: state.deviceConfig, simulator: { forceEmptySky: Boolean(state.forceEmptySky) }, lastPayload: state.payload ? { generatedAt: state.payload.generatedAt, source: state.payload.source, receivedFlights: receivedFlights().length, displayedFlights: flights().length } : null, pollIntervalSeconds: 60, rotationIntervalSeconds: 8 };
+  const safeConfig = { deviceKey: maskedKey(state.deviceKey), deviceConfig: state.deviceConfig, simulator: { forceEmptySky: Boolean(state.forceEmptySky) }, lastPayload: state.payload ? { generatedAt: state.payload.generatedAt, source: state.payload.source, receivedFlights: receivedFlights().length, displayedFlights: flights().length } : null, pollIntervalSeconds: 60, rotationIntervalSeconds: 8 };
   $("#savedConfig").textContent = JSON.stringify(safeConfig, null, 2);
   $("#eventLog").replaceChildren(...state.events.map(event => { const item = document.createElement("li"); item.textContent = `${event.at} — ${event.message}`; return item; }));
 }
@@ -247,7 +246,7 @@ $("#identityForm").addEventListener("submit", event => {
   event.preventDefault();
   const data = new FormData(event.currentTarget);
   state.deviceKey = String(data.get("deviceKey") || "").trim();
-  state.localName = String(data.get("localName") || "").trim().slice(0, 80);
+  delete state.localName;
   state.deviceConfig = null;
   saveState(); addEvent("Simulator identity saved locally"); beginPolling();
 });

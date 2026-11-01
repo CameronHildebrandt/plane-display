@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>128×64 HUB75 Simulator</title>
+<style>
+  :root { color-scheme: dark; font-family: ui-monospace, Menlo, monospace; background:#101114; color:#e9edf1; }
+  body { margin:0; min-height:100vh; display:grid; place-items:center; }
+  main { width:min(94vw, 1040px); }
+  header { display:flex; justify-content:space-between; align-items:baseline; gap:1rem; margin:1rem 0; }
+  h1 { font-size:1.15rem; margin:0; } #status { color:#91d7ff; font-size:.8rem; text-align:right; }
+  .frame { background:#050607; border:1px solid #3b4048; border-radius:8px; padding:clamp(10px,2vw,22px); box-shadow:0 20px 60px #0008; }
+  canvas { display:block; width:100%; image-rendering:pixelated; image-rendering:crisp-edges; background:#000; aspect-ratio:2/1; }
+  footer { color:#9ba3ae; font-size:.78rem; line-height:1.55; margin:1rem 0; }
+  code { color:#b7e3a2; }
+</style>
+<main>
+  <header><h1>HUB75 simulator · 128 × 64</h1><div id="status">connecting…</div></header>
+  <div class="frame"><canvas id="display" width="128" height="64" aria-label="simulated LED display"></canvas></div>
+  <footer>
+    Scan model: 1/32-row multiplex, RGB888 framebuffer, target refresh <span id="refresh">60</span> Hz.<br>
+    Send raw RGB to <code>POST /api/frame</code>, or a normalized boarding-pass payload to <code>POST /api/presentation</code>.
+  </footer>
+</main>
+<script>
+(() => {
+  const canvas = document.querySelector('#display');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  const image = ctx.createImageData(128, 64);
+  const status = document.querySelector('#status');
+  let blits = 0, inputFrames = 0, rendered = 0, lastPoll = performance.now(), lastFrameAt = 0;
+  function draw(bytes) {
+    for (let source = 0, target = 0; source < bytes.length; source += 3, target += 4) {
+      image.data[target] = bytes[source]; image.data[target + 1] = bytes[source + 1];
+      image.data[target + 2] = bytes[source + 2]; image.data[target + 3] = 255;
+    }
+    ctx.putImageData(image, 0, 0); blits++; lastFrameAt = performance.now();
+  }
+  // A visible local fallback for opening this file through a basic static server.
+  // The Rust server replaces it immediately with the real hardcoded ticket frame.
+  function drawLocalPreview() {
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, 128, 64);
+    ctx.fillStyle = '#165ba0'; ctx.fillRect(0, 0, 128, 19);
+    ctx.fillStyle = '#f0f8ff'; ctx.fillRect(4, 4, 16, 11);
+    ctx.fillStyle = '#fff'; ctx.font = '7px monospace'; ctx.fillText('WESTJET', 24, 10); ctx.font = '6px monospace'; ctx.fillText('WS123', 24, 17);
+    ctx.font = '14px monospace'; ctx.fillText('YVR', 4, 40); ctx.fillText('YEG', 96, 40);
+    ctx.fillStyle = '#55cdff'; ctx.font = '6px monospace'; ctx.fillText('10000FT  400KT', 4, 49);
+    ctx.fillStyle = '#3fbff2'; ctx.fillRect(4, 58, 77, 4); ctx.fillStyle = '#2a313c'; ctx.fillRect(81, 58, 43, 4);
+  }
+  async function poll() {
+    try {
+      const response = await fetch('/api/frame', {cache:'no-store'});
+      if (!response.ok) throw new Error(response.status);
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.length === 128 * 64 * 3) draw(bytes);
+    } catch (_) { status.textContent = 'waiting for simulator…'; }
+    setTimeout(poll, 16);
+  }
+  async function updateStatus() {
+    try {
+      const response = await fetch('/api/status', {cache:'no-store'});
+      if (response.ok) inputFrames = (await response.json()).frames_received;
+    } catch (_) {}
+    setTimeout(updateStatus, 500);
+  }
+  function animate(now) {
+    rendered++;
+    if (now - lastPoll >= 500) {
+      const hz = Math.round(rendered * 1000 / (now - lastPoll));
+      const age = lastFrameAt ? Math.round(now - lastFrameAt) : '—';
+      status.textContent = `browser ${hz} Hz · input ${inputFrames} · blits ${blits} · input age ${age} ms`;
+      document.querySelector('#refresh').textContent = hz;
+      rendered = 0; lastPoll = now;
+    }
+    requestAnimationFrame(animate);
+  }
+  drawLocalPreview(); poll(); updateStatus(); requestAnimationFrame(animate);
+})();
+</script>
+</html>

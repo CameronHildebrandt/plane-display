@@ -1,0 +1,7 @@
+[package]
+name = "hub75-simulator"
+version = "0.1.0"
+edition = "2021"
+description = "A dependency-free local 128x64 HUB75 display simulator"
+
+# Deliberately no dependencies: this starts quickly and stays light on older Macs.

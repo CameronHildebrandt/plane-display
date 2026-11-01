@@ -1,0 +1,22 @@
+{
+  "type": "flight-ticket",
+  "version": 1,
+  "flight": {
+    "number": "WS123",
+    "airline": "WestJet",
+    "airlineCode": "WS",
+    "origin": "YVR",
+    "destination": "YEG",
+    "aircraftType": "B38M",
+    "registration": "C-FABC"
+  },
+  "telemetry": {
+    "altitudeFt": 10000,
+    "groundSpeedKt": 400,
+    "verticalSpeedFpm": 1200,
+    "distanceFromViewerKm": 42,
+    "approaching": true
+  },
+  "journey": { "progress": 0.64, "progressEstimated": true },
+  "branding": { "theme": "westjet", "logo": "westjet", "aircraftIcon": "narrowbody-jet" }
+}

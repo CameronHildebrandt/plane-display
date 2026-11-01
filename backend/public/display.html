@@ -55,7 +55,6 @@
         <p>This browser stores its own device key and remembers the latest payload. It polls like a display: once per minute.</p>
         <form id="identityForm">
           <label>Device key<input name="deviceKey" type="password" autocomplete="off" placeholder="Paste device key" required></label>
-          <label>Local display name<input name="localName" type="text" maxlength="80" autocomplete="off" placeholder="Desk simulator"></label>
           <label class="simulator-toggle"><input id="forceEmptySky" type="checkbox"><span><strong>Simulate an empty sky</strong>Ignore received aircraft in this browser only.</span></label>
           <button type="submit">Save &amp; connect</button>
         </form>
@@ -76,7 +75,7 @@
       <label>Copyable setup link<input id="pairLink" type="text" readonly></label>
       <button id="copyPairLink" type="button">Copy link</button>
     </dialog>
-    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script>
+    <script src="/vendor/qrcode.min.js"></script>
     <script src="/display.js"></script>
   </body>
 </html>

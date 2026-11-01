@@ -13,7 +13,8 @@ if (!id || !name || !Number.isFinite(latitude) || latitude < -90 || latitude > 9
 }
 
 const key = randomBytes(32).toString("base64url");
-const hash = createHash("sha256").update(key).digest("hex");
+// Match the Worker hash format exactly so a provisioned key works in D1.
+const hash = `sha256:${createHash("sha256").update(key).digest("hex")}`;
 const quote = value => `'${String(value).replaceAll("'", "''")}'`;
 const now = Math.floor(Date.now() / 1000);
 
