@@ -198,16 +198,19 @@ const char* telemetryUnitText(TelemetryUnit unit) {
   }
 }
 
-// Values use the same full 5x7 Minecraft face as the rest of the flight
-// card. The small unit sprites remain deliberately compact.
+// Values and unit labels use the same full 5x7 Minecraft face as the rest of
+// the flight card. A decimal point is the one-pixel mark it visually is, not
+// an empty five-pixel character cell between two digits.
 int16_t telemetryNumberWidth(const char* text) {
-  return *text ? static_cast<int16_t>(strlen(text) * 6 - 1) : 0;
+  int16_t width = 0;
+  for (const char* character = text; *character; ++character) width += *character == '.' ? 2 : 6;
+  return width ? width - 1 : 0;
 }
 
 int16_t telemetryUnitWidth(TelemetryUnit unit) {
   if (unit == TelemetryUnit::None) return 0;
   if (unit == TelemetryUnit::Degrees) return 2;
-  return static_cast<int16_t>(strlen(telemetryUnitText(unit)) * 2 + 1);
+  return telemetryNumberWidth(telemetryUnitText(unit));
 }
 
 int16_t telemetryValueWidth(const char* value, TelemetryUnit unit) {
@@ -236,7 +239,12 @@ void drawTelemetryPixel(int16_t x, int16_t y, uint16_t color, int16_t left, int1
 
 int16_t drawMinecraftTelemetryNumber(const char* text, int16_t x, int16_t y, uint16_t color,
                                      int16_t left, int16_t right) {
-  for (const char* character = text; *character; ++character, x += 6) {
+  for (const char* character = text; *character; ++character) {
+    if (*character == '.') {
+      drawTelemetryPixel(x, y + 6, color, left, right);
+      x += 2;
+      continue;
+    }
     const uint8_t glyph = minecraftGlyphIndex(*character);
     for (uint8_t row = 0; row < 7; ++row) {
       const uint8_t pixels = pgm_read_byte(&kMinecraftFont[glyph][row]);
@@ -244,6 +252,7 @@ int16_t drawMinecraftTelemetryNumber(const char* text, int16_t x, int16_t y, uin
         if (pixels & (1 << (4 - column))) drawTelemetryPixel(x + column, y + row, color, left, right);
       }
     }
+    x += 6;
   }
   return x;
 }
@@ -255,16 +264,7 @@ int16_t drawTelemetryUnit(TelemetryUnit unit, int16_t x, int16_t y, uint16_t col
     drawTelemetryPixel(x, y + 2, color, left, right); drawTelemetryPixel(x + 1, y + 2, color, left, right);
     return x + 2;
   }
-  for (const char* character = telemetryUnitText(unit); *character; ++character, x += 2) {
-    const int8_t index = telemetryUnitGlyphIndex(*character);
-    for (uint8_t row = 0; row < 5; ++row) {
-      const uint8_t pixels = pgm_read_byte(&kTelemetryUnitGlyphs[index][row]);
-      for (uint8_t column = 0; column < 3; ++column) {
-        if (pixels & (1 << (2 - column))) drawTelemetryPixel(x + column, y + row + 1, color, left, right);
-      }
-    }
-  }
-  return x;
+  return drawMinecraftTelemetryNumber(telemetryUnitText(unit), x, y, color, left, right);
 }
 
 int16_t drawTelemetryValue(const char* value, TelemetryUnit unit, int16_t x, int16_t y,
@@ -1414,6 +1414,38 @@ void drawAnimatedNormalLine(const char* text, int16_t left, int16_t y, int16_t w
   }
 }
 
+int16_t telemetryTextAdvance(const char* text) {
+  int16_t advance = 0;
+  for (const char* character = text; *character; ++character) advance += *character == '.' ? 2 : 6;
+  return advance;
+}
+
+void drawAnimatedTelemetryNumber(const char* text, int16_t x, int16_t y, int16_t left, int16_t right,
+                                 uint16_t color, uint8_t line, unsigned long phase,
+                                 bool entering, uint8_t startIndex = 0) {
+  uint8_t characterIndex = startIndex;
+  for (const char* character = text; *character; ++character, ++characterIndex) {
+    const int8_t offset = letterDropOffset(phase, line, characterIndex, entering);
+    if (*character == '.') {
+      const int16_t pixelY = y + 6 + offset;
+      if (pixelY >= y && pixelY < y + 7 && x >= left && x < right) matrix.drawPixel(x, pixelY, color);
+      x += 2;
+      continue;
+    }
+    const uint8_t glyph = minecraftGlyphIndex(*character);
+    for (uint8_t row = 0; row < 7; ++row) {
+      const int16_t pixelY = y + row + offset;
+      if (pixelY < y || pixelY >= y + 7) continue;
+      const uint8_t pixels = pgm_read_byte(&kMinecraftFont[glyph][row]);
+      for (uint8_t column = 0; column < 5; ++column) {
+        const int16_t pixelX = x + column;
+        if ((pixels & (1 << (4 - column))) && pixelX >= left && pixelX < right) matrix.drawPixel(pixelX, pixelY, color);
+      }
+    }
+    x += 6;
+  }
+}
+
 // Telemetry units and the vertical-speed direction arrow join the same drop
 // sequence as their number. This keeps the settled animation frame identical
 // to the static card, rather than adding those pixels in a separate flash.
@@ -1422,7 +1454,7 @@ void drawAnimatedTelemetryAdornment(const char* value, TelemetryUnit unit, bool 
                                     unsigned long phase, bool entering, uint16_t color) {
   constexpr int16_t left = 95, right = 127;
   const int8_t offset = letterDropOffset(phase, line, strlen(value), entering);
-  int16_t x = left + strlen(value) * 6;
+  int16_t x = left + telemetryTextAdvance(value);
   if (unit == TelemetryUnit::Degrees) {
     for (uint8_t row = 1; row <= 2; ++row) {
       const int16_t pixelY = y + row + offset;
@@ -1433,20 +1465,9 @@ void drawAnimatedTelemetryAdornment(const char* value, TelemetryUnit unit, bool 
     }
     x += 2;
   } else if (unit != TelemetryUnit::None) {
-    for (const char* character = telemetryUnitText(unit); *character; ++character, x += 2) {
-      const int8_t glyphIndex = telemetryUnitGlyphIndex(*character);
-      for (uint8_t row = 0; row < 5; ++row) {
-        const int16_t pixelY = y + row + 1 + offset;
-        if (pixelY < y || pixelY >= y + 7) continue;
-        const uint8_t pixels = pgm_read_byte(&kTelemetryUnitGlyphs[glyphIndex][row]);
-        for (uint8_t column = 0; column < 3; ++column) {
-          const int16_t pixelX = x + column;
-          if ((pixels & (1 << (2 - column))) && pixelX >= left && pixelX < right) {
-            matrix.drawPixel(pixelX, pixelY, color);
-          }
-        }
-      }
-    }
+    drawAnimatedTelemetryNumber(telemetryUnitText(unit), x, y, left, right, color, line,
+                                phase, entering, strlen(value));
+    x += telemetryTextAdvance(telemetryUnitText(unit));
   }
   if (!directionArrow) return;
   const int16_t arrowX = x + 1;
@@ -1578,11 +1599,11 @@ void drawAnimatedRouteText(const Route& route, unsigned long phase, bool enterin
   drawAnimatedNormalLine(registration, 1, 37, 32, secondaryWhite, 3, phase, entering, true);
   drawAnimatedNormalLine(route.aircraftType[0] ? route.aircraftType : "aircraft", 1, 47, 32,
                          secondaryWhite, 4, phase, entering);
-  drawAnimatedNormalLine(altitude, 95, 4, 32, tertiaryWhite, 5, phase, entering);
-  drawAnimatedNormalLine(verticalSpeed, 95, 16, 28, tertiaryWhite, 6, phase, entering);
-  drawAnimatedNormalLine(speed, 95, 28, 32, tertiaryWhite, 7, phase, entering);
-  drawAnimatedNormalLine(heading, 95, 40, 28, tertiaryWhite, 8, phase, entering);
-  drawAnimatedNormalLine(distance, 95, 52, 32, tertiaryWhite, 10, phase, entering);
+  drawAnimatedTelemetryNumber(altitude, 95, 4, 95, 127, tertiaryWhite, 5, phase, entering);
+  drawAnimatedTelemetryNumber(verticalSpeed, 95, 16, 95, 127, tertiaryWhite, 6, phase, entering);
+  drawAnimatedTelemetryNumber(speed, 95, 28, 95, 127, tertiaryWhite, 7, phase, entering);
+  drawAnimatedTelemetryNumber(heading, 95, 40, 95, 127, tertiaryWhite, 8, phase, entering);
+  drawAnimatedTelemetryNumber(distance, 95, 52, 95, 127, tertiaryWhite, 10, phase, entering);
   drawAnimatedTelemetryAdornment(altitude, route.altFt >= 0 ? TelemetryUnit::Feet : TelemetryUnit::None,
                                  false, false, 4, 5, phase, entering, tertiaryWhite);
   drawAnimatedTelemetryAdornment(verticalSpeed,
