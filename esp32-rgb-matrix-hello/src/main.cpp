@@ -1036,12 +1036,12 @@ void refreshActiveMarquees(const Route& route) {
   if (route.distanceKm >= 0.0f) snprintf(distance, sizeof(distance), "%.1f", route.distanceKm); else strlcpy(distance, "--", sizeof(distance));
 
   const uint16_t telemetry = matrix.color565(85, 85, 85);
-  const struct { const char* value; TelemetryUnit unit; bool arrow; bool climbing; int16_t y; } lines[] = {
-      {altitude, route.altFt >= 0 ? TelemetryUnit::Feet : TelemetryUnit::None, false, false, 4},
-      {verticalSpeed, route.verticalSpeedFpm > -99999 ? TelemetryUnit::FeetPerMinute : TelemetryUnit::None, route.verticalSpeedFpm > -99999, route.verticalSpeedFpm >= 0, 16},
-      {speed, route.speedKt >= 0 ? TelemetryUnit::Knots : TelemetryUnit::None, false, false, 28},
-      {heading, route.headingDeg >= 0 ? TelemetryUnit::Degrees : TelemetryUnit::None, false, false, 40},
-      {distance, route.distanceKm >= 0.0f ? TelemetryUnit::Kilometres : TelemetryUnit::None, false, false, 52},
+  const struct { const char* value; TelemetryUnit unit; bool arrow; bool climbing; bool level; int16_t y; } lines[] = {
+      {altitude, route.altFt >= 0 ? TelemetryUnit::Feet : TelemetryUnit::None, false, false, false, 4},
+      {verticalSpeed, route.verticalSpeedFpm > -99999 ? TelemetryUnit::FeetPerMinute : TelemetryUnit::None, route.verticalSpeedFpm > -99999, route.verticalSpeedFpm > 0, route.verticalSpeedFpm == 0, 16},
+      {speed, route.speedKt >= 0 ? TelemetryUnit::Knots : TelemetryUnit::None, false, false, false, 28},
+      {heading, route.headingDeg >= 0 ? TelemetryUnit::Degrees : TelemetryUnit::None, false, false, false, 40},
+      {distance, route.distanceKm >= 0.0f ? TelemetryUnit::Kilometres : TelemetryUnit::None, false, false, false, 52},
   };
   for (const auto& line : lines) {
     if (telemetryLineWidth(line.value, line.unit, line.arrow) > 32) {
@@ -1049,19 +1049,21 @@ void refreshActiveMarquees(const Route& route) {
       const int16_t offset = telemetryMarqueeOffset(telemetryLineWidth(line.value, line.unit, line.arrow), 32);
       const int16_t end = drawTelemetryValue(line.value, line.unit, 95 - offset, line.y, telemetry, 95, 127);
       if (line.arrow) {
-        drawVerticalRouteArrow(end + 1, line.y, line.climbing, telemetry, 95, 127);
+        if (line.level) matrix.fillRect(end + 2, line.y + 3, 3, 1, telemetry);
+        else drawVerticalRouteArrow(end + 1, line.y, line.climbing, telemetry, 95, 127);
       }
     }
   }
 }
 
 int16_t drawTelemetryLine(const char* value, TelemetryUnit unit, bool directionArrow,
-                          bool climbing, int16_t y, uint16_t color) {
+                          bool climbing, bool level, int16_t y, uint16_t color) {
   constexpr int16_t left = 95, right = 127, width = right - left;
   const int16_t offset = telemetryMarqueeOffset(telemetryLineWidth(value, unit, directionArrow), width);
   const int16_t end = drawTelemetryValue(value, unit, left - offset, y, color, left, right);
   if (directionArrow) {
-    drawVerticalRouteArrow(end + 1, y, climbing, color, left, right);
+    if (level) matrix.fillRect(end + 2, y + 3, 3, 1, color);
+    else drawVerticalRouteArrow(end + 1, y, climbing, color, left, right);
   }
   return end;
 }
@@ -1087,12 +1089,12 @@ void drawTelemetryValues(const Route& route) {
   if (route.distanceKm >= 0.0f) snprintf(distance, sizeof(distance), "%.1f", route.distanceKm);
   else strlcpy(distance, "--", sizeof(distance));
 
-  drawTelemetryLine(altitude, route.altFt >= 0 ? TelemetryUnit::Feet : TelemetryUnit::None, false, false, 4, text);
+  drawTelemetryLine(altitude, route.altFt >= 0 ? TelemetryUnit::Feet : TelemetryUnit::None, false, false, false, 4, text);
   drawTelemetryLine(verticalSpeed, route.verticalSpeedFpm > -99999 ? TelemetryUnit::FeetPerMinute : TelemetryUnit::None,
-                    route.verticalSpeedFpm > -99999, route.verticalSpeedFpm >= 0, 16, text);
-  drawTelemetryLine(speed, route.speedKt >= 0 ? TelemetryUnit::Knots : TelemetryUnit::None, false, false, 28, text);
-  drawTelemetryLine(heading, route.headingDeg >= 0 ? TelemetryUnit::Degrees : TelemetryUnit::None, false, false, 40, text);
-  drawTelemetryLine(distance, route.distanceKm >= 0.0f ? TelemetryUnit::Kilometres : TelemetryUnit::None, false, false, 52, text);
+                    route.verticalSpeedFpm > -99999, route.verticalSpeedFpm > 0, route.verticalSpeedFpm == 0, 16, text);
+  drawTelemetryLine(speed, route.speedKt >= 0 ? TelemetryUnit::Knots : TelemetryUnit::None, false, false, false, 28, text);
+  drawTelemetryLine(heading, route.headingDeg >= 0 ? TelemetryUnit::Degrees : TelemetryUnit::None, false, false, false, 40, text);
+  drawTelemetryLine(distance, route.distanceKm >= 0.0f ? TelemetryUnit::Kilometres : TelemetryUnit::None, false, false, false, 52, text);
 }
 
 void drawRoute(const Route& route, uint8_t position, uint8_t total) {
@@ -1557,7 +1559,7 @@ void drawAnimatedTelemetryNumber(const char* text, int16_t x, int16_t y, int16_t
 // sequence as their number. This keeps the settled animation frame identical
 // to the static card, rather than adding those pixels in a separate flash.
 void drawAnimatedTelemetryAdornment(const char* value, TelemetryUnit unit, bool directionArrow,
-                                    bool climbing, int16_t y, uint8_t line,
+                                    bool climbing, bool level, int16_t y, uint8_t line,
                                     unsigned long phase, bool entering, uint16_t color) {
   constexpr int16_t left = 95, right = 127;
   const int8_t offset = letterDropOffset(phase, line, strlen(value), entering);
@@ -1580,6 +1582,15 @@ void drawAnimatedTelemetryAdornment(const char* value, TelemetryUnit unit, bool 
   // Keep the route-arrow motif attached to the same dropped baseline as the
   // unit, clipping it to the line while the transition is in flight.
   const int16_t arrowX = x + 1;
+  if (level) {
+    const int16_t pixelY = y + 3 + offset;
+    if (pixelY >= y && pixelY < y + 7) {
+      for (uint8_t column = 1; column <= 3; ++column) {
+        if (arrowX + column >= left && arrowX + column < right) matrix.drawPixel(arrowX + column, pixelY, color);
+      }
+    }
+    return;
+  }
   for (uint8_t sourceRow = 0; sourceRow < 5; ++sourceRow) {
     for (uint8_t sourceColumn = 0; sourceColumn < 6; ++sourceColumn) {
       if (!(kCityArrowSprite[sourceRow] & (1 << (5 - sourceColumn)))) continue;
@@ -1713,17 +1724,17 @@ void drawAnimatedRouteText(const Route& route, unsigned long phase, bool enterin
   drawAnimatedTelemetryNumber(heading, 95, 40, 95, 127, tertiaryWhite, 8, phase, entering);
   drawAnimatedTelemetryNumber(distance, 95, 52, 95, 127, tertiaryWhite, 10, phase, entering);
   drawAnimatedTelemetryAdornment(altitude, route.altFt >= 0 ? TelemetryUnit::Feet : TelemetryUnit::None,
-                                 false, false, 4, 5, phase, entering, tertiaryWhite);
+                                 false, false, false, 4, 5, phase, entering, tertiaryWhite);
   drawAnimatedTelemetryAdornment(verticalSpeed,
                                  route.verticalSpeedFpm > -99999 ? TelemetryUnit::FeetPerMinute : TelemetryUnit::None,
-                                 route.verticalSpeedFpm > -99999, route.verticalSpeedFpm >= 0,
+                                 route.verticalSpeedFpm > -99999, route.verticalSpeedFpm > 0, route.verticalSpeedFpm == 0,
                                  16, 6, phase, entering, tertiaryWhite);
   drawAnimatedTelemetryAdornment(speed, route.speedKt >= 0 ? TelemetryUnit::Knots : TelemetryUnit::None,
-                                 false, false, 28, 7, phase, entering, tertiaryWhite);
+                                 false, false, false, 28, 7, phase, entering, tertiaryWhite);
   drawAnimatedTelemetryAdornment(heading, route.headingDeg >= 0 ? TelemetryUnit::Degrees : TelemetryUnit::None,
-                                 false, false, 40, 8, phase, entering, tertiaryWhite);
+                                 false, false, false, 40, 8, phase, entering, tertiaryWhite);
   drawAnimatedTelemetryAdornment(distance, route.distanceKm >= 0.0f ? TelemetryUnit::Kilometres : TelemetryUnit::None,
-                                 false, false, 52, 10, phase, entering, tertiaryWhite);
+                                 false, false, false, 52, 10, phase, entering, tertiaryWhite);
 }
 
 void updateLetterTransition() {
