@@ -22,6 +22,7 @@
 #include "stars_logo_32.h"
 #include "klm_logo_32.h"
 #include "westjet_logo_32.h"
+#include "us_military_roundel_32.h"
 
 #if __has_include("local_secrets.h")
 #include "local_secrets.h"
@@ -605,6 +606,12 @@ bool isKlmFlight(const Route& route) {
   return strncmp(route.operatorCode, "KLM", 3) == 0 || strncmp(route.flightNumber, "KL", 2) == 0;
 }
 
+bool isUsMilitaryFlight(const Route& route) {
+  return strncmp(route.operatorCode, "USM", 3) == 0 || strncmp(route.operatorCode, "RCH", 3) == 0 ||
+         strncmp(route.operatorCode, "CNV", 3) == 0 || strncmp(route.operatorCode, "GKA", 3) == 0 ||
+         strncmp(route.flightNumber, "USM", 3) == 0 || strncmp(route.flightNumber, "RCH", 3) == 0;
+}
+
 bool isOperator(const Route& route, const char* code) {
   return strncmp(route.operatorCode, code, 3) == 0 || strncmp(route.flightNumber, code, 3) == 0;
 }
@@ -621,6 +628,7 @@ const char* airlineName(const Route& route) {
   if (isSunwestFlight(route)) return "Sunwest Aviation";
   if (isStarsFlight(route)) return "Stars Air Ambulance";
   if (isKlmFlight(route)) return "KLM";
+  if (isUsMilitaryFlight(route)) return "United States Military";
   return route.operatorCode[0] ? route.operatorCode : "";
 }
 
@@ -639,6 +647,8 @@ void operatorBrandRgb(const Route& route, uint8_t& red, uint8_t& green, uint8_t&
     red = kStarsBrandColor[0]; green = kStarsBrandColor[1]; blue = kStarsBrandColor[2];
   } else if (isKlmFlight(route)) {
     red = kKlmBrandColor[0]; green = kKlmBrandColor[1]; blue = kKlmBrandColor[2];
+  } else if (isUsMilitaryFlight(route)) {
+    red = 0; green = 40; blue = 104;  // Roundel navy.
   } else if (isWestJetFlight(route)) {
     red = 0; green = 170; blue = 166;  // WestJet teal, #00AAA6.
   } else {
@@ -757,6 +767,16 @@ void drawKlmLogo(int16_t x, int16_t y) {
   }
 }
 
+void drawUsMilitaryLogo(int16_t x, int16_t y) {
+  const uint16_t colors[3] = {visibleColor(5, 25, 105), matrix.color565(255, 255, 255), visibleColor(220, 20, 30)};
+  for (uint8_t row = 0; row < 32; ++row) for (uint8_t column = 0; column < 32; ++column) {
+    const uint32_t bit = 1UL << (31 - column);
+    for (uint8_t color = 0; color < 3; ++color) {
+      if (pgm_read_dword(&kUsMilitaryRoundelMask[row][color]) & bit) { matrix.drawPixel(x + column, y + row, colors[color]); break; }
+    }
+  }
+}
+
 void drawPlaneSprite(int16_t x, int16_t y, uint16_t color);
 void drawPlaneSpritePointingUp(int16_t x, int16_t y, uint16_t color);
 void drawAircraftFallbackSprite(const char* aircraftType, int16_t x, int16_t y, uint16_t color);
@@ -770,6 +790,7 @@ void drawOperatorLogo(const Route& route, int16_t x, int16_t y) {
   else if (isSunwestFlight(route)) drawSunwestLogo(x, y);
   else if (isStarsFlight(route)) drawStarsLogo(x, y);
   else if (isKlmFlight(route)) drawKlmLogo(x, y);
+  else if (isUsMilitaryFlight(route)) drawUsMilitaryLogo(x, y);
   else if (isWestJetFlight(route)) drawWestJetLogo(x, y);
   // The unknown-airline badge deliberately uses the left and bottom one-pixel
   // gutters: 33px at x=0..32 and y=3..35. It is a quiet 25% white aircraft
