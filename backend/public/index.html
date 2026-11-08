@@ -36,6 +36,7 @@
             <div class="grid"><label>Latitude<input name="latitude" type="number" step="any" min="-90" max="90" inputmode="decimal" required></label><label>Longitude<input name="longitude" type="number" step="any" min="-180" max="180" inputmode="decimal" required></label></div>
             <label class="range-label">Tracking radius <output id="radiusOut">100 km</output><input name="radiusKm" type="range" min="1" max="100" step="1"></label>
             <label class="toggle"><input name="includeGrounded" type="checkbox"><span>Include aircraft on the ground</span></label>
+            <label class="toggle"><input name="debugMode" type="checkbox"><span>Debug mode — simulate 20 aircraft and cycle every logo</span></label>
             <button type="submit">Save display settings</button>
           </form>
           <hr>

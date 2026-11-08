@@ -75,6 +75,10 @@ function mapSearchArea(url) {
 
 async function flightPayload(device, store, env) {
   const now = unix();
+  if (device.debugMode) {
+    const payload = { generatedAt: new Date().toISOString(), dataAgeSeconds: 0, source: "debug", flights: debugFlights() };
+    return json(payload, 200, { "Cache-Control": "no-store", "X-Data-Age-Seconds": "0" });
+  }
   const cached = await store.getSnapshot(device.id);
   if (cached && cached.fetchedAt + SNAPSHOT_TTL_SECONDS > now) {
     return json(cached.payload, 200, { "Cache-Control": "private, max-age=60", "X-Data-Age-Seconds": String(now - cached.fetchedAt) });
@@ -124,7 +128,8 @@ async function saveSettings(request, store) {
   let body; try { body = await request.json(); } catch { return json({ error: "Expected JSON" }, 400); }
   const latitude = Number(body.latitude), longitude = Number(body.longitude), radiusKm = Number(body.radiusKm);
   if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 || !Number.isFinite(longitude) || longitude < -180 || longitude > 180 || !Number.isFinite(radiusKm) || radiusKm <= 0 || radiusKm > 300) return json({ error: "Use latitude −90…90, longitude −180…180, and radius 0…300 km." }, 422);
-  await store.updateSettings(device.id, { name: cleanName(body.name), latitude, longitude, radiusKm, includeGrounded: Boolean(body.includeGrounded) }, unix());
+  await store.updateSettings(device.id, { name: cleanName(body.name), latitude, longitude, radiusKm, includeGrounded: Boolean(body.includeGrounded), debugMode: Boolean(body.debugMode) }, unix());
+  await store.deleteSnapshot(device.id);
   return json({ ok: true });
 }
 
@@ -138,7 +143,7 @@ async function requestRotation(request, store) {
 async function deviceConfig(request, store) {
   const device = await authenticateDevice(request, store);
   if (!device) return json({ error: "Device authentication required" }, 401);
-  return json({ name: device.name, latitude: device.latitude, longitude: device.longitude, radiusKm: device.radiusKm, includeGrounded: Boolean(device.includeGrounded), rotateKey: Boolean(device.rotationRequested) });
+  return json({ name: device.name, latitude: device.latitude, longitude: device.longitude, radiusKm: device.radiusKm, includeGrounded: Boolean(device.includeGrounded), debugMode: Boolean(device.debugMode), rotateKey: Boolean(device.rotationRequested) });
 }
 
 async function rotateDeviceKey(request, store) {
@@ -231,6 +236,45 @@ function normalizeFlightStatus(status) {
   const number = value => typeof value === "number" && Number.isFinite(value) ? value : null;
   return { provider: "airlabs", status: typeof status.status === "string" ? status.status : null, scheduledDeparture: status.dep_time || null, estimatedDeparture: status.dep_estimated || null, actualDeparture: status.dep_actual || null, scheduledArrival: status.arr_time || null, estimatedArrival: status.arr_estimated || null, actualArrival: status.arr_actual || null, departureDelayMinutes: number(status.dep_delayed), arrivalDelayMinutes: number(status.arr_delayed), origin: status.dep_iata || null, destination: status.arr_iata || null };
 }
+
+const DEBUG_AIRPORTS = Object.freeze([
+  ["YEG", "Edmonton"], ["YYC", "Calgary"], ["YVR", "Vancouver"], ["YYZ", "Toronto"], ["YUL", "Montreal"], ["YHZ", "Halifax"],
+  ["JFK", "New York"], ["LAX", "Los Angeles"], ["ORD", "Chicago"], ["MEX", "Mexico City"], ["GRU", "Sao Paulo"], ["EZE", "Buenos Aires"],
+  ["LHR", "London"], ["CDG", "Paris"], ["AMS", "Amsterdam"], ["FRA", "Frankfurt"], ["IST", "Istanbul"], ["DXB", "Dubai"],
+  ["NRT", "Tokyo"], ["ICN", "Seoul"], ["SIN", "Singapore"], ["HKG", "Hong Kong"], ["DEL", "Delhi"], ["SYD", "Sydney"], ["AKL", "Auckland"],
+  ["JNB", "Johannesburg"], ["CPT", "Cape Town"], ["NBO", "Nairobi"], ["CAI", "Cairo"]
+]);
+const DEBUG_AIRCRAFT = Object.freeze([
+  ["B738", "Boeing 737-800"], ["B38M", "Boeing 737 MAX 8"], ["A320", "Airbus A320"], ["A21N", "Airbus A321neo"], ["DH8D", "Dash 8 Q400"],
+  ["E75L", "Embraer 175"], ["CRJ9", "CRJ-900"], ["B789", "Boeing 787-9"], ["B77W", "Boeing 777-300ER"], ["C172", "Cessna 172"], ["PC12", "Pilatus PC-12"], ["B407", "Bell 407"]
+]);
+const DEBUG_OPERATORS = Object.freeze([
+  ["WJA", "WestJet", "WS1"], ["ACA", "Air Canada", "ACA2"], ["JZA", "Air Canada Jazz", "JZA3"], ["POE", "Porter Airlines", "POE4"],
+  ["CWA", "CanWest Air", "CWA5"], ["CNK", "Sunwest Aviation", "CNK6"], ["STAR", "Stars Air Ambulance", "STAR7"], ["FLE", "Flair Airlines", "FLE8"],
+  ["KLM", "KLM", "KLM9"], ["WEN", "WestJet Encore", "WEN10"],
+  ["DBG", null, "DBG11"], ["DBG", null, "DBG12"], ["DBG", null, "DBG13"], ["DBG", null, "DBG14"], ["DBG", null, "DBG15"],
+  ["DBG", null, "DBG16"], ["DBG", null, "DBG17"], ["DBG", null, "DBG18"], ["DBG", null, "DBG19"], ["DBG", null, "DBG20"]
+]);
+
+function debugFlights() {
+  return DEBUG_OPERATORS.map(([airline, airlineName, flightNumber], index) => {
+    const origin = randomDebugAirport();
+    let destination = randomDebugAirport();
+    while (destination[0] === origin[0]) destination = randomDebugAirport();
+    const [aircraftType, aircraftTypeName] = DEBUG_AIRCRAFT[Math.floor(Math.random() * DEBUG_AIRCRAFT.length)];
+    return {
+      icao24: `debug${String(index + 1).padStart(2, "0")}`,
+      airline, airlineName, airlineCountry: null, flightNumber,
+      origin: origin[0], destination: destination[0], aircraftType, aircraftTypeName,
+      registration: `T-${String(index + 1).padStart(3, "0")}`,
+      altFt: randomInteger(800, 43000), verticalSpeedFpm: randomInteger(-2800, 2800), speedKt: randomInteger(80, 590), headingDeg: randomInteger(0, 359),
+      distanceKm: randomInteger(1, 18000), flightProgressPercent: randomInteger(0, 100), flightProgressEstimated: true,
+      latitude: null, longitude: null, source: "debug"
+    };
+  });
+}
+function randomDebugAirport() { return DEBUG_AIRPORTS[Math.floor(Math.random() * DEBUG_AIRPORTS.length)]; }
+function randomInteger(min, max) { return min + Math.floor(Math.random() * (max - min + 1)); }
 
 function mergeTrackedFlights(nearby, tracked) {
   const byIdentity = new Map(nearby.map(flight => [flight.icao24 || flight.flightNumber, flight]));
@@ -425,7 +469,7 @@ function numberOrNull(value) { return typeof value === "number" && Number.isFini
 function convert(value, factor) { const n = numberOrNull(value); return n === null ? null : Math.round(n * factor); }
 function round(value, decimals) { const n = 10 ** decimals; return Math.round(value * n) / n; }
 function haversineKm(lat1, lon1, lat2, lon2) { const rad = Math.PI / 180, a = Math.sin((lat2 - lat1) * rad / 2) ** 2 + Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin((lon2 - lon1) * rad / 2) ** 2; return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)); }
-function publicDevice(d) { return { id: d.id, name: d.name, latitude: d.latitude, longitude: d.longitude, radiusKm: d.radiusKm, includeGrounded: Boolean(d.includeGrounded), rotationRequested: Boolean(d.rotationRequested) }; }
+function publicDevice(d) { return { id: d.id, name: d.name, latitude: d.latitude, longitude: d.longitude, radiusKm: d.radiusKm, includeGrounded: Boolean(d.includeGrounded), debugMode: Boolean(d.debugMode), rotationRequested: Boolean(d.rotationRequested) }; }
 async function getTrackedFlights(request, store) {
   const device = await authenticateSession(request, store);
   return device ? json({ trackedFlights: await store.getTrackedFlights(device.id) }) : json({ error: "Unauthorized" }, 401);
@@ -505,7 +549,7 @@ class D1Store {
   async consumePairing(h, now) { const row = await this.db.prepare("UPDATE pairing_codes SET used_at = ? WHERE token_hash = ? AND used_at IS NULL AND expires_at > ? RETURNING device_id").bind(now, h, now).first(); return row?.device_id || null; }
   async createSession(h, id, expires, now) { await this.db.prepare("INSERT INTO sessions (token_hash, device_id, expires_at, created_at) VALUES (?, ?, ?, ?)").bind(h, id, expires, now).run(); }
   async findDeviceBySessionHash(h, now) { return deviceRow(await this.db.prepare("SELECT d.* FROM sessions s JOIN devices d ON d.id=s.device_id WHERE s.token_hash=? AND s.expires_at > ?").bind(h, now).first()); }
-  async updateSettings(id, s, now) { await this.db.prepare("UPDATE devices SET name=?, latitude=?, longitude=?, radius_km=?, include_grounded=?, updated_at=? WHERE id=?").bind(s.name, s.latitude, s.longitude, s.radiusKm, s.includeGrounded ? 1 : 0, now, id).run(); }
+  async updateSettings(id, s, now) { await this.db.prepare("UPDATE devices SET name=?, latitude=?, longitude=?, radius_km=?, include_grounded=?, debug_mode=?, updated_at=? WHERE id=?").bind(s.name, s.latitude, s.longitude, s.radiusKm, s.includeGrounded ? 1 : 0, s.debugMode ? 1 : 0, now, id).run(); }
   async requestRotation(id, now) { await this.db.prepare("UPDATE devices SET rotation_requested=1, updated_at=? WHERE id=?").bind(now, id).run(); }
   async rotateKey(id, next, prior, expires, now) { await this.db.prepare("UPDATE devices SET api_key_hash=?, previous_api_key_hash=?, previous_key_expires_at=?, rotation_requested=0, updated_at=? WHERE id=?").bind(next, prior, expires, now, id).run(); }
   async deleteSession(h) { await this.db.prepare("DELETE FROM sessions WHERE token_hash=?").bind(h).run(); }
@@ -526,5 +570,5 @@ function trackedFlightRow(row) { const identifierType = row.identifier_type || "
 
 function deviceRow(row) {
   if (!row) return null;
-  return { id: row.id, name: row.name, apiKeyHash: row.api_key_hash, latitude: row.latitude, longitude: row.longitude, radiusKm: row.radius_km, includeGrounded: row.include_grounded, rotationRequested: row.rotation_requested };
+  return { id: row.id, name: row.name, apiKeyHash: row.api_key_hash, latitude: row.latitude, longitude: row.longitude, radiusKm: row.radius_km, includeGrounded: row.include_grounded, debugMode: row.debug_mode, rotationRequested: row.rotation_requested };
 }
