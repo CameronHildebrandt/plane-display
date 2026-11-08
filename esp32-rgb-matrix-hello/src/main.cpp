@@ -161,15 +161,6 @@ constexpr uint8_t kMinecraftFont[][7] PROGMEM = {
     {0x00,0x00,0x00,0x00,0x00,0x00,0x00},
 };
 
-// Compact 3px-wide figures reserve the telemetry column for the actual value,
-// rather than consuming it with large unit lettering.
-constexpr uint8_t kTelemetryDigits[][7] PROGMEM = {
-    {0x7,0x5,0x5,0x5,0x5,0x5,0x7}, {0x2,0x6,0x2,0x2,0x2,0x2,0x7},
-    {0x7,0x1,0x1,0x7,0x4,0x4,0x7}, {0x7,0x1,0x1,0x7,0x1,0x1,0x7},
-    {0x5,0x5,0x5,0x7,0x1,0x1,0x1}, {0x7,0x4,0x4,0x7,0x1,0x1,0x7},
-    {0x7,0x4,0x4,0x7,0x5,0x5,0x7}, {0x7,0x1,0x1,0x2,0x2,0x2,0x2},
-    {0x7,0x5,0x5,0x7,0x5,0x5,0x7}, {0x7,0x5,0x5,0x7,0x1,0x1,0x7},
-};
 constexpr uint8_t kTelemetryUnitGlyphs[][5] PROGMEM = {
     {0x3,0x4,0x6,0x4,0x4},  // f
     {0x2,0x7,0x2,0x2,0x3},  // t
@@ -180,6 +171,8 @@ constexpr uint8_t kTelemetryUnitGlyphs[][5] PROGMEM = {
 };
 
 enum class TelemetryUnit : uint8_t { None, Feet, FeetPerMinute, Knots, Degrees, Kilometres };
+
+uint8_t minecraftGlyphIndex(char character);
 
 int8_t telemetryUnitGlyphIndex(char character) {
   switch (character) {
@@ -199,8 +192,10 @@ const char* telemetryUnitText(TelemetryUnit unit) {
   }
 }
 
-int16_t compactTelemetryNumberWidth(const char* text) {
-  return *text ? static_cast<int16_t>(strlen(text) * 4 - 1) : 0;
+// Values use the same full 5x7 Minecraft face as the rest of the flight
+// card. The small unit sprites remain deliberately compact.
+int16_t telemetryNumberWidth(const char* text) {
+  return *text ? static_cast<int16_t>(strlen(text) * 6 - 1) : 0;
 }
 
 int16_t telemetryUnitWidth(TelemetryUnit unit) {
@@ -210,7 +205,7 @@ int16_t telemetryUnitWidth(TelemetryUnit unit) {
 }
 
 int16_t telemetryValueWidth(const char* value, TelemetryUnit unit) {
-  const int16_t numberWidth = compactTelemetryNumberWidth(value);
+  const int16_t numberWidth = telemetryNumberWidth(value);
   return numberWidth + (unit == TelemetryUnit::None ? 0 : 1 + telemetryUnitWidth(unit));
 }
 
@@ -233,22 +228,14 @@ void drawTelemetryPixel(int16_t x, int16_t y, uint16_t color, int16_t left, int1
   if (x >= left && x < right) matrix.drawPixel(x, y, color);
 }
 
-int16_t drawCompactTelemetryNumber(const char* text, int16_t x, int16_t y, uint16_t color,
-                                   int16_t left, int16_t right) {
-  for (const char* character = text; *character; ++character, x += 4) {
+int16_t drawMinecraftTelemetryNumber(const char* text, int16_t x, int16_t y, uint16_t color,
+                                     int16_t left, int16_t right) {
+  for (const char* character = text; *character; ++character, x += 6) {
+    const uint8_t glyph = minecraftGlyphIndex(*character);
     for (uint8_t row = 0; row < 7; ++row) {
-      uint8_t pixels = 0;
-      if (*character >= '0' && *character <= '9') {
-        pixels = pgm_read_byte(&kTelemetryDigits[*character - '0'][row]);
-      } else if (*character == '-' && row == 3) {
-        pixels = 0x7;
-      } else if (*character == '+' && (row == 2 || row == 3 || row == 4)) {
-        pixels = row == 3 ? 0x7 : 0x2;
-      } else if (*character == '.' && row == 6) {
-        pixels = 0x2;
-      }
-      for (uint8_t column = 0; column < 3; ++column) {
-        if (pixels & (1 << (2 - column))) drawTelemetryPixel(x + column, y + row, color, left, right);
+      const uint8_t pixels = pgm_read_byte(&kMinecraftFont[glyph][row]);
+      for (uint8_t column = 0; column < 5; ++column) {
+        if (pixels & (1 << (4 - column))) drawTelemetryPixel(x + column, y + row, color, left, right);
       }
     }
   }
@@ -276,7 +263,7 @@ int16_t drawTelemetryUnit(TelemetryUnit unit, int16_t x, int16_t y, uint16_t col
 
 int16_t drawTelemetryValue(const char* value, TelemetryUnit unit, int16_t x, int16_t y,
                            uint16_t color, int16_t left, int16_t right) {
-  const int16_t numberEnd = drawCompactTelemetryNumber(value, x, y, color, left, right);
+  const int16_t numberEnd = drawMinecraftTelemetryNumber(value, x, y, color, left, right);
   if (unit == TelemetryUnit::None) return numberEnd;
   return drawTelemetryUnit(unit, numberEnd, y, color, left, right);
 }
