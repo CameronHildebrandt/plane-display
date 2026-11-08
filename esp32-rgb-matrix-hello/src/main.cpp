@@ -2148,6 +2148,10 @@ void loop() {
     routeProgressTo = routes[letterTransitionRouteIndex].flightProgressPercent;
     routeProgressAnimationActive = hasFlightProgress(routeProgressFrom) ||
         hasFlightProgress(routeProgressTo);
+    // Share the letter transition's full two-second timeline. In particular,
+    // known↔unknown route changes ease the green row all the way out or in,
+    // rather than jumping on the first redraw.
+    routeProgressAnimationStartMillis = letterTransitionStartMillis;
     // Do not start another scene while this one is gracefully winding down.
     nextFlightRotationMillis = 0xFFFFFFFFUL;
   }
@@ -2175,7 +2179,10 @@ void loop() {
       drawRouteProgress(progress.percent, progress.opacity);
     }
     drawRotationIndicator();
-    nextRotationIndicatorMillis = millis() + 50;
+    // A 33 fps cadence keeps the eased one-pixel progress fade visually
+    // continuous while a card is transitioning; the static indicator does
+    // not need the extra redraws.
+    nextRotationIndicatorMillis = millis() + (routeProgressAnimationActive ? 30 : 50);
   }
   if (showingNoPlanes && !showingPairingQr && millis() >= nextNoPlanesAnimationMillis) {
     advanceNoPlanesAnimation();
