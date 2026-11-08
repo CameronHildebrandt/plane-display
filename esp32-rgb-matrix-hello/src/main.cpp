@@ -158,7 +158,9 @@ constexpr uint8_t kMinecraftFont[][7] PROGMEM = {
     {0x00,0x00,0x11,0x11,0x11,0x13,0x0D}, {0x00,0x00,0x11,0x11,0x11,0x0A,0x04},
     {0x00,0x00,0x11,0x11,0x15,0x15,0x0A}, {0x00,0x00,0x11,0x0A,0x04,0x0A,0x11},
     {0x00,0x00,0x11,0x11,0x0F,0x01,0x0E}, {0x00,0x00,0x1F,0x02,0x04,0x08,0x1F},
-    {0x0E,0x11,0x13,0x15,0x19,0x11,0x0E}, {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E},
+    // The zero is deliberately four pixels wide, preserving its angular
+    // interior while giving dense telemetry a little more breathing room.
+    {0x0C,0x12,0x12,0x16,0x1A,0x12,0x0C}, {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E},
     {0x0E,0x11,0x01,0x02,0x04,0x08,0x1F}, {0x1E,0x01,0x01,0x0E,0x01,0x01,0x1E},
     {0x02,0x06,0x0A,0x12,0x1F,0x02,0x02}, {0x1F,0x10,0x10,0x1E,0x01,0x01,0x1E},
     {0x0E,0x10,0x10,0x1E,0x11,0x11,0x0E}, {0x1F,0x01,0x02,0x04,0x08,0x08,0x08},
@@ -203,13 +205,16 @@ const char* telemetryUnitText(TelemetryUnit unit) {
 // an empty five-pixel character cell between two digits.
 int16_t telemetryNumberWidth(const char* text) {
   int16_t width = 0;
-  for (const char* character = text; *character; ++character) width += *character == '.' ? 2 : 6;
+  for (const char* character = text; *character; ++character) {
+    width += *character == '.' ? 2 : (*character == '0' ? 5 : 6);
+  }
   return width ? width - 1 : 0;
 }
 
 int16_t telemetryUnitWidth(TelemetryUnit unit) {
   if (unit == TelemetryUnit::None) return 0;
   if (unit == TelemetryUnit::Degrees) return 2;
+  if (unit == TelemetryUnit::Feet) return 1;  // compact apostrophe
   return telemetryNumberWidth(telemetryUnitText(unit));
 }
 
@@ -255,7 +260,7 @@ int16_t drawMinecraftTelemetryNumber(const char* text, int16_t x, int16_t y, uin
         if (pixels & (1 << (4 - column))) drawTelemetryPixel(x + column, y + row, color, left, right);
       }
     }
-    x += 6;
+    x += *character == '0' ? 5 : 6;
   }
   return x;
 }
@@ -266,6 +271,10 @@ int16_t drawTelemetryUnit(TelemetryUnit unit, int16_t x, int16_t y, uint16_t col
     drawTelemetryPixel(x, y + 1, color, left, right); drawTelemetryPixel(x + 1, y + 1, color, left, right);
     drawTelemetryPixel(x, y + 2, color, left, right); drawTelemetryPixel(x + 1, y + 2, color, left, right);
     return x + 2;
+  }
+  if (unit == TelemetryUnit::Feet) {
+    drawTelemetryPixel(x, y + 1, color, left, right);
+    return x + 1;
   }
   return drawMinecraftTelemetryNumber(telemetryUnitText(unit), x, y, color, left, right);
 }
@@ -1037,7 +1046,7 @@ void refreshActiveMarquees(const Route& route) {
 
   const uint16_t telemetry = matrix.color565(85, 85, 85);
   const struct { const char* value; TelemetryUnit unit; bool arrow; bool climbing; bool level; int16_t y; } lines[] = {
-      {altitude, TelemetryUnit::None, false, false, false, 4},
+      {altitude, route.altFt >= 0 ? TelemetryUnit::Feet : TelemetryUnit::None, false, false, false, 4},
       {verticalSpeed, TelemetryUnit::None, route.verticalSpeedFpm > -99999, route.verticalSpeedFpm > 0, route.verticalSpeedFpm == 0, 16},
       {speed, route.speedKt >= 0 ? TelemetryUnit::Knots : TelemetryUnit::None, false, false, false, 28},
       {heading, route.headingDeg >= 0 ? TelemetryUnit::Degrees : TelemetryUnit::None, false, false, false, 40},
@@ -1089,7 +1098,7 @@ void drawTelemetryValues(const Route& route) {
   if (route.distanceKm >= 0.0f) snprintf(distance, sizeof(distance), "%.1f", route.distanceKm);
   else strlcpy(distance, "--", sizeof(distance));
 
-  drawTelemetryLine(altitude, TelemetryUnit::None, false, false, false, 4, text);
+  drawTelemetryLine(altitude, route.altFt >= 0 ? TelemetryUnit::Feet : TelemetryUnit::None, false, false, false, 4, text);
   drawTelemetryLine(verticalSpeed, TelemetryUnit::None,
                     route.verticalSpeedFpm > -99999, route.verticalSpeedFpm > 0, route.verticalSpeedFpm == 0, 16, text);
   drawTelemetryLine(speed, route.speedKt >= 0 ? TelemetryUnit::Knots : TelemetryUnit::None, false, false, false, 28, text);
@@ -1525,7 +1534,9 @@ void drawAnimatedNormalLine(const char* text, int16_t left, int16_t y, int16_t w
 
 int16_t telemetryTextAdvance(const char* text) {
   int16_t advance = 0;
-  for (const char* character = text; *character; ++character) advance += *character == '.' ? 2 : 6;
+  for (const char* character = text; *character; ++character) {
+    advance += *character == '.' ? 2 : (*character == '0' ? 5 : 6);
+  }
   return advance;
 }
 
@@ -1551,7 +1562,7 @@ void drawAnimatedTelemetryNumber(const char* text, int16_t x, int16_t y, int16_t
         if ((pixels & (1 << (4 - column))) && pixelX >= left && pixelX < right) matrix.drawPixel(pixelX, pixelY, color);
       }
     }
-    x += 6;
+    x += *character == '0' ? 5 : 6;
   }
 }
 
@@ -1573,6 +1584,10 @@ void drawAnimatedTelemetryAdornment(const char* value, TelemetryUnit unit, bool 
       }
     }
     x += 2;
+  } else if (unit == TelemetryUnit::Feet) {
+    const int16_t pixelY = y + 1 + offset;
+    if (pixelY >= y && pixelY < y + 7 && x >= left && x < right) matrix.drawPixel(x, pixelY, color);
+    ++x;
   } else if (unit != TelemetryUnit::None) {
     drawAnimatedTelemetryNumber(telemetryUnitText(unit), x, y, left, right, color, line,
                                 phase, entering, strlen(value));
@@ -1723,7 +1738,7 @@ void drawAnimatedRouteText(const Route& route, unsigned long phase, bool enterin
   drawAnimatedTelemetryNumber(speed, 95, 28, 95, 127, tertiaryWhite, 7, phase, entering);
   drawAnimatedTelemetryNumber(heading, 95, 40, 95, 127, tertiaryWhite, 8, phase, entering);
   drawAnimatedTelemetryNumber(distance, 95, 52, 95, 127, tertiaryWhite, 10, phase, entering);
-  drawAnimatedTelemetryAdornment(altitude, TelemetryUnit::None,
+  drawAnimatedTelemetryAdornment(altitude, route.altFt >= 0 ? TelemetryUnit::Feet : TelemetryUnit::None,
                                  false, false, false, 4, 5, phase, entering, tertiaryWhite);
   drawAnimatedTelemetryAdornment(verticalSpeed,
                                  TelemetryUnit::None,
