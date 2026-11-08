@@ -1394,6 +1394,55 @@ void drawAnimatedNormalLine(const char* text, int16_t left, int16_t y, int16_t w
   }
 }
 
+// Telemetry units and the vertical-speed direction arrow join the same drop
+// sequence as their number. This keeps the settled animation frame identical
+// to the static card, rather than adding those pixels in a separate flash.
+void drawAnimatedTelemetryAdornment(const char* value, TelemetryUnit unit, bool directionArrow,
+                                    bool climbing, int16_t y, uint8_t line,
+                                    unsigned long phase, bool entering, uint16_t color) {
+  constexpr int16_t left = 95, right = 127;
+  const int8_t offset = letterDropOffset(phase, line, strlen(value), entering);
+  int16_t x = left + strlen(value) * 6;
+  if (unit == TelemetryUnit::Degrees) {
+    for (uint8_t row = 1; row <= 2; ++row) {
+      const int16_t pixelY = y + row + offset;
+      if (pixelY >= y && pixelY < y + 7) {
+        if (x >= left && x < right) matrix.drawPixel(x, pixelY, color);
+        if (x + 1 >= left && x + 1 < right) matrix.drawPixel(x + 1, pixelY, color);
+      }
+    }
+    x += 2;
+  } else if (unit != TelemetryUnit::None) {
+    for (const char* character = telemetryUnitText(unit); *character; ++character, x += 2) {
+      const int8_t glyphIndex = telemetryUnitGlyphIndex(*character);
+      for (uint8_t row = 0; row < 5; ++row) {
+        const int16_t pixelY = y + row + 1 + offset;
+        if (pixelY < y || pixelY >= y + 7) continue;
+        const uint8_t pixels = pgm_read_byte(&kTelemetryUnitGlyphs[glyphIndex][row]);
+        for (uint8_t column = 0; column < 3; ++column) {
+          const int16_t pixelX = x + column;
+          if ((pixels & (1 << (2 - column))) && pixelX >= left && pixelX < right) {
+            matrix.drawPixel(pixelX, pixelY, color);
+          }
+        }
+      }
+    }
+  }
+  if (!directionArrow) return;
+  const int16_t arrowX = x + 1;
+  for (uint8_t row = 0; row < 5; ++row) {
+    const int16_t pixelY = y + 1 + row + offset;
+    if (arrowX >= left && arrowX < right && pixelY >= y && pixelY < y + 7) {
+      matrix.drawPixel(arrowX, pixelY, color);
+    }
+  }
+  const int16_t pointY = y + (climbing ? 1 : 5) + offset;
+  if (pointY >= y && pointY < y + 7) {
+    if (arrowX - 1 >= left && arrowX - 1 < right) matrix.drawPixel(arrowX - 1, pointY, color);
+    if (arrowX + 1 >= left && arrowX + 1 < right) matrix.drawPixel(arrowX + 1, pointY, color);
+  }
+}
+
 void drawAnimatedCityLine(const char* origin, const char* destination, unsigned long phase,
                           bool entering, uint16_t color) {
   constexpr int16_t left = 34;
@@ -1514,6 +1563,18 @@ void drawAnimatedRouteText(const Route& route, unsigned long phase, bool enterin
   drawAnimatedNormalLine(speed, 95, 28, 32, tertiaryWhite, 7, phase, entering);
   drawAnimatedNormalLine(heading, 95, 40, 28, tertiaryWhite, 8, phase, entering);
   drawAnimatedNormalLine(distance, 95, 52, 32, tertiaryWhite, 10, phase, entering);
+  drawAnimatedTelemetryAdornment(altitude, route.altFt >= 0 ? TelemetryUnit::Feet : TelemetryUnit::None,
+                                 false, false, 4, 5, phase, entering, tertiaryWhite);
+  drawAnimatedTelemetryAdornment(verticalSpeed,
+                                 route.verticalSpeedFpm > -99999 ? TelemetryUnit::FeetPerMinute : TelemetryUnit::None,
+                                 route.verticalSpeedFpm > -99999, route.verticalSpeedFpm >= 0,
+                                 16, 6, phase, entering, tertiaryWhite);
+  drawAnimatedTelemetryAdornment(speed, route.speedKt >= 0 ? TelemetryUnit::Knots : TelemetryUnit::None,
+                                 false, false, 28, 7, phase, entering, tertiaryWhite);
+  drawAnimatedTelemetryAdornment(heading, route.headingDeg >= 0 ? TelemetryUnit::Degrees : TelemetryUnit::None,
+                                 false, false, 40, 8, phase, entering, tertiaryWhite);
+  drawAnimatedTelemetryAdornment(distance, route.distanceKm >= 0.0f ? TelemetryUnit::Kilometres : TelemetryUnit::None,
+                                 false, false, 52, 10, phase, entering, tertiaryWhite);
 }
 
 void updateLetterTransition() {
@@ -1541,11 +1602,9 @@ void updateLetterTransition() {
     rotationIndicatorResetActive = false;
     rotationPipTransitionActive = false;
     nextFlightRotationMillis = millis() + kFlightRotationMillis;
-    // The entering letters are already fully settled in their final positions.
-    // Repainting the complete card here used to clear the panel for one frame,
-    // producing the visible flash at the end of every drop-in transition.
+    // Every detail, including telemetry units and the vertical-speed arrow, is
+    // already settled. Avoid clearing and repainting it at this boundary.
     routeSceneStartMillis = millis();
-    drawTelemetryValues(routes[routeIndex]);
     drawRouteProgress(routes[routeIndex].flightProgressPercent);
     nextRouteAnimationMillis = routeSceneStartMillis + 2000;
     nextRotationIndicatorMillis = routeSceneStartMillis;
