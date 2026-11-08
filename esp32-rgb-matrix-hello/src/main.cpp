@@ -546,12 +546,6 @@ void drawMinecraftBoldCapsCentered(const char* text, int16_t y, uint16_t color) 
   drawMinecraftBoldCaps(text, (matrix.width() - width) / 2, y, color);
 }
 
-uint16_t displayTeal() {
-  // This panel's physical red/blue channels are swapped. These input values
-  // therefore render as the requested visible #00AAA6 teal.
-  return matrix.color565(166, 170, 0);
-}
-
 uint16_t visibleColor(uint8_t red, uint8_t green, uint8_t blue) {
   // This panel's red/blue channels are physically swapped.
   return matrix.color565(blue, green, red);
@@ -1334,16 +1328,21 @@ void advanceNoPlanesAnimation() {
                      matrix.color565(255, 255, 255));
 }
 
-void drawDataOffline() {
-  const uint16_t black = matrix.color565(0, 0, 0);
-  const uint16_t white = matrix.color565(255, 255, 255);
-  const uint16_t dimWhite = matrix.color565(100, 100, 100);
-  const uint16_t westJetTeal = displayTeal();
-  showingNoPlanes = false;
-  matrix.fillScreen(black);
-  matrix.drawRect(0, 0, matrix.width(), matrix.height(), westJetTeal);
-  drawMinecraftCentered("data", 22, white);
-  drawMinecraftCentered("offline", 37, dimWhite);
+void showNoPlanesAfterDataFailure() {
+  // A transport failure used to paint a teal "data offline" card while the
+  // old route scheduler remained active. Its marquee/telemetry updates then
+  // wrote through that card. Treat unavailable data exactly like no aircraft:
+  // clear every route-owned animation state before drawing the clean idle scene.
+  routeCount = 0;
+  routeIndex = 0;
+  letterTransitionActive = false;
+  flightRefreshDeferred = false;
+  routeProgressAnimationActive = false;
+  rotationIndicatorResetActive = false;
+  rotationPipTransitionActive = false;
+  nextRouteAnimationMillis = 0;
+  nextRotationIndicatorMillis = 0;
+  drawNoPlanes();
 }
 
 void drawCurrentRoute() {
@@ -1808,7 +1807,7 @@ void fetchAndDrawFirstFlight() {
   // Local variables are destroyed in reverse order.
   HTTPClient request;
   if (!beginBackendRequest(request, secureClient, LED_PLANE_BACKEND_URL)) {
-    drawDataOffline();
+    showNoPlanesAfterDataFailure();
     return;
   }
   // A fresh nearby-aircraft lookup can take several seconds before the backend
@@ -1819,7 +1818,7 @@ void fetchAndDrawFirstFlight() {
   if (status != HTTP_CODE_OK) {
     Serial.printf("Flight request failed: HTTP %d\n", status);
     request.end();
-    drawDataOffline();
+    showNoPlanesAfterDataFailure();
     return;
   }
 
@@ -1828,7 +1827,7 @@ void fetchAndDrawFirstFlight() {
   request.end();
   if (error) {
     Serial.printf("Flight JSON failed: %s\n", error.c_str());
-    drawDataOffline();
+    showNoPlanesAfterDataFailure();
     return;
   }
 
