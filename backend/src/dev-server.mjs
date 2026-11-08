@@ -35,7 +35,7 @@ createServer(async (req, res) => {
     if (requested === "display.html") content = Buffer.from(content.toString().replace("</head>", `<script>window.__LOCAL_DEMO_KEY__=${JSON.stringify(deviceKey)};</script></head>`));
     res.writeHead(200, { "Content-Type": type, "Cache-Control": "no-store" }); res.end(content);
   } catch { res.writeHead(404); res.end("Not found"); }
-}).listen(port, "127.0.0.1", () => {
+}).listen(port, "0.0.0.0", () => {
   console.log(`Plane display backend demo: http://localhost:${port}`);
   console.log(`Device key for curl/firmware testing: ${deviceKey}`);
 });

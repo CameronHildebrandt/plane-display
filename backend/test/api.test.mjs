@@ -111,10 +111,20 @@ test("single-use QR pairing creates a browser session that can change preference
   await store.putSnapshot("test", { flights: [] }, Math.floor(Date.now() / 1000));
   const added = await handle(request("/api/settings/tracked-flights", { method: "POST", headers: { Cookie: cookie, "Content-Type": "application/json" }, body: JSON.stringify({ title: "A visit", flightNumber: "wja 410", flightDate: "2030-01-02" }) }), store);
   assert.equal(added.status, 201);
-  assert.equal((await added.json()).trackedFlight.flightNumber, "WJA410");
+  const { trackedFlight } = await added.json();
+  assert.equal(trackedFlight.flightNumber, "WJA410");
   assert.equal(await store.getSnapshot("test"), null);
   const list = await handle(request("/api/settings/tracked-flights", { headers: { Cookie: cookie } }), store);
   assert.equal((await list.json()).trackedFlights.length, 1);
+  await store.putSnapshot("test", { flights: [{ specialFlight: true }] }, Math.floor(Date.now() / 1000));
+  await store.putFlightStatus(trackedFlight.id, { payload: { status: "scheduled" }, fetchedAt: Math.floor(Date.now() / 1000) });
+  const removed = await handle(request(`/api/settings/tracked-flights/${trackedFlight.id}`, { method: "DELETE", headers: { Cookie: cookie } }), store);
+  assert.equal(removed.status, 200);
+  assert.deepEqual(await removed.json(), { ok: true });
+  assert.equal(await store.getSnapshot("test"), null);
+  assert.equal(await store.getFlightStatus(trackedFlight.id), null);
+  const emptyList = await handle(request("/api/settings/tracked-flights", { headers: { Cookie: cookie } }), store);
+  assert.equal((await emptyList.json()).trackedFlights.length, 0);
 });
 
 test("rotation is requested by owner and applied only after authenticated device check-in", async () => {

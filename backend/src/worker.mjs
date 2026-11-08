@@ -367,7 +367,10 @@ function normalizeOpenSkyState(s, device) {
 }
 function normalizeAdsbLolState(a, device) {
   const latitude = numberOrNull(a.lat), longitude = numberOrNull(a.lon);
-  const distanceKm = numberOrNull(a.dst) === null ? haversineKm(device.latitude, device.longitude, latitude, longitude) : a.dst * 1.852;
+  // Always derive distance from latitude/longitude. This is lateral distance
+  // from the display location, independent of altitude and source-specific
+  // `dst` semantics.
+  const distanceKm = haversineKm(device.latitude, device.longitude, latitude, longitude);
   if (distanceKm > device.radiusKm) return null;
   const callsign = typeof a.flight === "string" ? a.flight.trim() || null : null;
   const registration = a.r || null;
@@ -469,9 +472,10 @@ async function removeTrackedFlight(request, store, id) {
   const device = await authenticateSession(request, store);
   if (!device) return json({ error: "Unauthorized" }, 401);
   if (!/^[0-9a-f-]{36}$/i.test(id)) return json({ error: "Tracked flight not found." }, 404);
-  await store.deleteTrackedFlight(device.id, id);
-  await store.deleteSnapshot(device.id);
-  return new Response(null, { status: 204 });
+  const removed = await store.deleteTrackedFlight(device.id, id);
+  if (!removed) return json({ error: "Tracked flight not found." }, 404);
+  await Promise.all([store.deleteSnapshot(device.id), store.deleteFlightStatus(id)]);
+  return json({ ok: true });
 }
 function publicTrackedFlight(entry) { const identifier = entry.identifier || entry.flightNumber; const identifierType = entry.identifierType || "flightNumber"; return { id: entry.id, identifier, identifierType, statusIdentifier: entry.statusIdentifier || null, flightNumber: identifierType === "flightNumber" ? identifier : null, tailNumber: identifierType === "tailNumber" ? identifier : null, title: entry.title, flightDate: entry.flightDate }; }
 function cleanFlightNumber(value) { const compact = typeof value === "string" ? value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "") : ""; return /^[A-Z0-9]{3,12}$/.test(compact) ? compact : null; }
@@ -511,9 +515,10 @@ class D1Store {
   async putAircraft(icao24, aircraft) { await this.db.prepare("INSERT INTO aircraft_cache (icao24, type_name, manufacturer, owner_name, owner_country, fetched_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(icao24) DO UPDATE SET type_name=excluded.type_name, manufacturer=excluded.manufacturer, owner_name=excluded.owner_name, owner_country=excluded.owner_country, fetched_at=excluded.fetched_at").bind(icao24, aircraft.typeName, aircraft.manufacturer, aircraft.ownerName, aircraft.ownerCountry, aircraft.fetchedAt).run(); }
   async getTrackedFlights(deviceId, flightDate) { const query = flightDate ? "SELECT * FROM tracked_flights WHERE device_id=? AND flight_date=? ORDER BY created_at DESC" : "SELECT * FROM tracked_flights WHERE device_id=? ORDER BY flight_date ASC, created_at DESC"; const { results } = await this.db.prepare(query).bind(...(flightDate ? [deviceId, flightDate] : [deviceId])).all(); return results.map(trackedFlightRow); }
   async addTrackedFlight(entry) { await this.db.prepare("INSERT INTO tracked_flights (id, device_id, flight_number, identifier_type, status_identifier, title, flight_date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(entry.id, entry.deviceId, entry.flightNumber, entry.identifierType, entry.statusIdentifier, entry.title, entry.flightDate, entry.createdAt).run(); }
-  async deleteTrackedFlight(deviceId, id) { await this.db.prepare("DELETE FROM tracked_flights WHERE id=? AND device_id=?").bind(id, deviceId).run(); }
+  async deleteTrackedFlight(deviceId, id) { const result = await this.db.prepare("DELETE FROM tracked_flights WHERE id=? AND device_id=?").bind(id, deviceId).run(); return result.meta.changes > 0; }
   async getFlightStatus(id) { const r = await this.db.prepare("SELECT payload_json, fetched_at FROM flight_status_cache WHERE tracked_flight_id=?").bind(id).first(); return r && { payload: JSON.parse(r.payload_json), fetchedAt: r.fetched_at }; }
   async putFlightStatus(id, status) { await this.db.prepare("INSERT INTO flight_status_cache (tracked_flight_id, payload_json, fetched_at) VALUES (?, ?, ?) ON CONFLICT(tracked_flight_id) DO UPDATE SET payload_json=excluded.payload_json, fetched_at=excluded.fetched_at").bind(id, JSON.stringify(status.payload), status.fetchedAt).run(); }
+  async deleteFlightStatus(id) { await this.db.prepare("DELETE FROM flight_status_cache WHERE tracked_flight_id=?").bind(id).run(); }
   async takeProviderQuota(provider, month, limit) { const existing = await this.db.prepare("SELECT requests FROM provider_usage WHERE provider=? AND usage_month=?").bind(provider, month).first(); if (existing && existing.requests >= limit) return false; await this.db.prepare("INSERT INTO provider_usage (provider, usage_month, requests) VALUES (?, ?, 1) ON CONFLICT(provider, usage_month) DO UPDATE SET requests=requests + 1").bind(provider, month).run(); return true; }
 }
 
