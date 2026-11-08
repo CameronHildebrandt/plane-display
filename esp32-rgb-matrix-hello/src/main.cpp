@@ -1302,12 +1302,107 @@ void drawAircraftFallbackSprite(const char* aircraftType, int16_t x, int16_t y, 
   drawAircraftSprite(aircraftSpriteForType(aircraftType), x, y, color);
 }
 
+// Fallback badges deliberately stay top-down. The no-planes animation is
+// different: it travels left-to-right, so rotate each top-down silhouette
+// clockwise and put its nose in the direction of travel.
+void drawNoPlanesSpritePixel(int16_t x, int16_t y, uint8_t sourceX, uint8_t sourceY,
+                             uint16_t color) {
+  matrix.drawPixel(x + 32 - sourceY, y + sourceX, color);
+}
+
+void drawNoPlanesSpriteRect(int16_t x, int16_t y, uint8_t sourceX, uint8_t sourceY,
+                            uint8_t width, uint8_t height, uint16_t color) {
+  for (uint8_t row = 0; row < height; ++row) {
+    for (uint8_t column = 0; column < width; ++column) {
+      drawNoPlanesSpritePixel(x, y, sourceX + column, sourceY + row, color);
+    }
+  }
+}
+
+void drawNoPlanesFuselage(int16_t x, int16_t y, uint8_t start, uint8_t end,
+                          uint8_t bodyHalf, uint16_t color) {
+  for (uint8_t row = start; row <= end; ++row) {
+    uint8_t half = bodyHalf;
+    if (row <= start + 1 || row >= end - 1) half = 0;
+    else if (row == start + 2 || row == end - 2) half = min<uint8_t>(1, bodyHalf);
+    drawNoPlanesSpriteRect(x, y, 16 - half, row, half * 2 + 1, 1, color);
+  }
+}
+
+void drawNoPlanesAircraftSprite(AircraftSprite sprite, int16_t x, int16_t y, uint16_t color) {
+  // kPlaneSprite's native orientation already points right.
+  if (sprite == AircraftSprite::Generic747) {
+    drawPlaneSprite(x, y, color);
+    return;
+  }
+  if (sprite == AircraftSprite::Helicopter) {
+    drawNoPlanesFuselage(x, y, 7, 25, 2, color);
+    drawNoPlanesSpriteRect(x, y, 2, 10, 29, 1, color);
+    drawNoPlanesSpriteRect(x, y, 15, 7, 3, 19, color);
+    drawNoPlanesSpriteRect(x, y, 15, 25, 3, 6, color);
+    drawNoPlanesSpriteRect(x, y, 11, 30, 11, 1, color);
+    drawNoPlanesSpritePixel(x, y, 16, 31, color);
+    return;
+  }
+  if (sprite == AircraftSprite::LightProp) {
+    drawNoPlanesSpriteRect(x, y, 9, 2, 15, 1, color);
+    drawNoPlanesFuselage(x, y, 3, 29, 1, color);
+    for (uint8_t row = 12; row < 18; ++row) {
+      const uint8_t span = 4 + (row - 12) * 2;
+      drawNoPlanesSpriteRect(x, y, 16 - span, row, span * 2 + 1, 1, color);
+    }
+    drawNoPlanesSpriteRect(x, y, 10, 27, 13, 2, color);
+    return;
+  }
+  if (sprite == AircraftSprite::Turboprop) {
+    drawNoPlanesFuselage(x, y, 2, 30, 2, color);
+    for (uint8_t row = 11; row < 17; ++row) {
+      const uint8_t span = 8 + (row - 11) * 2;
+      drawNoPlanesSpriteRect(x, y, 16 - span, row, span * 2 + 1, 1, color);
+    }
+    drawNoPlanesSpriteRect(x, y, 3, 9, 1, 10, color);
+    drawNoPlanesSpriteRect(x, y, 29, 9, 1, 10, color);
+    drawNoPlanesSpriteRect(x, y, 9, 27, 15, 2, color);
+    return;
+  }
+  if (sprite == AircraftSprite::RegionalJet || sprite == AircraftSprite::BusinessJet) {
+    drawNoPlanesFuselage(x, y, 2, 30, 2, color);
+    for (uint8_t row = 12; row < 18; ++row) {
+      const uint8_t span = 6 + (row - 12) * 2;
+      drawNoPlanesSpriteRect(x, y, 16 - span, row, span * 2 + 1, 1, color);
+    }
+    drawNoPlanesSpriteRect(x, y, 10, 22, 3, 5, color);
+    drawNoPlanesSpriteRect(x, y, 20, 22, 3, 5, color);
+    drawNoPlanesSpriteRect(x, y, 8, 27, 17, 2, color);
+    return;
+  }
+  const bool widebody = sprite == AircraftSprite::WidebodyFourEngine ||
+                        sprite == AircraftSprite::WidebodyTwinJet;
+  drawNoPlanesFuselage(x, y, 1, 31, widebody ? 3 : 2, color);
+  for (uint8_t row = 10; row < 19; ++row) {
+    const uint8_t span = (widebody ? 8 : 7) + (row - 10) * 2;
+    const uint8_t cappedSpan = min<uint8_t>(15, span);
+    drawNoPlanesSpriteRect(x, y, 16 - cappedSpan, row, cappedSpan * 2 + 1, 1, color);
+  }
+  if (sprite == AircraftSprite::WidebodyFourEngine) {
+    drawNoPlanesSpriteRect(x, y, 4, 18, 3, 4, color);
+    drawNoPlanesSpriteRect(x, y, 10, 19, 3, 4, color);
+    drawNoPlanesSpriteRect(x, y, 20, 19, 3, 4, color);
+    drawNoPlanesSpriteRect(x, y, 26, 18, 3, 4, color);
+    drawNoPlanesSpriteRect(x, y, 8, 28, 17, 2, color);
+  } else {
+    drawNoPlanesSpriteRect(x, y, 7, 18, 3, 4, color);
+    drawNoPlanesSpriteRect(x, y, 23, 18, 3, 4, color);
+    drawNoPlanesSpriteRect(x, y, 10, 28, 13, 2, color);
+  }
+}
+
 void drawNoPlanesFrame() {
   const uint16_t black = matrix.color565(0, 0, 0);
   const uint16_t white = matrix.color565(255, 255, 255);
   const uint16_t dimWhite = matrix.color565(100, 100, 100);
   matrix.fillScreen(black);
-  drawAircraftSprite(static_cast<AircraftSprite>(noPlanesAircraftSprite), noPlanesSpriteX, 12, white);
+  drawNoPlanesAircraftSprite(static_cast<AircraftSprite>(noPlanesAircraftSprite), noPlanesSpriteX, 12, white);
   drawMinecraftCentered("no planes", 54, dimWhite);
 }
 
@@ -1336,8 +1431,8 @@ void advanceNoPlanesAnimation() {
     if (nextSprite >= noPlanesAircraftSprite) ++nextSprite;
     noPlanesAircraftSprite = nextSprite;
   }
-  drawAircraftSprite(static_cast<AircraftSprite>(noPlanesAircraftSprite), noPlanesSpriteX, 12,
-                     matrix.color565(255, 255, 255));
+  drawNoPlanesAircraftSprite(static_cast<AircraftSprite>(noPlanesAircraftSprite), noPlanesSpriteX, 12,
+                              matrix.color565(255, 255, 255));
 }
 
 void showNoPlanesAfterDataFailure() {
