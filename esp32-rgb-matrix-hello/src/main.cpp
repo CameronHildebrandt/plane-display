@@ -219,7 +219,10 @@ int16_t telemetryValueWidth(const char* value, TelemetryUnit unit) {
 }
 
 int16_t telemetryLineWidth(const char* value, TelemetryUnit unit, bool directionArrow) {
-  return telemetryValueWidth(value, unit) + (directionArrow ? 4 : 0);
+  // The vertical direction marker is the six-wide route arrow rotated 90°.
+  // After its one-pixel gap, its five-pixel horizontal footprint needs five
+  // extra marquee pixels.
+  return telemetryValueWidth(value, unit) + (directionArrow ? 5 : 0);
 }
 
 int16_t telemetryMarqueeOffset(int16_t contentWidth, int16_t slotWidth) {
@@ -397,6 +400,21 @@ void drawCityArrow(int16_t x, int16_t y, int16_t left, int16_t right, uint16_t c
       if ((kCityArrowSprite[row] & (1 << (5 - column))) && pixelX >= left && pixelX < right) {
         matrix.drawPixel(pixelX, y + row + 1, color);
       }
+    }
+  }
+}
+
+// Reuse the route arrow for vertical speed rather than introducing a second
+// visual language. The regular arrow points right; a counter-clockwise turn
+// points up (climb), while a clockwise turn points down (descent).
+void drawVerticalRouteArrow(int16_t x, int16_t y, bool climbing, uint16_t color,
+                            int16_t left, int16_t right) {
+  for (uint8_t sourceRow = 0; sourceRow < 5; ++sourceRow) {
+    for (uint8_t sourceColumn = 0; sourceColumn < 6; ++sourceColumn) {
+      if (!(kCityArrowSprite[sourceRow] & (1 << (5 - sourceColumn)))) continue;
+      const int16_t pixelX = x + (climbing ? sourceRow : 4 - sourceRow);
+      const int16_t pixelY = y + (climbing ? 5 - sourceColumn : sourceColumn);
+      if (pixelX >= left && pixelX < right) matrix.drawPixel(pixelX, pixelY, color);
     }
   }
 }
@@ -1031,10 +1049,7 @@ void refreshActiveMarquees(const Route& route) {
       const int16_t offset = telemetryMarqueeOffset(telemetryLineWidth(line.value, line.unit, line.arrow), 32);
       const int16_t end = drawTelemetryValue(line.value, line.unit, 95 - offset, line.y, telemetry, 95, 127);
       if (line.arrow) {
-        const int16_t arrowX = end + 1;
-        for (uint8_t row = 0; row < 5; ++row) drawTelemetryPixel(arrowX, line.y + 1 + row, telemetry, 95, 127);
-        drawTelemetryPixel(arrowX - 1, line.y + (line.climbing ? 1 : 5), telemetry, 95, 127);
-        drawTelemetryPixel(arrowX + 1, line.y + (line.climbing ? 1 : 5), telemetry, 95, 127);
+        drawVerticalRouteArrow(end + 1, line.y, line.climbing, telemetry, 95, 127);
       }
     }
   }
@@ -1046,10 +1061,7 @@ int16_t drawTelemetryLine(const char* value, TelemetryUnit unit, bool directionA
   const int16_t offset = telemetryMarqueeOffset(telemetryLineWidth(value, unit, directionArrow), width);
   const int16_t end = drawTelemetryValue(value, unit, left - offset, y, color, left, right);
   if (directionArrow) {
-    const int16_t arrowX = end + 1;
-    for (uint8_t row = 0; row < 5; ++row) drawTelemetryPixel(arrowX, y + 1 + row, color, left, right);
-    drawTelemetryPixel(arrowX - 1, y + (climbing ? 1 : 5), color, left, right);
-    drawTelemetryPixel(arrowX + 1, y + (climbing ? 1 : 5), color, left, right);
+    drawVerticalRouteArrow(end + 1, y, climbing, color, left, right);
   }
   return end;
 }
@@ -1470,17 +1482,18 @@ void drawAnimatedTelemetryAdornment(const char* value, TelemetryUnit unit, bool 
     x += telemetryTextAdvance(telemetryUnitText(unit));
   }
   if (!directionArrow) return;
+  // Keep the route-arrow motif attached to the same dropped baseline as the
+  // unit, clipping it to the line while the transition is in flight.
   const int16_t arrowX = x + 1;
-  for (uint8_t row = 0; row < 5; ++row) {
-    const int16_t pixelY = y + 1 + row + offset;
-    if (arrowX >= left && arrowX < right && pixelY >= y && pixelY < y + 7) {
-      matrix.drawPixel(arrowX, pixelY, color);
+  for (uint8_t sourceRow = 0; sourceRow < 5; ++sourceRow) {
+    for (uint8_t sourceColumn = 0; sourceColumn < 6; ++sourceColumn) {
+      if (!(kCityArrowSprite[sourceRow] & (1 << (5 - sourceColumn)))) continue;
+      const int16_t pixelX = arrowX + (climbing ? sourceRow : 4 - sourceRow);
+      const int16_t pixelY = y + offset + (climbing ? 5 - sourceColumn : sourceColumn);
+      if (pixelX >= left && pixelX < right && pixelY >= y && pixelY < y + 7) {
+        matrix.drawPixel(pixelX, pixelY, color);
+      }
     }
-  }
-  const int16_t pointY = y + (climbing ? 1 : 5) + offset;
-  if (pointY >= y && pointY < y + 7) {
-    if (arrowX - 1 >= left && arrowX - 1 < right) matrix.drawPixel(arrowX - 1, pointY, color);
-    if (arrowX + 1 >= left && arrowX + 1 < right) matrix.drawPixel(arrowX + 1, pointY, color);
   }
 }
 
