@@ -244,7 +244,8 @@ async function load() {
   $("#deviceName").textContent = device.name;
   for (const name of ["name", "latitude", "longitude", "radiusKm"]) form.elements[name].value = device[name];
   form.elements.includeGrounded.checked = device.includeGrounded;
-  form.elements.debugMode.checked = device.debugMode;
+  const selectedDebugPack = [...form.elements.debugPack].find(input => input.value === (device.debugPack || ""));
+  if (selectedDebugPack) selectedDebugPack.checked = true;
   trackedFlightForm.elements.flightDate.min = new Date().toISOString().slice(0, 10);
   if (!trackedFlightForm.elements.flightDate.value) trackedFlightForm.elements.flightDate.value = new Date().toISOString().slice(0, 10);
   showRadius();
@@ -307,7 +308,6 @@ form.addEventListener("submit", async event => {
   event.preventDefault();
   const data = Object.fromEntries(new FormData(form));
   data.includeGrounded = form.elements.includeGrounded.checked;
-  data.debugMode = form.elements.debugMode.checked;
   for (const name of ["latitude", "longitude", "radiusKm"]) data[name] = Number(data[name]);
   const response = await fetch("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
   const result = await response.json();

@@ -33,14 +33,14 @@ test("device fetches cached flight-data contract", async () => {
   assert.equal(body.flights[0].flightProgressEstimated, true);
 });
 
-test("debug mode returns a full stable brand-test roster without calling a provider", async () => {
+test("a debug pack returns a full stable brand-test roster without calling a provider", async () => {
   const { store, key } = await setup();
-  await store.updateSettings("test", { name: "Test display", latitude: 53.5, longitude: -113.5, radiusKm: 100, includeGrounded: false, debugMode: true });
+  await store.updateSettings("test", { name: "Test display", latitude: 53.5, longitude: -113.5, radiusKm: 100, includeGrounded: false, debugMode: "canadian-scheduled" });
   const response = await handle(request("/flightdata", { headers: { "X-Device-Key": key } }), store, { fetch: async () => { throw new Error("debug mode must not fetch live data"); } });
   const body = await response.json();
-  assert.equal(body.source, "debug");
+  assert.equal(body.source, "debug:canadian-scheduled");
   assert.equal(body.flights.length, 20);
-  assert.deepEqual(body.flights.slice(0, 10).map(flight => flight.flightNumber), ["WS1", "ACA2", "JZA3", "POE4", "CWA5", "CNK6", "STAR7", "FLE8", "KLM9", "WEN10"]);
+  assert.deepEqual(body.flights.slice(0, 10).map(flight => flight.flightNumber), ["WJA1", "ACA2", "JZA3", "ROU4", "WEN5", "FLE6", "POE7", "TSC8", "AKT9", "CAV10"]);
   assert.equal(new Set(body.flights.map(flight => flight.icao24)).size, 20);
 });
 
@@ -115,10 +115,10 @@ test("single-use QR pairing creates a browser session that can change preference
   const selectedArea = await handle(request("/api/settings/flights?latitude=53.5&longitude=-113.5&radiusKm=25", { headers: { Cookie: cookie } }), store, selectedAreaSource);
   assert.equal(selectedArea.status, 200);
   assert.equal((await selectedArea.json()).flights.length, 1);
-  const changed = await handle(request("/api/settings", { method: "PUT", headers: { Cookie: cookie, "Content-Type": "application/json" }, body: JSON.stringify({ name: "Kitchen sky", latitude: 51.05, longitude: -114.07, radiusKm: 50, includeGrounded: true, debugMode: true }) }), store);
+  const changed = await handle(request("/api/settings", { method: "PUT", headers: { Cookie: cookie, "Content-Type": "application/json" }, body: JSON.stringify({ name: "Kitchen sky", latitude: 51.05, longitude: -114.07, radiusKm: 50, includeGrounded: true, debugPack: "canadian-scheduled" }) }), store);
   assert.equal(changed.status, 200);
   const settings = await handle(request("/api/settings", { headers: { Cookie: cookie } }), store);
-  assert.deepEqual(await settings.json(), { id: "test", name: "Kitchen sky", latitude: 51.05, longitude: -114.07, radiusKm: 50, includeGrounded: true, debugMode: true, rotationRequested: false });
+  assert.deepEqual(await settings.json(), { id: "test", name: "Kitchen sky", latitude: 51.05, longitude: -114.07, radiusKm: 50, includeGrounded: true, debugPack: "canadian-scheduled", rotationRequested: false });
   await store.putSnapshot("test", { flights: [] }, Math.floor(Date.now() / 1000));
   const added = await handle(request("/api/settings/tracked-flights", { method: "POST", headers: { Cookie: cookie, "Content-Type": "application/json" }, body: JSON.stringify({ title: "A visit", flightNumber: "wja 410", flightDate: "2030-01-02" }) }), store);
   assert.equal(added.status, 201);
