@@ -1037,8 +1037,8 @@ void refreshActiveMarquees(const Route& route) {
 
   const uint16_t telemetry = matrix.color565(85, 85, 85);
   const struct { const char* value; TelemetryUnit unit; bool arrow; bool climbing; bool level; int16_t y; } lines[] = {
-      {altitude, route.altFt >= 0 ? TelemetryUnit::Feet : TelemetryUnit::None, false, false, false, 4},
-      {verticalSpeed, route.verticalSpeedFpm > -99999 ? TelemetryUnit::FeetPerMinute : TelemetryUnit::None, route.verticalSpeedFpm > -99999, route.verticalSpeedFpm > 0, route.verticalSpeedFpm == 0, 16},
+      {altitude, TelemetryUnit::None, false, false, false, 4},
+      {verticalSpeed, TelemetryUnit::None, route.verticalSpeedFpm > -99999, route.verticalSpeedFpm > 0, route.verticalSpeedFpm == 0, 16},
       {speed, route.speedKt >= 0 ? TelemetryUnit::Knots : TelemetryUnit::None, false, false, false, 28},
       {heading, route.headingDeg >= 0 ? TelemetryUnit::Degrees : TelemetryUnit::None, false, false, false, 40},
       {distance, route.distanceKm >= 0.0f ? TelemetryUnit::Kilometres : TelemetryUnit::None, false, false, false, 52},
@@ -1089,8 +1089,8 @@ void drawTelemetryValues(const Route& route) {
   if (route.distanceKm >= 0.0f) snprintf(distance, sizeof(distance), "%.1f", route.distanceKm);
   else strlcpy(distance, "--", sizeof(distance));
 
-  drawTelemetryLine(altitude, route.altFt >= 0 ? TelemetryUnit::Feet : TelemetryUnit::None, false, false, false, 4, text);
-  drawTelemetryLine(verticalSpeed, route.verticalSpeedFpm > -99999 ? TelemetryUnit::FeetPerMinute : TelemetryUnit::None,
+  drawTelemetryLine(altitude, TelemetryUnit::None, false, false, false, 4, text);
+  drawTelemetryLine(verticalSpeed, TelemetryUnit::None,
                     route.verticalSpeedFpm > -99999, route.verticalSpeedFpm > 0, route.verticalSpeedFpm == 0, 16, text);
   drawTelemetryLine(speed, route.speedKt >= 0 ? TelemetryUnit::Knots : TelemetryUnit::None, false, false, false, 28, text);
   drawTelemetryLine(heading, route.headingDeg >= 0 ? TelemetryUnit::Degrees : TelemetryUnit::None, false, false, false, 40, text);
@@ -1723,10 +1723,10 @@ void drawAnimatedRouteText(const Route& route, unsigned long phase, bool enterin
   drawAnimatedTelemetryNumber(speed, 95, 28, 95, 127, tertiaryWhite, 7, phase, entering);
   drawAnimatedTelemetryNumber(heading, 95, 40, 95, 127, tertiaryWhite, 8, phase, entering);
   drawAnimatedTelemetryNumber(distance, 95, 52, 95, 127, tertiaryWhite, 10, phase, entering);
-  drawAnimatedTelemetryAdornment(altitude, route.altFt >= 0 ? TelemetryUnit::Feet : TelemetryUnit::None,
+  drawAnimatedTelemetryAdornment(altitude, TelemetryUnit::None,
                                  false, false, false, 4, 5, phase, entering, tertiaryWhite);
   drawAnimatedTelemetryAdornment(verticalSpeed,
-                                 route.verticalSpeedFpm > -99999 ? TelemetryUnit::FeetPerMinute : TelemetryUnit::None,
+                                 TelemetryUnit::None,
                                  route.verticalSpeedFpm > -99999, route.verticalSpeedFpm > 0, route.verticalSpeedFpm == 0,
                                  16, 6, phase, entering, tertiaryWhite);
   drawAnimatedTelemetryAdornment(speed, route.speedKt >= 0 ? TelemetryUnit::Knots : TelemetryUnit::None,
