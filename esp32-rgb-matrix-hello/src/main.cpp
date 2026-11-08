@@ -117,6 +117,7 @@ bool showingNoPlanes = false;
 bool hideUnknownRoutes = false;
 
 struct Route {
+  char identity[16];
   char origin[8];
   char destination[8];
   char flightNumber[12];
@@ -129,9 +130,12 @@ struct Route {
   char aircraftType[12];
   float distanceKm;
   float flightProgressPercent;
+  bool pendingRemoval;
 };
 
 Route routes[kMaxRoutableFlights];
+Route refreshedRoutes[kMaxRoutableFlights];
+Route mergedRoutes[kMaxRoutableFlights];
 uint8_t routeCount = 0;
 uint8_t routeIndex = 0;
 
@@ -1497,6 +1501,22 @@ void updateLetterTransition() {
   const unsigned long elapsed = millis() - letterTransitionStartMillis;
   if (elapsed >= kLetterTransitionMillis) {
     letterTransitionActive = false;
+    // The departing card may have left the live radius during its 20-second
+    // scene. Remove it only after its drop-out and the incoming card's
+    // drop-in have both completed, then correct the target index after the
+    // compacting shift.
+    if (routeCount > 0 && routes[routeIndex].pendingRemoval) {
+      const uint8_t removedIndex = routeIndex;
+      for (uint8_t index = removedIndex; index + 1 < routeCount; ++index) {
+        routes[index] = routes[index + 1];
+      }
+      --routeCount;
+      if (letterTransitionRouteIndex > removedIndex) --letterTransitionRouteIndex;
+      if (routeCount == 0) {
+        drawNoPlanes();
+        return;
+      }
+    }
     routeIndex = letterTransitionRouteIndex;
     routeProgressAnimationActive = false;
     rotationIndicatorResetActive = false;
@@ -1615,6 +1635,69 @@ bool fetchAndDrawPairingQr() {
   return true;
 }
 
+bool routesHaveSameIdentity(const Route& first, const Route& second) {
+  return first.identity[0] && second.identity[0] && strcmp(first.identity, second.identity) == 0;
+}
+
+// A poll updates the queue without restarting it. Existing aircraft retain
+// their place, aircraft that disappeared are collapsed out, and new aircraft
+// arrive at the tail. The on-screen card is deliberately held as a snapshot
+// until it has finished its 20-second scene and its exit animation.
+void mergeRefreshedRouteQueue(uint8_t refreshedCount) {
+  if (routeCount == 0) {
+    memcpy(routes, refreshedRoutes, sizeof(Route) * refreshedCount);
+    routeCount = refreshedCount;
+    routeIndex = 0;
+    routeProgressAnimationActive = false;
+    rotationIndicatorResetActive = false;
+    rotationPipTransitionActive = false;
+    routeProgressTo = routes[routeIndex].flightProgressPercent;
+    nextFlightRotationMillis = millis() + kFlightRotationMillis;
+    drawCurrentRoute();
+    return;
+  }
+
+  bool consumed[kMaxRoutableFlights] = {};
+  uint8_t mergedCount = 0;
+  uint8_t activeMergedIndex = 0;
+  for (uint8_t existingIndex = 0; existingIndex < routeCount; ++existingIndex) {
+    int8_t refreshedIndex = -1;
+    for (uint8_t candidate = 0; candidate < refreshedCount; ++candidate) {
+      if (!consumed[candidate] && routesHaveSameIdentity(routes[existingIndex], refreshedRoutes[candidate])) {
+        refreshedIndex = candidate;
+        break;
+      }
+    }
+
+    if (existingIndex == routeIndex) {
+      // Keep the exact current snapshot while it is visible. If it disappeared
+      // from the feed, mark it for removal at the end of its transition.
+      mergedRoutes[mergedCount] = routes[existingIndex];
+      mergedRoutes[mergedCount].pendingRemoval = refreshedIndex < 0;
+      activeMergedIndex = mergedCount++;
+      if (refreshedIndex >= 0) consumed[refreshedIndex] = true;
+    } else if (refreshedIndex >= 0) {
+      mergedRoutes[mergedCount] = refreshedRoutes[refreshedIndex];
+      mergedRoutes[mergedCount].pendingRemoval = false;
+      consumed[refreshedIndex] = true;
+      ++mergedCount;
+    }
+  }
+  for (uint8_t refreshedIndex = 0; refreshedIndex < refreshedCount && mergedCount < kMaxRoutableFlights;
+       ++refreshedIndex) {
+    if (!consumed[refreshedIndex]) {
+      mergedRoutes[mergedCount] = refreshedRoutes[refreshedIndex];
+      mergedRoutes[mergedCount].pendingRemoval = false;
+      ++mergedCount;
+    }
+  }
+
+  memcpy(routes, mergedRoutes, sizeof(Route) * mergedCount);
+  routeCount = mergedCount;
+  routeIndex = activeMergedIndex;
+  Serial.printf("Queue refreshed: %u aircraft, active index %u\n", routeCount, routeIndex);
+}
+
 void fetchAndDrawFirstFlight() {
   if (strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(LED_PLANE_DEVICE_KEY) == 0 ||
       WiFi.status() != WL_CONNECTED) {
@@ -1665,41 +1748,34 @@ void fetchAndDrawFirstFlight() {
     // identity, even when the provider has not resolved its airports yet.
     if ((candidateOrigin[0] || candidateDestination[0] || candidateFlightNumber[0] ||
          candidateRegistration[0] || candidateIcao24[0]) && newRouteCount < kMaxRoutableFlights) {
-      strlcpy(routes[newRouteCount].origin, candidateOrigin[0] ? candidateOrigin : "---",
-              sizeof(routes[newRouteCount].origin));
-      strlcpy(routes[newRouteCount].destination, candidateDestination[0] ? candidateDestination : "---",
-              sizeof(routes[newRouteCount].destination));
-      strlcpy(routes[newRouteCount].flightNumber, candidateFlightNumber,
-              sizeof(routes[newRouteCount].flightNumber));
-      strlcpy(routes[newRouteCount].operatorCode, candidateOperator,
-              sizeof(routes[newRouteCount].operatorCode));
-      strlcpy(routes[newRouteCount].registration, candidateRegistration,
-              sizeof(routes[newRouteCount].registration));
-      routes[newRouteCount].altFt = flight["altFt"] | -1;
-      routes[newRouteCount].speedKt = flight["speedKt"] | -1;
-      routes[newRouteCount].verticalSpeedFpm = flight["verticalSpeedFpm"] | -100000;
-      routes[newRouteCount].headingDeg = flight["headingDeg"] | -1;
-      strlcpy(routes[newRouteCount].aircraftType, flight["aircraftType"] | "",
-              sizeof(routes[newRouteCount].aircraftType));
-      routes[newRouteCount].distanceKm = flight["distanceKm"] | -1.0f;
-      routes[newRouteCount].flightProgressPercent = flight["flightProgressPercent"] | -1.0f;
+      Route& route = refreshedRoutes[newRouteCount];
+      if (candidateIcao24[0]) strlcpy(route.identity, candidateIcao24, sizeof(route.identity));
+      else if (candidateRegistration[0]) strlcpy(route.identity, candidateRegistration, sizeof(route.identity));
+      else if (candidateFlightNumber[0]) strlcpy(route.identity, candidateFlightNumber, sizeof(route.identity));
+      else snprintf(route.identity, sizeof(route.identity), "%s>%s", candidateOrigin, candidateDestination);
+      strlcpy(route.origin, candidateOrigin[0] ? candidateOrigin : "---", sizeof(route.origin));
+      strlcpy(route.destination, candidateDestination[0] ? candidateDestination : "---", sizeof(route.destination));
+      strlcpy(route.flightNumber, candidateFlightNumber, sizeof(route.flightNumber));
+      strlcpy(route.operatorCode, candidateOperator, sizeof(route.operatorCode));
+      strlcpy(route.registration, candidateRegistration, sizeof(route.registration));
+      route.altFt = flight["altFt"] | -1;
+      route.speedKt = flight["speedKt"] | -1;
+      route.verticalSpeedFpm = flight["verticalSpeedFpm"] | -100000;
+      route.headingDeg = flight["headingDeg"] | -1;
+      strlcpy(route.aircraftType, flight["aircraftType"] | "", sizeof(route.aircraftType));
+      route.distanceKm = flight["distanceKm"] | -1.0f;
+      route.flightProgressPercent = flight["flightProgressPercent"] | -1.0f;
+      route.pendingRemoval = false;
       ++newRouteCount;
     }
   }
-  if (newRouteCount == 0) {
+  if (newRouteCount == 0 && routeCount == 0) {
     routeCount = 0;
     drawNoPlanes();
     Serial.println("No routable flights in the current response.");
   } else {
-    routeCount = newRouteCount;
-    routeIndex = 0;
-    routeProgressAnimationActive = false;
-    rotationIndicatorResetActive = false;
-    rotationPipTransitionActive = false;
-    routeProgressTo = routes[routeIndex].flightProgressPercent;
-    nextFlightRotationMillis = millis() + kFlightRotationMillis;
-    drawCurrentRoute();
-    Serial.printf("Displaying %u routable flights\n", routeCount);
+    mergeRefreshedRouteQueue(newRouteCount);
+    Serial.printf("Queued %u routable flights\n", routeCount);
   }
 }
 
@@ -1916,6 +1992,14 @@ void loop() {
   updateServer.handleClient();
   handleBootButton();
   const bool transitionWasActive = letterTransitionActive;
+  // If the only card disappeared during its scene, honour the full scene
+  // duration before falling back to the idle animation.
+  if (!showingPairingQr && routeCount == 1 && routes[0].pendingRemoval &&
+      !letterTransitionActive && millis() >= nextFlightRotationMillis) {
+    routeCount = 0;
+    routeIndex = 0;
+    drawNoPlanes();
+  }
   if (!showingPairingQr && routeCount > 1 && !letterTransitionActive &&
       millis() >= nextFlightRotationMillis) {
     letterTransitionRouteIndex = (routeIndex + 1) % routeCount;
