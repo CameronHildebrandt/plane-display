@@ -17,6 +17,7 @@
 #include "air_canada_jazz_logo_32.h"
 #include "flair_logo_32.h"
 #include "canwest_air_logo_32.h"
+#include "central_mountain_air_logo_32.h"
 #include "porter_logo_32.h"
 #include "sunwest_logo_32.h"
 #include "stars_logo_32.h"
@@ -678,6 +679,10 @@ bool isCanWestFlight(const Route& route) {
   return strncmp(route.operatorCode, "CWA", 3) == 0 || strncmp(route.flightNumber, "CWA", 3) == 0;
 }
 
+bool isCentralMountainAirFlight(const Route& route) {
+  return strncmp(route.operatorCode, "GLR", 3) == 0 || strncmp(route.flightNumber, "GLR", 3) == 0;
+}
+
 bool isPorterFlight(const Route& route) {
   return strncmp(route.operatorCode, "POE", 3) == 0 || strncmp(route.flightNumber, "POE", 3) == 0;
 }
@@ -713,6 +718,7 @@ const char* airlineName(const Route& route) {
   if (isFlairFlight(route)) return "Flair Airlines";
   if (isPorterFlight(route)) return "Porter";
   if (isCanWestFlight(route)) return "CanWest Air";
+  if (isCentralMountainAirFlight(route)) return "Central Mountain Air";
   if (isSunwestFlight(route)) return "Sunwest Aviation";
   if (isStarsFlight(route)) return "Stars Air Ambulance";
   if (isKlmFlight(route)) return "KLM";
@@ -727,6 +733,8 @@ void operatorBrandRgb(const Route& route, uint8_t& red, uint8_t& green, uint8_t&
     red = kFlairBrandColor[0]; green = kFlairBrandColor[1]; blue = kFlairBrandColor[2];
   } else if (isCanWestFlight(route)) {
     red = kCanWestBrandColor[0]; green = kCanWestBrandColor[1]; blue = kCanWestBrandColor[2];
+  } else if (isCentralMountainAirFlight(route)) {
+    red = kCentralMountainAirBrandColor[0]; green = kCentralMountainAirBrandColor[1]; blue = kCentralMountainAirBrandColor[2];
   } else if (isPorterFlight(route)) {
     red = kPorterBrandColor[0]; green = kPorterBrandColor[1]; blue = kPorterBrandColor[2];
   } else if (isSunwestFlight(route)) {
@@ -794,6 +802,18 @@ void drawCanWestLogo(int16_t x, int16_t y) {
       const uint32_t bit = 1UL << (31 - column);
       if (orangePixels & bit) matrix.drawPixel(x + column, y + row, orange);
       else if (bluePixels & bit) matrix.drawPixel(x + column, y + row, blue);
+    }
+  }
+}
+
+void drawCentralMountainAirLogo(int16_t x, int16_t y) {
+  const uint16_t red = visibleColor(kCentralMountainAirBrandColor[0],
+                                    kCentralMountainAirBrandColor[1],
+                                    kCentralMountainAirBrandColor[2]);
+  for (uint8_t row = 0; row < 32; ++row) {
+    const uint32_t pixels = pgm_read_dword(&kCentralMountainAirLogoMask[row]);
+    for (uint8_t column = 0; column < 32; ++column) {
+      if (pixels & (1UL << (31 - column))) matrix.drawPixel(x + column, y + row, red);
     }
   }
 }
@@ -874,6 +894,7 @@ void drawOperatorLogo(const Route& route, int16_t x, int16_t y) {
   else if (isAirCanadaFlight(route)) drawAirCanadaLogo(x, y);
   else if (isFlairFlight(route)) drawFlairLogo(x, y);
   else if (isCanWestFlight(route)) drawCanWestLogo(x, y);
+  else if (isCentralMountainAirFlight(route)) drawCentralMountainAirLogo(x, y);
   else if (isPorterFlight(route)) drawPorterLogo(x, y);
   else if (isSunwestFlight(route)) drawSunwestLogo(x, y);
   else if (isStarsFlight(route)) drawStarsLogo(x, y);
