@@ -226,10 +226,9 @@ int16_t telemetryValueWidth(const char* value, TelemetryUnit unit) {
 }
 
 int16_t telemetryLineWidth(const char* value, TelemetryUnit unit, bool directionArrow) {
-  // The vertical direction marker is the six-wide route arrow rotated 90°.
-  // After its one-pixel gap, its five-pixel horizontal footprint needs five
-  // extra marquee pixels.
-  return telemetryValueWidth(value, unit) + (directionArrow ? 5 : 0);
+  // The level-flight marker is the native six-wide route arrow; reserving its
+  // full width also prevents clipping when a climb/descent becomes level.
+  return telemetryValueWidth(value, unit) + (directionArrow ? 6 : 0);
 }
 
 int16_t telemetryMarqueeOffset(int16_t contentWidth, int16_t slotWidth) {
@@ -1063,7 +1062,7 @@ void refreshActiveMarquees(const Route& route) {
       const int16_t offset = telemetryMarqueeOffset(telemetryLineWidth(line.value, line.unit, line.arrow), 32);
       const int16_t end = drawTelemetryValue(line.value, line.unit, 95 - offset, line.y, telemetry, 95, 127);
       if (line.arrow) {
-        if (line.level) matrix.fillRect(end + 2, line.y + 3, 3, 1, telemetry);
+        if (line.level) drawCityArrow(end + 1, line.y, 95, 127, telemetry);
         else drawVerticalRouteArrow(end + 1, line.y, line.climbing, telemetry, 95, 127);
       }
     }
@@ -1076,7 +1075,7 @@ int16_t drawTelemetryLine(const char* value, TelemetryUnit unit, bool directionA
   const int16_t offset = telemetryMarqueeOffset(telemetryLineWidth(value, unit, directionArrow), width);
   const int16_t end = drawTelemetryValue(value, unit, left - offset, y, color, left, right);
   if (directionArrow) {
-    if (level) matrix.fillRect(end + 2, y + 3, 3, 1, color);
+    if (level) drawCityArrow(end + 1, y, left, right, color);
     else drawVerticalRouteArrow(end + 1, y, climbing, color, left, right);
   }
   return end;
@@ -1605,10 +1604,14 @@ void drawAnimatedTelemetryAdornment(const char* value, TelemetryUnit unit, bool 
   // unit, clipping it to the line while the transition is in flight.
   const int16_t arrowX = x + 1;
   if (level) {
-    const int16_t pixelY = y + 3 + offset;
-    if (pixelY >= y && pixelY < y + 7) {
-      for (uint8_t column = 1; column <= 3; ++column) {
-        if (arrowX + column >= left && arrowX + column < right) matrix.drawPixel(arrowX + column, pixelY, color);
+    for (uint8_t row = 0; row < 5; ++row) {
+      const int16_t pixelY = y + row + 1 + offset;
+      if (pixelY < y || pixelY >= y + 7) continue;
+      for (uint8_t column = 0; column < 6; ++column) {
+        if ((kCityArrowSprite[row] & (1 << (5 - column))) &&
+            arrowX + column >= left && arrowX + column < right) {
+          matrix.drawPixel(arrowX + column, pixelY, color);
+        }
       }
     }
     return;
