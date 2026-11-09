@@ -244,6 +244,8 @@ async function load() {
   $("#deviceName").textContent = device.name;
   for (const name of ["name", "latitude", "longitude", "radiusKm"]) form.elements[name].value = device[name];
   form.elements.includeGrounded.checked = device.includeGrounded;
+  const selectedDebugPack = [...form.elements.debugPack].find(input => input.value === (device.debugPack || ""));
+  if (selectedDebugPack) selectedDebugPack.checked = true;
   trackedFlightForm.elements.flightDate.min = new Date().toISOString().slice(0, 10);
   if (!trackedFlightForm.elements.flightDate.value) trackedFlightForm.elements.flightDate.value = new Date().toISOString().slice(0, 10);
   showRadius();
@@ -278,9 +280,18 @@ async function loadTrackedFlights() {
     remove.type = "button";
     remove.textContent = "Remove";
     remove.addEventListener("click", async () => {
-      const response = await fetch(`/api/settings/tracked-flights/${flight.id}`, { method: "DELETE" });
-      if (response.ok) { await loadTrackedFlights(); showToast("Flight removed."); }
-      else showToast("Couldn’t remove flight.", "error");
+      remove.disabled = true;
+      remove.textContent = "Removing…";
+      try {
+        const response = await fetch(`/api/settings/tracked-flights/${flight.id}`, { method: "DELETE" });
+        if (!response.ok) throw new Error("Removal failed");
+        await loadTrackedFlights();
+        showToast("Flight removed. Display updates within a minute.");
+      } catch {
+        remove.disabled = false;
+        remove.textContent = "Remove";
+        showToast("Couldn’t remove flight.", "error");
+      }
     });
     item.append(details, remove);
     list.append(item);

@@ -18,8 +18,9 @@ export class LocalStore {
   async putAircraft(icao24, aircraft) { this.aircraft.set(icao24, aircraft); }
   async getTrackedFlights(deviceId, flightDate) { return [...this.trackedFlights.values()].filter(entry => entry.deviceId === deviceId && (!flightDate || entry.flightDate === flightDate)).map(entry => ({ ...entry, identifier: entry.identifier || entry.flightNumber, identifierType: entry.identifierType || "flightNumber" })); }
   async addTrackedFlight(entry) { this.trackedFlights.set(entry.id, entry); }
-  async deleteTrackedFlight(deviceId, id) { const entry = this.trackedFlights.get(id); if (entry?.deviceId === deviceId) this.trackedFlights.delete(id); }
+  async deleteTrackedFlight(deviceId, id) { const entry = this.trackedFlights.get(id); if (entry?.deviceId !== deviceId) return false; this.trackedFlights.delete(id); return true; }
   async getFlightStatus(id) { return this.flightStatuses.get(id) || null; }
   async putFlightStatus(id, status) { this.flightStatuses.set(id, status); }
+  async deleteFlightStatus(id) { this.flightStatuses.delete(id); }
   async takeProviderQuota(provider, month, limit) { const key = `${provider}:${month}`, used = this.providerUsage.get(key) || 0; if (used >= limit) return false; this.providerUsage.set(key, used + 1); return true; }
 }

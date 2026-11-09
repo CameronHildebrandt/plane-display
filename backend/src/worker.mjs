@@ -75,6 +75,11 @@ function mapSearchArea(url) {
 
 async function flightPayload(device, store, env) {
   const now = unix();
+  const debugPack = selectedDebugPack(device.debugMode);
+  if (debugPack) {
+    const payload = { generatedAt: new Date().toISOString(), dataAgeSeconds: 0, source: `debug:${debugPack.id}`, flights: debugFlights(debugPack) };
+    return json(payload, 200, { "Cache-Control": "no-store", "X-Data-Age-Seconds": "0" });
+  }
   const cached = await store.getSnapshot(device.id);
   if (cached && cached.fetchedAt + SNAPSHOT_TTL_SECONDS > now) {
     return json(cached.payload, 200, { "Cache-Control": "private, max-age=60", "X-Data-Age-Seconds": String(now - cached.fetchedAt) });
@@ -124,7 +129,9 @@ async function saveSettings(request, store) {
   let body; try { body = await request.json(); } catch { return json({ error: "Expected JSON" }, 400); }
   const latitude = Number(body.latitude), longitude = Number(body.longitude), radiusKm = Number(body.radiusKm);
   if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 || !Number.isFinite(longitude) || longitude < -180 || longitude > 180 || !Number.isFinite(radiusKm) || radiusKm <= 0 || radiusKm > 300) return json({ error: "Use latitude −90…90, longitude −180…180, and radius 0…300 km." }, 422);
-  await store.updateSettings(device.id, { name: cleanName(body.name), latitude, longitude, radiusKm, includeGrounded: Boolean(body.includeGrounded) }, unix());
+  const debugPack = selectedDebugPack(body.debugPack);
+  await store.updateSettings(device.id, { name: cleanName(body.name), latitude, longitude, radiusKm, includeGrounded: Boolean(body.includeGrounded), debugMode: debugPack?.id || "" }, unix());
+  await store.deleteSnapshot(device.id);
   return json({ ok: true });
 }
 
@@ -138,7 +145,7 @@ async function requestRotation(request, store) {
 async function deviceConfig(request, store) {
   const device = await authenticateDevice(request, store);
   if (!device) return json({ error: "Device authentication required" }, 401);
-  return json({ name: device.name, latitude: device.latitude, longitude: device.longitude, radiusKm: device.radiusKm, includeGrounded: Boolean(device.includeGrounded), rotateKey: Boolean(device.rotationRequested) });
+  return json({ name: device.name, latitude: device.latitude, longitude: device.longitude, radiusKm: device.radiusKm, includeGrounded: Boolean(device.includeGrounded), debugPack: selectedDebugPack(device.debugMode)?.id || null, rotateKey: Boolean(device.rotationRequested) });
 }
 
 async function rotateDeviceKey(request, store) {
@@ -231,6 +238,63 @@ function normalizeFlightStatus(status) {
   const number = value => typeof value === "number" && Number.isFinite(value) ? value : null;
   return { provider: "airlabs", status: typeof status.status === "string" ? status.status : null, scheduledDeparture: status.dep_time || null, estimatedDeparture: status.dep_estimated || null, actualDeparture: status.dep_actual || null, scheduledArrival: status.arr_time || null, estimatedArrival: status.arr_estimated || null, actualArrival: status.arr_actual || null, departureDelayMinutes: number(status.dep_delayed), arrivalDelayMinutes: number(status.arr_delayed), origin: status.dep_iata || null, destination: status.arr_iata || null };
 }
+
+const DEBUG_AIRPORTS = Object.freeze([
+  ["YEG", "Edmonton"], ["YYC", "Calgary"], ["YVR", "Vancouver"], ["YYZ", "Toronto"], ["YUL", "Montreal"], ["YHZ", "Halifax"],
+  ["JFK", "New York"], ["LAX", "Los Angeles"], ["ORD", "Chicago"], ["MEX", "Mexico City"], ["GRU", "Sao Paulo"], ["EZE", "Buenos Aires"],
+  ["LHR", "London"], ["CDG", "Paris"], ["AMS", "Amsterdam"], ["FRA", "Frankfurt"], ["IST", "Istanbul"], ["DXB", "Dubai"],
+  ["NRT", "Tokyo"], ["ICN", "Seoul"], ["SIN", "Singapore"], ["HKG", "Hong Kong"], ["DEL", "Delhi"], ["SYD", "Sydney"], ["AKL", "Auckland"],
+  ["JNB", "Johannesburg"], ["CPT", "Cape Town"], ["NBO", "Nairobi"], ["CAI", "Cairo"]
+]);
+const DEBUG_AIRCRAFT = Object.freeze([
+  ["B738", "Boeing 737-800"], ["B38M", "Boeing 737 MAX 8"], ["A320", "Airbus A320"], ["A21N", "Airbus A321neo"], ["DH8D", "Dash 8 Q400"],
+  ["E75L", "Embraer 175"], ["CRJ9", "CRJ-900"], ["B789", "Boeing 787-9"], ["B77W", "Boeing 777-300ER"], ["C172", "Cessna 172"], ["PC12", "Pilatus PC-12"], ["B407", "Bell 407"]
+]);
+const DEBUG_PACKS = Object.freeze([
+  { id: "canadian-scheduled", name: "Canadian scheduled", entries: [
+    ["WJA", "WestJet"], ["ACA", "Air Canada"], ["JZA", "Air Canada Jazz"], ["ROU", "Air Canada Rouge"], ["WEN", "WestJet Encore"], ["FLE", "Flair Airlines"], ["POE", "Porter Airlines"], ["TSC", "Air Transat"], ["AKT", "Canadian North"], ["CAV", "Calm Air"], ["AIE", "Air Inuit"], ["ANT", "Air North"], ["CRQ", "Air Creebec"], ["BLS", "Bearskin Airlines"], ["PCO", "Pacific Coastal"], ["GLR", "Central Mountain Air"], ["PAG", "Perimeter Aviation"], ["WSG", "Wasaya Airways"], ["PVL", "Provincial Airlines"], ["ASP", "Air Sprint"]
+  ] },
+  { id: "canadian-specialist", name: "Canadian cargo, charter & public service", entries: [
+    ["CGJ", "Cargojet"], ["MAL", "Morningstar Air Express"], ["PUL", "Purolator"], ["KFA", "KF Aerospace"], ["CNK", "Sunwest Aviation"], ["CWA", "CanWest Air"], ["STA", "STARS Air Ambulance"], ["CFC", "Royal Canadian Air Force"], ["RCMP", "RCMP Air Services"], ["SYB", "Skyservice"], ["HRT", "Chartright"], ["NRL", "Nolinor"], ["CHR", "Chrono Aviation"], ["KBA", "Kenn Borek Air"], ["TIN", "Air Tindi"], ["BFF", "Air Baffin"], ["HJT", "Helijet"], ["HBR", "Harbour Air"], ["PSC", "Pascan Aviation"], ["NWT", "North-Wright Airways"]
+  ] },
+  { id: "us-mainline", name: "U.S. mainline & low-cost", entries: [
+    ["AAL", "American Airlines"], ["DAL", "Delta Air Lines"], ["UAL", "United Airlines"], ["SWA", "Southwest Airlines"], ["ASA", "Alaska Airlines"], ["HAL", "Hawaiian Airlines"], ["JBU", "JetBlue"], ["FFT", "Frontier Airlines"], ["NKS", "Spirit Airlines"], ["AAY", "Allegiant Air"], ["MXY", "Breeze Airways"], ["VXP", "Avelo Airlines"], ["SCX", "Sun Country Airlines"], ["JSX", "JSX"], ["KAP", "Cape Air"], ["BTQ", "Boutique Air"], ["VTE", "Contour Airlines"], ["SKW", "SkyWest Airlines"], ["RPA", "Republic Airways"], ["QXE", "Horizon Air"]
+  ] },
+  { id: "us-regional-cargo", name: "U.S. regional & cargo", entries: [
+    ["ENY", "Envoy Air"], ["EDV", "Endeavor Air"], ["PDT", "Piedmont Airlines"], ["JIA", "PSA Airlines"], ["GJS", "GoJet Airlines"], ["UCA", "CommuteAir"], ["ASH", "Mesa Airlines"], ["AWI", "Air Wisconsin"], ["LYM", "Key Lime Air"], ["LTD", "Southern Airways Express"], ["GPD", "Tradewind Aviation"], ["FDX", "FedEx"], ["UPS", "UPS Airlines"], ["GTI", "Atlas Air"], ["ABX", "ABX Air"], ["ATI", "Air Transport International"], ["CKS", "Kalitta Air"], ["AJT", "Amerijet"], ["PAC", "Polar Air Cargo"], ["WGN", "Western Global Airlines"]
+  ] },
+  { id: "europe", name: "Europe & transatlantic", entries: [
+    ["AFR", "Air France"], ["KLM", "KLM"], ["BAW", "British Airways"], ["DLH", "Lufthansa"], ["SWR", "Swiss"], ["AUA", "Austrian Airlines"], ["ICE", "Icelandair"], ["EIN", "Aer Lingus"], ["TAP", "TAP Air Portugal"], ["FIN", "Finnair"], ["LOT", "LOT Polish Airlines"], ["SAS", "Scandinavian Airlines"], ["CFG", "Condor"], ["EDW", "Edelweiss Air"], ["OCN", "Discover Airlines"], ["VIR", "Virgin Atlantic"], ["ITY", "ITA Airways"], ["BEL", "Brussels Airlines"], ["AEA", "Air Europa"], ["RAM", "Royal Air Maroc"]
+  ] },
+  { id: "asia-middle-east", name: "Asia & Middle East", entries: [
+    ["CCA", "Air China"], ["CES", "China Eastern"], ["CSN", "China Southern"], ["CAL", "China Airlines"], ["CPA", "Cathay Pacific"], ["EVA", "EVA Air"], ["ANA", "All Nippon Airways"], ["JAL", "Japan Airlines"], ["KAL", "Korean Air"], ["AAR", "Asiana Airlines"], ["SIA", "Singapore Airlines"], ["THY", "Turkish Airlines"], ["UAE", "Emirates"], ["QTR", "Qatar Airways"], ["ETD", "Etihad Airways"], ["AIC", "Air India"], ["HVN", "Vietnam Airlines"], ["PAL", "Philippine Airlines"], ["MAS", "Malaysia Airlines"], ["CHH", "Hainan Airlines"]
+  ] },
+  { id: "americas-special", name: "Americas, global cargo & special visitors", entries: [
+    ["AMX", "Aeromexico"], ["AVA", "Avianca"], ["CMP", "Copa Airlines"], ["LAN", "LATAM Chile"], ["TAM", "LATAM Brasil"], ["ARG", "Aerolíneas Argentinas"], ["GLO", "GOL"], ["VOI", "Volaris"], ["VIV", "VivaAerobus"], ["BWA", "Caribbean Airlines"], ["ANZ", "Air New Zealand"], ["QFA", "Qantas"], ["CLX", "Cargolux"], ["CKK", "China Cargo Airlines"], ["CAO", "Air China Cargo"], ["NCA", "Nippon Cargo Airlines"], ["DHK", "DHL Air"], ["ETH", "Ethiopian Airlines"], ["USM", "United States Military"], ["GOV", "Government / unidentified public service"]
+  ] }
+]);
+
+function selectedDebugPack(value) { return DEBUG_PACKS.find(pack => pack.id === value) || null; }
+
+function debugFlights(pack) {
+  return pack.entries.map(([airline, airlineName], index) => {
+    const origin = randomDebugAirport();
+    let destination = randomDebugAirport();
+    while (destination[0] === origin[0]) destination = randomDebugAirport();
+    const [aircraftType, aircraftTypeName] = DEBUG_AIRCRAFT[Math.floor(Math.random() * DEBUG_AIRCRAFT.length)];
+    return {
+      icao24: `debug-${pack.id.slice(0, 6)}-${String(index + 1).padStart(2, "0")}`,
+      airline, airlineName, airlineCountry: null, flightNumber: `${airline}${index + 1}`,
+      origin: origin[0], destination: destination[0], aircraftType, aircraftTypeName,
+      registration: `T-${String(index + 1).padStart(3, "0")}`,
+      altFt: randomInteger(800, 43000), verticalSpeedFpm: randomInteger(-2800, 2800), speedKt: randomInteger(80, 590), headingDeg: randomInteger(0, 359),
+      distanceKm: randomInteger(1, 18000), flightProgressPercent: randomInteger(0, 100), flightProgressEstimated: true,
+      latitude: null, longitude: null, source: "debug"
+    };
+  });
+}
+function randomDebugAirport() { return DEBUG_AIRPORTS[Math.floor(Math.random() * DEBUG_AIRPORTS.length)]; }
+function randomInteger(min, max) { return min + Math.floor(Math.random() * (max - min + 1)); }
 
 function mergeTrackedFlights(nearby, tracked) {
   const byIdentity = new Map(nearby.map(flight => [flight.icao24 || flight.flightNumber, flight]));
@@ -367,7 +431,10 @@ function normalizeOpenSkyState(s, device) {
 }
 function normalizeAdsbLolState(a, device) {
   const latitude = numberOrNull(a.lat), longitude = numberOrNull(a.lon);
-  const distanceKm = numberOrNull(a.dst) === null ? haversineKm(device.latitude, device.longitude, latitude, longitude) : a.dst * 1.852;
+  // Always derive distance from latitude/longitude. This is lateral distance
+  // from the display location, independent of altitude and source-specific
+  // `dst` semantics.
+  const distanceKm = haversineKm(device.latitude, device.longitude, latitude, longitude);
   if (distanceKm > device.radiusKm) return null;
   const callsign = typeof a.flight === "string" ? a.flight.trim() || null : null;
   const registration = a.r || null;
@@ -422,7 +489,7 @@ function numberOrNull(value) { return typeof value === "number" && Number.isFini
 function convert(value, factor) { const n = numberOrNull(value); return n === null ? null : Math.round(n * factor); }
 function round(value, decimals) { const n = 10 ** decimals; return Math.round(value * n) / n; }
 function haversineKm(lat1, lon1, lat2, lon2) { const rad = Math.PI / 180, a = Math.sin((lat2 - lat1) * rad / 2) ** 2 + Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin((lon2 - lon1) * rad / 2) ** 2; return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)); }
-function publicDevice(d) { return { id: d.id, name: d.name, latitude: d.latitude, longitude: d.longitude, radiusKm: d.radiusKm, includeGrounded: Boolean(d.includeGrounded), rotationRequested: Boolean(d.rotationRequested) }; }
+function publicDevice(d) { return { id: d.id, name: d.name, latitude: d.latitude, longitude: d.longitude, radiusKm: d.radiusKm, includeGrounded: Boolean(d.includeGrounded), debugPack: selectedDebugPack(d.debugMode)?.id || null, rotationRequested: Boolean(d.rotationRequested) }; }
 async function getTrackedFlights(request, store) {
   const device = await authenticateSession(request, store);
   return device ? json({ trackedFlights: await store.getTrackedFlights(device.id) }) : json({ error: "Unauthorized" }, 401);
@@ -469,9 +536,10 @@ async function removeTrackedFlight(request, store, id) {
   const device = await authenticateSession(request, store);
   if (!device) return json({ error: "Unauthorized" }, 401);
   if (!/^[0-9a-f-]{36}$/i.test(id)) return json({ error: "Tracked flight not found." }, 404);
-  await store.deleteTrackedFlight(device.id, id);
-  await store.deleteSnapshot(device.id);
-  return new Response(null, { status: 204 });
+  const removed = await store.deleteTrackedFlight(device.id, id);
+  if (!removed) return json({ error: "Tracked flight not found." }, 404);
+  await Promise.all([store.deleteSnapshot(device.id), store.deleteFlightStatus(id)]);
+  return json({ ok: true });
 }
 function publicTrackedFlight(entry) { const identifier = entry.identifier || entry.flightNumber; const identifierType = entry.identifierType || "flightNumber"; return { id: entry.id, identifier, identifierType, statusIdentifier: entry.statusIdentifier || null, flightNumber: identifierType === "flightNumber" ? identifier : null, tailNumber: identifierType === "tailNumber" ? identifier : null, title: entry.title, flightDate: entry.flightDate }; }
 function cleanFlightNumber(value) { const compact = typeof value === "string" ? value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "") : ""; return /^[A-Z0-9]{3,12}$/.test(compact) ? compact : null; }
@@ -491,7 +559,7 @@ function clientIp(request) { return request.headers.get("CF-Connecting-IP") || r
 function cookie(request, name) { return request.headers.get("Cookie")?.split(";").map(v => v.trim()).find(v => v.startsWith(`${name}=`))?.slice(name.length + 1) || null; }
 function sessionCookie(token, secure) { return `plane_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_SECONDS}${secure ? "; Secure" : ""}`; }
 
-class D1Store {
+export class D1Store {
   constructor(db) { this.db = db; }
   async findDeviceByKeyHash(keyHash, now) { return deviceRow(await this.db.prepare("SELECT * FROM devices WHERE api_key_hash = ? OR (previous_api_key_hash = ? AND previous_key_expires_at > ?)").bind(keyHash, keyHash, now).first()); }
   async getSnapshot(id) { const r = await this.db.prepare("SELECT payload_json, fetched_at FROM flight_snapshots WHERE device_id = ?").bind(id).first(); return r && { payload: JSON.parse(r.payload_json), fetchedAt: r.fetched_at }; }
@@ -501,7 +569,7 @@ class D1Store {
   async consumePairing(h, now) { const row = await this.db.prepare("UPDATE pairing_codes SET used_at = ? WHERE token_hash = ? AND used_at IS NULL AND expires_at > ? RETURNING device_id").bind(now, h, now).first(); return row?.device_id || null; }
   async createSession(h, id, expires, now) { await this.db.prepare("INSERT INTO sessions (token_hash, device_id, expires_at, created_at) VALUES (?, ?, ?, ?)").bind(h, id, expires, now).run(); }
   async findDeviceBySessionHash(h, now) { return deviceRow(await this.db.prepare("SELECT d.* FROM sessions s JOIN devices d ON d.id=s.device_id WHERE s.token_hash=? AND s.expires_at > ?").bind(h, now).first()); }
-  async updateSettings(id, s, now) { await this.db.prepare("UPDATE devices SET name=?, latitude=?, longitude=?, radius_km=?, include_grounded=?, updated_at=? WHERE id=?").bind(s.name, s.latitude, s.longitude, s.radiusKm, s.includeGrounded ? 1 : 0, now, id).run(); }
+  async updateSettings(id, s, now) { await this.db.prepare("UPDATE devices SET name=?, latitude=?, longitude=?, radius_km=?, include_grounded=?, debug_mode=?, updated_at=? WHERE id=?").bind(s.name, s.latitude, s.longitude, s.radiusKm, s.includeGrounded ? 1 : 0, s.debugMode || "", now, id).run(); }
   async requestRotation(id, now) { await this.db.prepare("UPDATE devices SET rotation_requested=1, updated_at=? WHERE id=?").bind(now, id).run(); }
   async rotateKey(id, next, prior, expires, now) { await this.db.prepare("UPDATE devices SET api_key_hash=?, previous_api_key_hash=?, previous_key_expires_at=?, rotation_requested=0, updated_at=? WHERE id=?").bind(next, prior, expires, now, id).run(); }
   async deleteSession(h) { await this.db.prepare("DELETE FROM sessions WHERE token_hash=?").bind(h).run(); }
@@ -511,9 +579,10 @@ class D1Store {
   async putAircraft(icao24, aircraft) { await this.db.prepare("INSERT INTO aircraft_cache (icao24, type_name, manufacturer, owner_name, owner_country, fetched_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(icao24) DO UPDATE SET type_name=excluded.type_name, manufacturer=excluded.manufacturer, owner_name=excluded.owner_name, owner_country=excluded.owner_country, fetched_at=excluded.fetched_at").bind(icao24, aircraft.typeName, aircraft.manufacturer, aircraft.ownerName, aircraft.ownerCountry, aircraft.fetchedAt).run(); }
   async getTrackedFlights(deviceId, flightDate) { const query = flightDate ? "SELECT * FROM tracked_flights WHERE device_id=? AND flight_date=? ORDER BY created_at DESC" : "SELECT * FROM tracked_flights WHERE device_id=? ORDER BY flight_date ASC, created_at DESC"; const { results } = await this.db.prepare(query).bind(...(flightDate ? [deviceId, flightDate] : [deviceId])).all(); return results.map(trackedFlightRow); }
   async addTrackedFlight(entry) { await this.db.prepare("INSERT INTO tracked_flights (id, device_id, flight_number, identifier_type, status_identifier, title, flight_date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(entry.id, entry.deviceId, entry.flightNumber, entry.identifierType, entry.statusIdentifier, entry.title, entry.flightDate, entry.createdAt).run(); }
-  async deleteTrackedFlight(deviceId, id) { await this.db.prepare("DELETE FROM tracked_flights WHERE id=? AND device_id=?").bind(id, deviceId).run(); }
+  async deleteTrackedFlight(deviceId, id) { const result = await this.db.prepare("DELETE FROM tracked_flights WHERE id=? AND device_id=?").bind(id, deviceId).run(); return result.meta.changes > 0; }
   async getFlightStatus(id) { const r = await this.db.prepare("SELECT payload_json, fetched_at FROM flight_status_cache WHERE tracked_flight_id=?").bind(id).first(); return r && { payload: JSON.parse(r.payload_json), fetchedAt: r.fetched_at }; }
   async putFlightStatus(id, status) { await this.db.prepare("INSERT INTO flight_status_cache (tracked_flight_id, payload_json, fetched_at) VALUES (?, ?, ?) ON CONFLICT(tracked_flight_id) DO UPDATE SET payload_json=excluded.payload_json, fetched_at=excluded.fetched_at").bind(id, JSON.stringify(status.payload), status.fetchedAt).run(); }
+  async deleteFlightStatus(id) { await this.db.prepare("DELETE FROM flight_status_cache WHERE tracked_flight_id=?").bind(id).run(); }
   async takeProviderQuota(provider, month, limit) { const existing = await this.db.prepare("SELECT requests FROM provider_usage WHERE provider=? AND usage_month=?").bind(provider, month).first(); if (existing && existing.requests >= limit) return false; await this.db.prepare("INSERT INTO provider_usage (provider, usage_month, requests) VALUES (?, ?, 1) ON CONFLICT(provider, usage_month) DO UPDATE SET requests=requests + 1").bind(provider, month).run(); return true; }
 }
 
@@ -521,5 +590,5 @@ function trackedFlightRow(row) { const identifierType = row.identifier_type || "
 
 function deviceRow(row) {
   if (!row) return null;
-  return { id: row.id, name: row.name, apiKeyHash: row.api_key_hash, latitude: row.latitude, longitude: row.longitude, radiusKm: row.radius_km, includeGrounded: row.include_grounded, rotationRequested: row.rotation_requested };
+  return { id: row.id, name: row.name, apiKeyHash: row.api_key_hash, latitude: row.latitude, longitude: row.longitude, radiusKm: row.radius_km, includeGrounded: row.include_grounded, debugMode: row.debug_mode, rotationRequested: row.rotation_requested };
 }

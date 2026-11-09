@@ -7,7 +7,7 @@ import { LocalStore } from "./local-store.mjs";
 await loadDotEnv();
 const port = Number(process.env.PORT || 8787);
 const deviceKey = "demo-device-key-please-change-for-real-1234567890";
-const store = new LocalStore({ id: "demo-display", name: "My plane display", apiKeyHash: await hash(deviceKey), latitude: 53.5461, longitude: -113.4938, radiusKm: 100, includeGrounded: false, rotationRequested: false });
+const store = new LocalStore({ id: "demo-display", name: "My plane display", apiKeyHash: await hash(deviceKey), latitude: 53.5461, longitude: -113.4938, radiusKm: 100, includeGrounded: false, debugMode: false, rotationRequested: false });
 const publicDir = new URL("../public/", import.meta.url);
 const localEnv = {
   OPEN_SKY_CLIENT_ID: usableSecret(process.env.OPEN_SKY_CLIENT_ID),
@@ -35,7 +35,7 @@ createServer(async (req, res) => {
     if (requested === "display.html") content = Buffer.from(content.toString().replace("</head>", `<script>window.__LOCAL_DEMO_KEY__=${JSON.stringify(deviceKey)};</script></head>`));
     res.writeHead(200, { "Content-Type": type, "Cache-Control": "no-store" }); res.end(content);
   } catch { res.writeHead(404); res.end("Not found"); }
-}).listen(port, "127.0.0.1", () => {
+}).listen(port, "0.0.0.0", () => {
   console.log(`Plane display backend demo: http://localhost:${port}`);
   console.log(`Device key for curl/firmware testing: ${deviceKey}`);
 });
