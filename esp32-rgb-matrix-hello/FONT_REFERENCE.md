@@ -32,7 +32,7 @@ q ooooo/ooooo/oxxxx/xooox/oxxxx/oooox/oooox
 r ooooo/ooooo/xoxxo/xxoox/xoooo/xoooo/xoooo
 s ooooo/ooooo/oxxxx/xoooo/oxxxo/oooox/xxxxo
 t oxooo/oxooo/xxxoo/oxooo/oxooo/oxoox/ooxxo
-u ooooo/ooooo/xooox/xooox/xooox/xooxx/oxxxx
+u ooooo/ooooo/xooox/xooox/xooox/xooxx/oxxox
 v ooooo/ooooo/xooox/xooox/xooox/oxoxo/ooxoo
 w ooooo/ooooo/xooox/xooox/xoxox/xoxox/oxoxo
 x ooooo/ooooo/xooox/oxoxo/ooxoo/oxoxo/xooox
