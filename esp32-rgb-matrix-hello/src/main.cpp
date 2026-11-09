@@ -291,6 +291,10 @@ int16_t drawTelemetryUnit(TelemetryUnit unit, int16_t x, int16_t y, uint16_t col
       for (uint8_t row = 0; row < 7; ++row) {
         uint8_t pixels = pgm_read_byte(&kMinecraftFont[kGlyphIndices[glyphNumber]][row]);
         if (glyphNumber == 1 && row == 5) pixels &= 0x1E;  // remove t curl
+        // This is deliberately local to the compact speed-unit sprite: its
+        // final s loses the bottom-left pixel, so it stays visually separate
+        // from the adjacent t without changing the normal Minecraft s.
+        if (glyphNumber == 2 && row == 6) pixels &= 0x0F;
         for (uint8_t column = 0; column < kWidths[glyphNumber]; ++column) {
           if (pixels & (1 << (4 - column))) drawTelemetryPixel(x + column, y + row, color, left, right);
         }
@@ -1666,6 +1670,7 @@ void drawAnimatedKnotsUnit(int16_t x, int16_t y, int16_t left, int16_t right,
       if (pixelY < y || pixelY >= y + 7) continue;
       uint8_t pixels = pgm_read_byte(&kMinecraftFont[kGlyphIndices[glyphNumber]][row]);
       if (glyphNumber == 1 && row == 5) pixels &= 0x1E;
+      if (glyphNumber == 2 && row == 6) pixels &= 0x0F;
       for (uint8_t column = 0; column < kWidths[glyphNumber]; ++column) {
         const int16_t pixelX = x + column;
         if ((pixels & (1 << (4 - column))) && pixelX >= left && pixelX < right) {
