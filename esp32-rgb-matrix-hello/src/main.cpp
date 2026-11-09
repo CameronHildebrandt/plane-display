@@ -93,6 +93,12 @@ unsigned long nextFlightPollMillis = 0;
 String pairingUrl;
 unsigned long pairingUrlRefreshMillis = 0;
 bool showingPairingQr = false;
+volatile bool pairingQrRequestActive = false;
+volatile bool pairingQrRequestFinished = false;
+volatile bool pairingQrRequestSucceeded = false;
+char pairingQrRequestUrl[256] = {};
+unsigned long pairingQrSpinnerStartMillis = 0;
+TaskHandle_t pairingQrTaskHandle = nullptr;
 bool bootButtonWasPressed = false;
 unsigned long lastBootButtonPressMillis = 0;
 unsigned long nextFlightRotationMillis = 0;
@@ -2024,21 +2030,61 @@ void drawPairingQr(const String& url) {
 }
 
 void drawPairingQrLoading() {
-  // Pairing creation includes a network round trip. Clear the previous flight
-  // card first and leave an unmistakable, calm loading ring in its place.
+  // Pairing creation includes a network round trip. The lead circles the ring
+  // every two seconds, with a distinctly fading tail so it reads as loading,
+  // not as a static icon.
   const uint16_t black = matrix.color565(0, 0, 0);
-  const uint16_t white = matrix.color565(255, 255, 255);
   constexpr int16_t centerX = 64;
   constexpr int16_t centerY = 32;
   constexpr int8_t kRing[][2] = {
       {-3, -5}, {0, -6}, {3, -5}, {-5, -3}, {5, -3}, {-6, 0},
       {6, 0}, {-5, 3}, {5, 3}, {-3, 5}, {0, 6}, {3, 5},
   };
+  // Lead, then a smoothly diminishing tail. The final two LEDs deliberately
+  // settle at 10% brightness rather than disappearing abruptly.
+  constexpr uint8_t kBrightness[] = {255, 210, 170, 135, 105, 80,
+                                     60, 45, 35, 28, 26, 26};
+  const uint8_t lead = ((millis() - pairingQrSpinnerStartMillis) * 12UL / 2000UL) % 12;
   showingNoPlanes = false;
   matrix.fillScreen(black);
-  for (const auto& pixel : kRing) {
-    matrix.drawPixel(centerX + pixel[0], centerY + pixel[1], white);
+  for (uint8_t tail = 0; tail < 12; ++tail) {
+    const uint8_t index = (lead + 12 - tail) % 12;
+    const uint8_t level = kBrightness[tail];
+    matrix.drawPixel(centerX + kRing[index][0], centerY + kRing[index][1],
+                     matrix.color565(level, level, level));
   }
+}
+
+void pairingQrRequestTask(void*) {
+  bool success = false;
+  char url[sizeof(pairingQrRequestUrl)] = {};
+
+  WiFiClientSecure secureClient;
+  HTTPClient request;
+  const String endpoint = pairingEndpoint();
+  if (!endpoint.isEmpty() && beginBackendRequest(request, secureClient, endpoint)) {
+    request.setTimeout(15000);
+    request.addHeader("X-Device-Key", LED_PLANE_DEVICE_KEY);
+    const int status = request.POST("");
+    if (status == HTTP_CODE_OK) {
+      JsonDocument payload;
+      const DeserializationError error = deserializeJson(payload, request.getStream());
+      const char* responseUrl = payload["pairUrl"] | "";
+      if (!error && responseUrl[0]) {
+        strlcpy(url, responseUrl, sizeof(url));
+        success = true;
+      }
+    } else {
+      Serial.printf("Pairing request failed: HTTP %d\n", status);
+    }
+    request.end();
+  }
+
+  if (success) strlcpy(pairingQrRequestUrl, url, sizeof(pairingQrRequestUrl));
+  pairingQrRequestSucceeded = success;
+  pairingQrRequestFinished = true;
+  pairingQrTaskHandle = nullptr;
+  vTaskDelete(nullptr);
 }
 
 bool fetchAndDrawPairingQr() {
@@ -2054,36 +2100,37 @@ bool fetchAndDrawPairingQr() {
     return true;
   }
 
+  if (pairingQrRequestActive) return true;
   drawPairingQrLoading();
-  WiFiClientSecure secureClient;
-  // Keep the TLS client alive until HTTPClient has finished destroying itself.
-  // Local variables are destroyed in reverse order.
-  HTTPClient request;
-  const String endpoint = pairingEndpoint();
-  if (endpoint.isEmpty() || !beginBackendRequest(request, secureClient, endpoint)) {
+  pairingQrSpinnerStartMillis = millis();
+  pairingQrRequestFinished = false;
+  pairingQrRequestSucceeded = false;
+  pairingQrRequestActive = xTaskCreatePinnedToCore(
+      pairingQrRequestTask, "pairing-qr", 8192, nullptr, 1, &pairingQrTaskHandle, 0) == pdPASS;
+  if (!pairingQrRequestActive) {
+    Serial.println("Could not start pairing QR request");
     return false;
   }
-  request.setTimeout(15000);
-  request.addHeader("X-Device-Key", LED_PLANE_DEVICE_KEY);
-  const int status = request.POST("");
-  if (status != HTTP_CODE_OK) {
-    Serial.printf("Pairing request failed: HTTP %d\n", status);
-    request.end();
-    return false;
+  return true;
+}
+
+void updatePairingQrRequest() {
+  if (!pairingQrRequestActive) return;
+  if (!pairingQrRequestFinished) {
+    if (showingPairingQr) drawPairingQrLoading();
+    return;
   }
 
-  JsonDocument payload;
-  const DeserializationError error = deserializeJson(payload, request.getStream());
-  request.end();
-  const char* url = payload["pairUrl"] | "";
-  if (error || url[0] == '\0') {
-    Serial.printf("Pairing JSON failed: %s\n", error.c_str());
-    return false;
+  pairingQrRequestActive = false;
+  if (pairingQrRequestSucceeded) {
+    pairingUrl = pairingQrRequestUrl;
+    pairingUrlRefreshMillis = millis() + 4UL * 60UL * 1000UL;
+    if (showingPairingQr) drawPairingQr(pairingUrl);
+  } else if (showingPairingQr) {
+    matrix.fillScreen(matrix.color565(0, 0, 0));
+    drawMinecraftCentered("QR", 22, matrix.color565(255, 255, 255));
+    drawMinecraftCentered("OFFLINE", 37, matrix.color565(255, 255, 255));
   }
-  pairingUrl = url;
-  pairingUrlRefreshMillis = millis() + 4UL * 60UL * 1000UL;
-  drawPairingQr(pairingUrl);
-  return true;
 }
 
 bool routesHaveSameIdentity(const Route& first, const Route& second) {
@@ -2443,6 +2490,7 @@ void loop() {
   // HUB75 DMA refresh runs independently; handle local web update traffic here.
   updateServer.handleClient();
   handleBootButton();
+  updatePairingQrRequest();
   const bool transitionWasActive = letterTransitionActive;
   // If the only card disappeared during its scene, honour the full scene
   // duration before falling back to the idle animation.
