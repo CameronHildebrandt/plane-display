@@ -275,6 +275,9 @@ int16_t drawTelemetryUnit(TelemetryUnit unit, int16_t x, int16_t y, uint16_t col
     return x + 2;
   }
   if (unit == TelemetryUnit::Feet) {
+    // A proper compact feet apostrophe: two pixels tall, aligned to the cap
+    // height rather than floating down beside the numeral.
+    drawTelemetryPixel(x, y, color, left, right);
     drawTelemetryPixel(x, y + 1, color, left, right);
     return x + 1;
   }
@@ -1587,8 +1590,10 @@ void drawAnimatedTelemetryAdornment(const char* value, TelemetryUnit unit, bool 
     }
     x += 2;
   } else if (unit == TelemetryUnit::Feet) {
-    const int16_t pixelY = y + 1 + offset;
-    if (pixelY >= y && pixelY < y + 7 && x >= left && x < right) matrix.drawPixel(x, pixelY, color);
+    for (uint8_t row = 0; row < 2; ++row) {
+      const int16_t pixelY = y + row + offset;
+      if (pixelY >= y && pixelY < y + 7 && x >= left && x < right) matrix.drawPixel(x, pixelY, color);
+    }
     ++x;
   } else if (unit != TelemetryUnit::None) {
     drawAnimatedTelemetryNumber(telemetryUnitText(unit), x, y, left, right, color, line,
