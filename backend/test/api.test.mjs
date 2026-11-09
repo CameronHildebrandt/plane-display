@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { handle, hash } from "../src/worker.mjs";
+import { D1Store, handle, hash } from "../src/worker.mjs";
 import { LocalStore } from "../src/local-store.mjs";
 
 const base = "http://local.test";
@@ -42,6 +42,23 @@ test("a debug pack returns a full stable brand-test roster without calling a pro
   assert.equal(body.flights.length, 20);
   assert.deepEqual(body.flights.slice(0, 10).map(flight => flight.flightNumber), ["WJA1", "ACA2", "JZA3", "ROU4", "WEN5", "FLE6", "POE7", "TSC8", "AKT9", "CAV10"]);
   assert.equal(new Set(body.flights.map(flight => flight.icao24)).size, 20);
+});
+
+test("D1 keeps the selected debug pack identifier instead of collapsing it to a boolean", async () => {
+  let bindings = null;
+  const db = {
+    prepare: () => ({
+      bind: (...values) => {
+        bindings = values;
+        return { run: async () => ({}) };
+      }
+    })
+  };
+  await new D1Store(db).updateSettings("test", {
+    name: "Test display", latitude: 53.5, longitude: -113.5, radiusKm: 100,
+    includeGrounded: false, debugMode: "canadian-scheduled"
+  }, 123);
+  assert.equal(bindings[5], "canadian-scheduled");
 });
 
 test("an active special flight is added outside the local radius and marked for display priority", async () => {

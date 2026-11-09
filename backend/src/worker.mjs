@@ -559,7 +559,7 @@ function clientIp(request) { return request.headers.get("CF-Connecting-IP") || r
 function cookie(request, name) { return request.headers.get("Cookie")?.split(";").map(v => v.trim()).find(v => v.startsWith(`${name}=`))?.slice(name.length + 1) || null; }
 function sessionCookie(token, secure) { return `plane_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_SECONDS}${secure ? "; Secure" : ""}`; }
 
-class D1Store {
+export class D1Store {
   constructor(db) { this.db = db; }
   async findDeviceByKeyHash(keyHash, now) { return deviceRow(await this.db.prepare("SELECT * FROM devices WHERE api_key_hash = ? OR (previous_api_key_hash = ? AND previous_key_expires_at > ?)").bind(keyHash, keyHash, now).first()); }
   async getSnapshot(id) { const r = await this.db.prepare("SELECT payload_json, fetched_at FROM flight_snapshots WHERE device_id = ?").bind(id).first(); return r && { payload: JSON.parse(r.payload_json), fetchedAt: r.fetched_at }; }
@@ -569,7 +569,7 @@ class D1Store {
   async consumePairing(h, now) { const row = await this.db.prepare("UPDATE pairing_codes SET used_at = ? WHERE token_hash = ? AND used_at IS NULL AND expires_at > ? RETURNING device_id").bind(now, h, now).first(); return row?.device_id || null; }
   async createSession(h, id, expires, now) { await this.db.prepare("INSERT INTO sessions (token_hash, device_id, expires_at, created_at) VALUES (?, ?, ?, ?)").bind(h, id, expires, now).run(); }
   async findDeviceBySessionHash(h, now) { return deviceRow(await this.db.prepare("SELECT d.* FROM sessions s JOIN devices d ON d.id=s.device_id WHERE s.token_hash=? AND s.expires_at > ?").bind(h, now).first()); }
-  async updateSettings(id, s, now) { await this.db.prepare("UPDATE devices SET name=?, latitude=?, longitude=?, radius_km=?, include_grounded=?, debug_mode=?, updated_at=? WHERE id=?").bind(s.name, s.latitude, s.longitude, s.radiusKm, s.includeGrounded ? 1 : 0, s.debugMode ? 1 : 0, now, id).run(); }
+  async updateSettings(id, s, now) { await this.db.prepare("UPDATE devices SET name=?, latitude=?, longitude=?, radius_km=?, include_grounded=?, debug_mode=?, updated_at=? WHERE id=?").bind(s.name, s.latitude, s.longitude, s.radiusKm, s.includeGrounded ? 1 : 0, s.debugMode || "", now, id).run(); }
   async requestRotation(id, now) { await this.db.prepare("UPDATE devices SET rotation_requested=1, updated_at=? WHERE id=?").bind(now, id).run(); }
   async rotateKey(id, next, prior, expires, now) { await this.db.prepare("UPDATE devices SET api_key_hash=?, previous_api_key_hash=?, previous_key_expires_at=?, rotation_requested=0, updated_at=? WHERE id=?").bind(next, prior, expires, now, id).run(); }
   async deleteSession(h) { await this.db.prepare("DELETE FROM sessions WHERE token_hash=?").bind(h).run(); }
