@@ -217,6 +217,7 @@ int16_t telemetryUnitWidth(TelemetryUnit unit) {
   if (unit == TelemetryUnit::None) return 0;
   if (unit == TelemetryUnit::Degrees) return 2;
   if (unit == TelemetryUnit::Feet) return 1;  // compact apostrophe
+  if (unit == TelemetryUnit::Knots) return 14;  // k(5) + trimmed t(4) + s(5)
   return telemetryNumberWidth(telemetryUnitText(unit));
 }
 
@@ -279,6 +280,23 @@ int16_t drawTelemetryUnit(TelemetryUnit unit, int16_t x, int16_t y, uint16_t col
     drawTelemetryPixel(x, y, color, left, right);
     drawTelemetryPixel(x, y + 1, color, left, right);
     return x + 1;
+  }
+  if (unit == TelemetryUnit::Knots) {
+    // A compact, contiguous `kts`: the t's rightmost hook is removed so its
+    // four-pixel cell can sit directly between the k and s.
+    static constexpr uint8_t kGlyphIndices[] = {10, 19, 18};  // k, t, s
+    static constexpr uint8_t kWidths[] = {5, 4, 5};
+    for (uint8_t glyphNumber = 0; glyphNumber < 3; ++glyphNumber) {
+      for (uint8_t row = 0; row < 7; ++row) {
+        uint8_t pixels = pgm_read_byte(&kMinecraftFont[kGlyphIndices[glyphNumber]][row]);
+        if (glyphNumber == 1 && row == 5) pixels &= 0x1E;  // remove t curl
+        for (uint8_t column = 0; column < kWidths[glyphNumber]; ++column) {
+          if (pixels & (1 << (4 - column))) drawTelemetryPixel(x + column, y + row, color, left, right);
+        }
+      }
+      x += kWidths[glyphNumber];
+    }
+    return x;
   }
   return drawMinecraftTelemetryNumber(telemetryUnitText(unit), x, y, color, left, right);
 }
@@ -1570,6 +1588,29 @@ void drawAnimatedTelemetryNumber(const char* text, int16_t x, int16_t y, int16_t
   }
 }
 
+void drawAnimatedKnotsUnit(int16_t x, int16_t y, int16_t left, int16_t right,
+                           uint16_t color, uint8_t line, unsigned long phase,
+                           bool entering, uint8_t startIndex) {
+  static constexpr uint8_t kGlyphIndices[] = {10, 19, 18};  // k, t, s
+  static constexpr uint8_t kWidths[] = {5, 4, 5};
+  for (uint8_t glyphNumber = 0; glyphNumber < 3; ++glyphNumber) {
+    const int8_t offset = letterDropOffset(phase, line, startIndex + glyphNumber, entering);
+    for (uint8_t row = 0; row < 7; ++row) {
+      const int16_t pixelY = y + row + offset;
+      if (pixelY < y || pixelY >= y + 7) continue;
+      uint8_t pixels = pgm_read_byte(&kMinecraftFont[kGlyphIndices[glyphNumber]][row]);
+      if (glyphNumber == 1 && row == 5) pixels &= 0x1E;
+      for (uint8_t column = 0; column < kWidths[glyphNumber]; ++column) {
+        const int16_t pixelX = x + column;
+        if ((pixels & (1 << (4 - column))) && pixelX >= left && pixelX < right) {
+          matrix.drawPixel(pixelX, pixelY, color);
+        }
+      }
+    }
+    x += kWidths[glyphNumber];
+  }
+}
+
 // Telemetry units and the vertical-speed direction arrow join the same drop
 // sequence as their number. This keeps the settled animation frame identical
 // to the static card, rather than adding those pixels in a separate flash.
@@ -1594,6 +1635,9 @@ void drawAnimatedTelemetryAdornment(const char* value, TelemetryUnit unit, bool 
       if (pixelY >= y && pixelY < y + 7 && x >= left && x < right) matrix.drawPixel(x, pixelY, color);
     }
     ++x;
+  } else if (unit == TelemetryUnit::Knots) {
+    drawAnimatedKnotsUnit(x, y, left, right, color, line, phase, entering, strlen(value));
+    x += telemetryUnitWidth(unit);
   } else if (unit != TelemetryUnit::None) {
     drawAnimatedTelemetryNumber(telemetryUnitText(unit), x, y, left, right, color, line,
                                 phase, entering, strlen(value));
