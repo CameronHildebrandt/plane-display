@@ -49,6 +49,7 @@ constexpr uint8_t kBootButtonPin = 0;
 constexpr uint8_t kMaxRoutableFlights = 20;
 constexpr unsigned long kFlightRotationMillis = 20000;
 constexpr unsigned long kIndicatorTransitionMillis = 2000;
+constexpr unsigned long kDisplayMaintenanceWipeMillis = 60UL * 60UL * 1000UL;
 constexpr unsigned long kNoPlanesAnimationStepMillis = 125;
 constexpr int16_t kNoPlanesSpriteWidth = 33;
 constexpr int16_t kRotationIndicatorWidth = 12;
@@ -113,6 +114,7 @@ uint8_t rotationPipFrom = 0;
 uint8_t rotationPipTo = 0;
 unsigned long rotationPipTransitionStartMillis = 0;
 unsigned long nextNoPlanesAnimationMillis = 0;
+unsigned long lastDisplayMaintenanceWipeMillis = 0;
 int16_t noPlanesSpriteX = -kNoPlanesSpriteWidth;
 uint8_t noPlanesAircraftSprite = 0;
 bool showingNoPlanes = false;
@@ -1780,7 +1782,17 @@ void updateLetterTransition() {
     // Every detail, including telemetry units and the vertical-speed arrow, is
     // already settled. Avoid clearing and repainting it at this boundary.
     routeSceneStartMillis = millis();
-    drawRouteProgress(routes[routeIndex].flightProgressPercent);
+    if (routeSceneStartMillis - lastDisplayMaintenanceWipeMillis >= kDisplayMaintenanceWipeMillis) {
+      // This safe handoff point is the only time we deliberately reset every
+      // physical LED. It clears any long-lived residual colour without making
+      // the otherwise-stationary card flicker during its scene.
+      matrix.fillScreen(matrix.color565(0, 0, 0));
+      drawRoute(routes[routeIndex], routeIndex + 1, routeCount);
+      drawRotationIndicator();
+      lastDisplayMaintenanceWipeMillis = routeSceneStartMillis;
+    } else {
+      drawRouteProgress(routes[routeIndex].flightProgressPercent);
+    }
     nextRouteAnimationMillis = routeSceneStartMillis + 2000;
     nextRotationIndicatorMillis = routeSceneStartMillis;
     // A poll that became due mid-transition waits through the new scene's
@@ -2232,6 +2244,7 @@ void setup() {
   // Keep the first panel test deliberately dim; raise only after the external
   // 5 V panel supply is verified.
   matrix.setBrightness8(255);
+  lastDisplayMaintenanceWipeMillis = millis();
   drawNoPlanes();
   pinMode(kBootButtonPin, INPUT_PULLUP);
   loadDisplayPreferences();
