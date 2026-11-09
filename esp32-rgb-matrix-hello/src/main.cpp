@@ -2023,6 +2023,24 @@ void drawPairingQr(const String& url) {
   }
 }
 
+void drawPairingQrLoading() {
+  // Pairing creation includes a network round trip. Clear the previous flight
+  // card first and leave an unmistakable, calm loading ring in its place.
+  const uint16_t black = matrix.color565(0, 0, 0);
+  const uint16_t white = matrix.color565(255, 255, 255);
+  constexpr int16_t centerX = 64;
+  constexpr int16_t centerY = 32;
+  constexpr int8_t kRing[][2] = {
+      {-3, -5}, {0, -6}, {3, -5}, {-5, -3}, {5, -3}, {-6, 0},
+      {6, 0}, {-5, 3}, {5, 3}, {-3, 5}, {0, 6}, {3, 5},
+  };
+  showingNoPlanes = false;
+  matrix.fillScreen(black);
+  for (const auto& pixel : kRing) {
+    matrix.drawPixel(centerX + pixel[0], centerY + pixel[1], white);
+  }
+}
+
 bool fetchAndDrawPairingQr() {
   if (strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(LED_PLANE_DEVICE_KEY) == 0 ||
       WiFi.status() != WL_CONNECTED) {
@@ -2036,6 +2054,7 @@ bool fetchAndDrawPairingQr() {
     return true;
   }
 
+  drawPairingQrLoading();
   WiFiClientSecure secureClient;
   // Keep the TLS client alive until HTTPClient has finished destroying itself.
   // Local variables are destroyed in reverse order.
