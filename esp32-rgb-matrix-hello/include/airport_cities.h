@@ -823,7 +823,7 @@ constexpr AirportCity kAirportCities[] = {
     {"CUK", "Caye Caulker"},
     {"CUL", "Culiacán"},
     {"CUM", "Cumaná"},
-    {"CUN", "Cancun"},
+    {"CUN", "Cancún"},
     {"CUP", "Carúpano"},
     {"CUQ", "Coen"},
     {"CUR", "Willemstad"},

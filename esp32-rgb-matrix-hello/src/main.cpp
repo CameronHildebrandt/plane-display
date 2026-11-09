@@ -454,10 +454,85 @@ int16_t normalTextWidth(const char* text) {
   return *text ? static_cast<int16_t>(strlen(text) * 6 - 1) : 0;
 }
 
+enum class CityAccent : uint8_t { None, Acute, Grave, Circumflex, Tilde, Diaeresis, Ring, Cedilla };
+struct CityGlyph { char base; uint8_t bytes; CityAccent accent; };
+
+// Airport data is UTF-8, while the display font is intentionally one-byte.
+// Decode common Latin-1 airport-name letters into a normal glyph plus its
+// tiny pixel accent so a name like Cancún stays a six-letter word.
+CityGlyph nextCityGlyph(const char* text) {
+  const uint8_t first = static_cast<uint8_t>(text[0]);
+  if (first < 0x80) return {static_cast<char>(first), 1, CityAccent::None};
+  const uint8_t second = static_cast<uint8_t>(text[1]);
+  if (first != 0xC3 || second == 0) return {'-', static_cast<uint8_t>((first & 0xE0) == 0xC0 ? 2 : 1), CityAccent::None};
+  const bool upper = second >= 0x80 && second <= 0x9F;
+  const uint8_t normalized = upper ? second + 0x20 : second;
+  const char base =
+      (normalized >= 0xA0 && normalized <= 0xA5) ? 'a' :
+      normalized == 0xA7 ? 'c' :
+      (normalized >= 0xA8 && normalized <= 0xAB) ? 'e' :
+      (normalized >= 0xAC && normalized <= 0xAF) ? 'i' :
+      normalized == 0xB1 ? 'n' :
+      (normalized >= 0xB2 && normalized <= 0xB6) ? 'o' :
+      (normalized >= 0xB9 && normalized <= 0xBC) ? 'u' :
+      (normalized == 0xBD || normalized == 0xBF) ? 'y' : '-';
+  const CityAccent accent =
+      (normalized == 0xA1 || normalized == 0xA9 || normalized == 0xAD || normalized == 0xB3 || normalized == 0xBA || normalized == 0xBD) ? CityAccent::Acute :
+      (normalized == 0xA0 || normalized == 0xA8 || normalized == 0xAC || normalized == 0xB2 || normalized == 0xB9) ? CityAccent::Grave :
+      (normalized == 0xA2 || normalized == 0xAA || normalized == 0xAE || normalized == 0xB4 || normalized == 0xBB) ? CityAccent::Circumflex :
+      (normalized == 0xA3 || normalized == 0xB1 || normalized == 0xB5) ? CityAccent::Tilde :
+      (normalized == 0xA4 || normalized == 0xAB || normalized == 0xAF || normalized == 0xB6 || normalized == 0xBC || normalized == 0xBF) ? CityAccent::Diaeresis :
+      normalized == 0xA5 ? CityAccent::Ring : normalized == 0xA7 ? CityAccent::Cedilla : CityAccent::None;
+  return {static_cast<char>(upper ? toupper(base) : base), 2, accent};
+}
+
+uint8_t cityGlyphCount(const char* text) {
+  uint8_t count = 0;
+  for (const char* cursor = text; *cursor; cursor += nextCityGlyph(cursor).bytes) ++count;
+  return count;
+}
+
+int16_t cityTextWidth(const char* text) {
+  const uint8_t count = cityGlyphCount(text);
+  return count ? count * 6 - 1 : 0;
+}
+
+void drawCityAccent(CityAccent accent, int16_t x, int16_t y, int16_t left, int16_t right, uint16_t color) {
+  const auto pixel = [&](int8_t dx, int8_t dy) { if (x + dx >= left && x + dx < right) matrix.drawPixel(x + dx, y + dy, color); };
+  switch (accent) {
+    case CityAccent::Acute: pixel(3, 0); pixel(2, 1); break;
+    case CityAccent::Grave: pixel(2, 0); pixel(3, 1); break;
+    case CityAccent::Circumflex: pixel(2, 0); pixel(1, 1); pixel(3, 1); break;
+    case CityAccent::Tilde: pixel(1, 0); pixel(2, 1); pixel(3, 0); break;
+    case CityAccent::Diaeresis: pixel(1, 0); pixel(3, 0); break;
+    case CityAccent::Ring: pixel(2, 0); pixel(1, 1); pixel(3, 1); break;
+    case CityAccent::Cedilla: pixel(2, 6); break;
+    default: break;
+  }
+}
+
+void drawCityText(const char* text, int16_t x, int16_t y, int16_t left, int16_t right, uint16_t color) {
+  for (const char* cursor = text; *cursor;) {
+    const CityGlyph glyphInfo = nextCityGlyph(cursor);
+    const bool uppercase = glyphInfo.base >= 'A' && glyphInfo.base <= 'Z';
+    const uint8_t glyph = uppercase ? static_cast<uint8_t>(glyphInfo.base - 'A') : minecraftGlyphIndex(glyphInfo.base);
+    for (uint8_t row = 0; row < 7; ++row) {
+      const uint8_t pixels = uppercase ? pgm_read_byte(&kMinecraftNormalCaps[glyph][row])
+                                       : pgm_read_byte(&kMinecraftFont[glyph][row]);
+      for (uint8_t column = 0; column < 5; ++column) {
+        if ((pixels & (1 << (4 - column))) && x + column >= left && x + column < right) matrix.drawPixel(x + column, y + row, color);
+      }
+    }
+    drawCityAccent(glyphInfo.accent, x, y, left, right, color);
+    x += 6;
+    cursor += glyphInfo.bytes;
+  }
+}
+
 void drawCityMarquee(const char* origin, const char* destination, int16_t left, int16_t y,
                      int16_t width, uint16_t color) {
-  const int16_t originWidth = normalTextWidth(origin);
-  const int16_t textWidth = originWidth + 2 + 6 + 2 + normalTextWidth(destination);
+  const int16_t originWidth = cityTextWidth(origin);
+  const int16_t textWidth = originWidth + 2 + 6 + 2 + cityTextWidth(destination);
   int16_t offset = 0;
   if (textWidth > width) {
     const int16_t travel = textWidth - width;
@@ -469,41 +544,11 @@ void drawCityMarquee(const char* origin, const char* destination, int16_t left, 
     else offset = travel - (phase - 4000UL - oneWay) / 75UL;
   }
   const int16_t x = left - offset;
-  for (const char* character = origin; *character; ++character) {
-    const bool uppercase = *character >= 'A' && *character <= 'Z';
-    const uint8_t glyph = uppercase ? static_cast<uint8_t>(*character - 'A')
-                                    : minecraftGlyphIndex(*character);
-    const int16_t charX = x + (character - origin) * 6;
-    for (uint8_t row = 0; row < 7; ++row) {
-      const uint8_t pixels = uppercase ? pgm_read_byte(&kMinecraftNormalCaps[glyph][row])
-                                       : pgm_read_byte(&kMinecraftFont[glyph][row]);
-      for (uint8_t column = 0; column < 5; ++column) {
-        const int16_t pixelX = charX + column;
-        if ((pixels & (1 << (4 - column))) && pixelX >= left && pixelX < left + width) {
-          matrix.drawPixel(pixelX, y + row, color);
-        }
-      }
-    }
-  }
+  drawCityText(origin, x, y, left, left + width, color);
   const int16_t arrowX = x + originWidth + 2;
   drawCityArrow(arrowX, y, left, left + width, color);
   const int16_t destinationX = arrowX + 8;
-  for (const char* character = destination; *character; ++character) {
-    const bool uppercase = *character >= 'A' && *character <= 'Z';
-    const uint8_t glyph = uppercase ? static_cast<uint8_t>(*character - 'A')
-                                    : minecraftGlyphIndex(*character);
-    const int16_t charX = destinationX + (character - destination) * 6;
-    for (uint8_t row = 0; row < 7; ++row) {
-      const uint8_t pixels = uppercase ? pgm_read_byte(&kMinecraftNormalCaps[glyph][row])
-                                       : pgm_read_byte(&kMinecraftFont[glyph][row]);
-      for (uint8_t column = 0; column < 5; ++column) {
-        const int16_t pixelX = charX + column;
-        if ((pixels & (1 << (4 - column))) && pixelX >= left && pixelX < left + width) {
-          matrix.drawPixel(pixelX, y + row, color);
-        }
-      }
-    }
-  }
+  drawCityText(destination, destinationX, y, left, left + width, color);
 }
 
 void drawRegistrationMarquee(const char* text, int16_t left, int16_t y, int16_t width,
@@ -1672,14 +1717,58 @@ void drawAnimatedTelemetryAdornment(const char* value, TelemetryUnit unit, bool 
   }
 }
 
+void drawAnimatedCityText(const char* text, int16_t x, int16_t y, int16_t left, int16_t right,
+                          uint16_t color, uint8_t line, unsigned long phase, bool entering,
+                          uint8_t startIndex = 0) {
+  uint8_t glyphIndex = startIndex;
+  for (const char* cursor = text; *cursor;) {
+    const CityGlyph glyphInfo = nextCityGlyph(cursor);
+    const int8_t offset = letterDropOffset(phase, line, glyphIndex, entering);
+    const bool uppercase = glyphInfo.base >= 'A' && glyphInfo.base <= 'Z';
+    const uint8_t glyph = uppercase ? static_cast<uint8_t>(glyphInfo.base - 'A') : minecraftGlyphIndex(glyphInfo.base);
+    for (uint8_t row = 0; row < 7; ++row) {
+      const int16_t pixelY = y + row + offset;
+      if (pixelY < y || pixelY >= y + 7) continue;
+      const uint8_t pixels = uppercase ? pgm_read_byte(&kMinecraftNormalCaps[glyph][row])
+                                       : pgm_read_byte(&kMinecraftFont[glyph][row]);
+      for (uint8_t column = 0; column < 5; ++column) {
+        if ((pixels & (1 << (4 - column))) && x + column >= left && x + column < right) {
+          matrix.drawPixel(x + column, pixelY, color);
+        }
+      }
+    }
+    // Keep the accent attached to its base glyph throughout the drop.
+    if (glyphInfo.accent != CityAccent::None) {
+      const auto accentPixel = [&](int8_t dx, int8_t dy) {
+        const int16_t pixelY = y + dy + offset;
+        if (x + dx >= left && x + dx < right && pixelY >= y && pixelY < y + 7) matrix.drawPixel(x + dx, pixelY, color);
+      };
+      switch (glyphInfo.accent) {
+        case CityAccent::Acute: accentPixel(3, 0); accentPixel(2, 1); break;
+        case CityAccent::Grave: accentPixel(2, 0); accentPixel(3, 1); break;
+        case CityAccent::Circumflex: accentPixel(2, 0); accentPixel(1, 1); accentPixel(3, 1); break;
+        case CityAccent::Tilde: accentPixel(1, 0); accentPixel(2, 1); accentPixel(3, 0); break;
+        case CityAccent::Diaeresis: accentPixel(1, 0); accentPixel(3, 0); break;
+        case CityAccent::Ring: accentPixel(2, 0); accentPixel(1, 1); accentPixel(3, 1); break;
+        case CityAccent::Cedilla: accentPixel(2, 6); break;
+        default: break;
+      }
+    }
+    x += 6;
+    cursor += glyphInfo.bytes;
+    ++glyphIndex;
+  }
+}
+
 void drawAnimatedCityLine(const char* origin, const char* destination, unsigned long phase,
                           bool entering, uint16_t color) {
   constexpr int16_t left = 34;
   constexpr int16_t y = 16;
   constexpr int16_t width = 60;
-  drawAnimatedNormalLine(origin, left, y, width, color, 1, phase, entering);
-  const int16_t arrowX = left + normalTextWidth(origin) + 2;
-  const int8_t arrowOffset = letterDropOffset(phase, 1, strlen(origin), entering);
+  drawAnimatedCityText(origin, left, y, left, left + width, color, 1, phase, entering);
+  const uint8_t originGlyphCount = cityGlyphCount(origin);
+  const int16_t arrowX = left + cityTextWidth(origin) + 2;
+  const int8_t arrowOffset = letterDropOffset(phase, 1, originGlyphCount, entering);
   for (uint8_t row = 0; row < 5; ++row) {
     const int16_t pixelY = y + row + 1 + arrowOffset;
     if (pixelY < y || pixelY >= y + 7) continue;
@@ -1690,8 +1779,8 @@ void drawAnimatedCityLine(const char* origin, const char* destination, unsigned 
       }
     }
   }
-  drawAnimatedNormalLine(destination, arrowX + 8, y, left + width - (arrowX + 8), color, 1,
-                         phase, entering, false, strlen(origin) + 1);
+  drawAnimatedCityText(destination, arrowX + 8, y, left, left + width, color, 1,
+                       phase, entering, originGlyphCount + 1);
 }
 
 int16_t drawAnimatedBoldLine(const char* text, int16_t x, int16_t y, int16_t left,
