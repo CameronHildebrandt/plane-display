@@ -222,7 +222,7 @@ int16_t telemetryNumberWidth(const char* text) {
 
 int16_t telemetryUnitWidth(TelemetryUnit unit) {
   if (unit == TelemetryUnit::None) return 0;
-  if (unit == TelemetryUnit::Degrees) return 2;
+  if (unit == TelemetryUnit::Degrees) return 3;
   if (unit == TelemetryUnit::Feet) return 1;  // compact apostrophe
   if (unit == TelemetryUnit::Knots) return 14;  // k(5) + trimmed t(4) + s(5)
   return telemetryNumberWidth(telemetryUnitText(unit));
@@ -277,9 +277,15 @@ int16_t drawMinecraftTelemetryNumber(const char* text, int16_t x, int16_t y, uin
 int16_t drawTelemetryUnit(TelemetryUnit unit, int16_t x, int16_t y, uint16_t color,
                           int16_t left, int16_t right) {
   if (unit == TelemetryUnit::Degrees) {
-    drawTelemetryPixel(x, y + 1, color, left, right); drawTelemetryPixel(x + 1, y + 1, color, left, right);
-    drawTelemetryPixel(x, y + 2, color, left, right); drawTelemetryPixel(x + 1, y + 2, color, left, right);
-    return x + 2;
+    // 3x3 hollow degree diamond:
+    // oxo
+    // xox
+    // oxo
+    drawTelemetryPixel(x + 1, y, color, left, right);
+    drawTelemetryPixel(x, y + 1, color, left, right);
+    drawTelemetryPixel(x + 2, y + 1, color, left, right);
+    drawTelemetryPixel(x + 1, y + 2, color, left, right);
+    return x + 3;
   }
   if (unit == TelemetryUnit::Feet) {
     // A proper compact feet apostrophe: two pixels tall, aligned to the cap
@@ -1207,8 +1213,6 @@ void drawTelemetryValues(const Route& route) {
 void drawRoute(const Route& route, uint8_t position, uint8_t total) {
   const uint16_t black = matrix.color565(0, 0, 0);
   const uint16_t primaryWhite = matrix.color565(255, 255, 255);
-  const uint16_t secondaryWhite = matrix.color565(145, 145, 145);
-  const uint16_t tertiaryWhite = matrix.color565(85, 85, 85);
 
   showingNoPlanes = false;
   matrix.fillScreen(black);
@@ -1216,7 +1220,6 @@ void drawRoute(const Route& route, uint8_t position, uint8_t total) {
   drawAirportRoute(route, 34, 4, primaryWhite);
 
   drawTelemetryValues(route);
-  matrix.drawPixel(124, 41, tertiaryWhite); matrix.drawPixel(125, 41, tertiaryWhite);
   drawRouteMarquees(route);
 }
 
@@ -1698,14 +1701,18 @@ void drawAnimatedTelemetryAdornment(const char* value, TelemetryUnit unit, bool 
   const int8_t offset = letterDropOffset(phase, line, strlen(value), entering);
   int16_t x = left + telemetryTextAdvance(value);
   if (unit == TelemetryUnit::Degrees) {
-    for (uint8_t row = 1; row <= 2; ++row) {
+    constexpr uint8_t kDegreeSprite[] = {0x2, 0x5, 0x2};
+    for (uint8_t row = 0; row < 3; ++row) {
       const int16_t pixelY = y + row + offset;
-      if (pixelY >= y && pixelY < y + 7) {
-        if (x >= left && x < right) matrix.drawPixel(x, pixelY, color);
-        if (x + 1 >= left && x + 1 < right) matrix.drawPixel(x + 1, pixelY, color);
+      if (pixelY < y || pixelY >= y + 7) continue;
+      for (uint8_t column = 0; column < 3; ++column) {
+        if ((kDegreeSprite[row] & (1 << (2 - column))) &&
+            x + column >= left && x + column < right) {
+          matrix.drawPixel(x + column, pixelY, color);
+        }
       }
     }
-    x += 2;
+    x += 3;
   } else if (unit == TelemetryUnit::Feet) {
     for (uint8_t row = 0; row < 2; ++row) {
       const int16_t pixelY = y + row + offset;
