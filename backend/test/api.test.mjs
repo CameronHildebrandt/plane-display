@@ -4,7 +4,7 @@ import { D1Store, handle, hash } from "../src/worker.mjs";
 import { LocalStore } from "../src/local-store.mjs";
 
 const base = "http://local.test";
-async function setup() { const key = "test-device-key-123456789012345678901234567890123"; return { key, store: new LocalStore({ id: "test", name: "Test display", apiKeyHash: await hash(key), latitude: 53.5, longitude: -113.5, radiusKm: 100, includeGrounded: false, debugMode: false, rotationRequested: false }) }; }
+async function setup() { const key = "test-device-key-123456789012345678901234567890123"; return { key, store: new LocalStore({ id: "test", name: "Test display", apiKeyHash: await hash(key), latitude: 53.5, longitude: -113.5, radiusKm: 100, includeGrounded: false, hideIncompleteData: false, debugMode: false, rotationRequested: false }) }; }
 function request(path, options = {}) { return new Request(base + path, options); }
 const liveSource = { fetch: async (url, init = {}) => {
   if (String(url).includes("/api/0/routeset")) { assert.equal(init.headers.Referer, "https://adsb.lol/"); return new Response(JSON.stringify([{ callsign: "WJA410", plausible: true, _airports: [{ iata: "YVR", lat: 49.1947, lon: -123.1792 }, { iata: "YEG", lat: 53.3097, lon: -113.58 }] }])); }
@@ -83,6 +83,22 @@ test("live responses put richer aircraft first and alphabetize equal records", a
   assert.equal(body.flights[0].trackDeg, 200);
 });
 
+test("hide incomplete data removes flights without both company and route", async () => {
+  const { store, key } = await setup();
+  await store.updateSettings("test", { hideIncompleteData: true });
+  const source = { fetch: async url => {
+    if (String(url).includes("/api/0/routeset")) return new Response(JSON.stringify([{ callsign: "WJA410", _airports: [{ iata: "YEG", lat: 53.3, lon: -113.6 }, { iata: "YYC", lat: 51.1, lon: -114.0 }] }]));
+    if (String(url).includes("api.adsbdb.com/v0/airline/WJA")) return new Response(JSON.stringify({ response: [{ name: "WestJet", icao: "WJA", country: "Canada" }] }));
+    if (String(url).includes("api.adsbdb.com")) return new Response(JSON.stringify({ response: [] }));
+    return new Response(JSON.stringify({ ac: [
+      { hex: "known", flight: "WJA410", r: "C-KNOWN", t: "B38M", alt_baro: 35000, gs: 440, track: 90, lat: 53.6, lon: -113.6 },
+      { hex: "missing", flight: "NOCOMP", r: "C-MISS", t: "A320", alt_baro: 32000, gs: 400, track: 90, lat: 53.6, lon: -113.6 }
+    ] }));
+  } };
+  const response = await handle(request("/flightdata", { headers: { "X-Device-Key": key } }), store, source);
+  assert.deepEqual((await response.json()).flights.map(flight => flight.flightNumber), ["WJA410"]);
+});
+
 test("a debug pack returns a full stable brand-test roster without calling a provider", async () => {
   const { store, key } = await setup();
   await store.updateSettings("test", { name: "Test display", latitude: 53.5, longitude: -113.5, radiusKm: 100, includeGrounded: false, debugMode: "canadian-scheduled" });
@@ -106,9 +122,10 @@ test("D1 keeps the selected debug pack identifier instead of collapsing it to a 
   };
   await new D1Store(db).updateSettings("test", {
     name: "Test display", latitude: 53.5, longitude: -113.5, radiusKm: 100,
-    includeGrounded: false, debugMode: "canadian-scheduled"
+    includeGrounded: false, hideIncompleteData: false, debugMode: "canadian-scheduled"
   }, 123);
-  assert.equal(bindings[5], "canadian-scheduled");
+  assert.equal(bindings[5], 0);
+  assert.equal(bindings[6], "canadian-scheduled");
 });
 
 test("an active special flight is added outside the local radius and marked for display priority", async () => {
@@ -186,10 +203,10 @@ test("single-use QR pairing creates a browser session that can change preference
   const selectedArea = await handle(request("/api/settings/flights?latitude=53.5&longitude=-113.5&radiusKm=25", { headers: { Cookie: cookie } }), store, selectedAreaSource);
   assert.equal(selectedArea.status, 200);
   assert.equal((await selectedArea.json()).flights.length, 1);
-  const changed = await handle(request("/api/settings", { method: "PUT", headers: { Cookie: cookie, "Content-Type": "application/json" }, body: JSON.stringify({ name: "Kitchen sky", latitude: 51.05, longitude: -114.07, radiusKm: 50, includeGrounded: true, debugPack: "canadian-scheduled" }) }), store);
+  const changed = await handle(request("/api/settings", { method: "PUT", headers: { Cookie: cookie, "Content-Type": "application/json" }, body: JSON.stringify({ name: "Kitchen sky", latitude: 51.05, longitude: -114.07, radiusKm: 50, includeGrounded: true, hideIncompleteData: true, debugPack: "canadian-scheduled" }) }), store);
   assert.equal(changed.status, 200);
   const settings = await handle(request("/api/settings", { headers: { Cookie: cookie } }), store);
-  assert.deepEqual(await settings.json(), { id: "test", name: "Kitchen sky", latitude: 51.05, longitude: -114.07, radiusKm: 50, includeGrounded: true, debugPack: "canadian-scheduled", rotationRequested: false });
+  assert.deepEqual(await settings.json(), { id: "test", name: "Kitchen sky", latitude: 51.05, longitude: -114.07, radiusKm: 50, includeGrounded: true, hideIncompleteData: true, debugPack: "canadian-scheduled", rotationRequested: false });
   await store.putSnapshot("test", { flights: [] }, Math.floor(Date.now() / 1000));
   const added = await handle(request("/api/settings/tracked-flights", { method: "POST", headers: { Cookie: cookie, "Content-Type": "application/json" }, body: JSON.stringify({ title: "A visit", flightNumber: "wja 410", flightDate: "2030-01-02" }) }), store);
   assert.equal(added.status, 201);

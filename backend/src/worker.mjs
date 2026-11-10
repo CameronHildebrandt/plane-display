@@ -130,7 +130,7 @@ async function saveSettings(request, store) {
   const latitude = Number(body.latitude), longitude = Number(body.longitude), radiusKm = Number(body.radiusKm);
   if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 || !Number.isFinite(longitude) || longitude < -180 || longitude > 180 || !Number.isFinite(radiusKm) || radiusKm <= 0 || radiusKm > 300) return json({ error: "Use latitude −90…90, longitude −180…180, and radius 0…300 km." }, 422);
   const debugPack = selectedDebugPack(body.debugPack);
-  await store.updateSettings(device.id, { name: cleanName(body.name), latitude, longitude, radiusKm, includeGrounded: Boolean(body.includeGrounded), debugMode: debugPack?.id || "" }, unix());
+  await store.updateSettings(device.id, { name: cleanName(body.name), latitude, longitude, radiusKm, includeGrounded: Boolean(body.includeGrounded), hideIncompleteData: Boolean(body.hideIncompleteData), debugMode: debugPack?.id || "" }, unix());
   await store.deleteSnapshot(device.id);
   return json({ ok: true });
 }
@@ -145,7 +145,7 @@ async function requestRotation(request, store) {
 async function deviceConfig(request, store) {
   const device = await authenticateDevice(request, store);
   if (!device) return json({ error: "Device authentication required" }, 401);
-  return json({ name: device.name, latitude: device.latitude, longitude: device.longitude, radiusKm: device.radiusKm, includeGrounded: Boolean(device.includeGrounded), debugPack: selectedDebugPack(device.debugMode)?.id || null, rotateKey: Boolean(device.rotationRequested) });
+  return json({ name: device.name, latitude: device.latitude, longitude: device.longitude, radiusKm: device.radiusKm, includeGrounded: Boolean(device.includeGrounded), hideIncompleteData: Boolean(device.hideIncompleteData), debugPack: selectedDebugPack(device.debugMode)?.id || null, rotateKey: Boolean(device.rotationRequested) });
 }
 
 async function rotateDeviceKey(request, store) {
@@ -174,12 +174,23 @@ async function liveFlights(device, store, env) {
   try {
     const nearby = await adsbLolFlights(device, store, env);
     const tracked = await activeTrackedFlights(device, store, env);
-    return { source: "adsb.lol", flights: sortFlightsForDisplay(mergeTrackedFlights(nearby, tracked)).slice(0, 20) };
+    return { source: "adsb.lol", flights: sortFlightsForDisplay(filterIncompleteFlights(device, mergeTrackedFlights(nearby, tracked))).slice(0, 20) };
   }
   catch (adsbError) {
     console.log("ADSB.lol request failed; trying OpenSky", adsbError instanceof Error ? adsbError.message : String(adsbError));
-    return { source: "opensky", flights: sortFlightsForDisplay(await openSkyFlights(device, env)).slice(0, 20) };
+    return { source: "opensky", flights: sortFlightsForDisplay(filterIncompleteFlights(device, await openSkyFlights(device, env))).slice(0, 20) };
   }
+}
+
+function hasIdentifiedRoute(flight) {
+  return Boolean(flight.origin && flight.destination && flight.origin !== "---" && flight.destination !== "---");
+}
+function hasIdentifiedCompany(flight) {
+  return Boolean(flight.airlineName || flight.airline);
+}
+function filterIncompleteFlights(device, flights) {
+  if (!device.hideIncompleteData) return flights;
+  return flights.filter(flight => hasIdentifiedCompany(flight) && hasIdentifiedRoute(flight));
 }
 
 async function activeTrackedFlights(device, store, env) {
@@ -580,7 +591,7 @@ function numberOrNull(value) { return typeof value === "number" && Number.isFini
 function convert(value, factor) { const n = numberOrNull(value); return n === null ? null : Math.round(n * factor); }
 function round(value, decimals) { const n = 10 ** decimals; return Math.round(value * n) / n; }
 function haversineKm(lat1, lon1, lat2, lon2) { const rad = Math.PI / 180, a = Math.sin((lat2 - lat1) * rad / 2) ** 2 + Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin((lon2 - lon1) * rad / 2) ** 2; return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)); }
-function publicDevice(d) { return { id: d.id, name: d.name, latitude: d.latitude, longitude: d.longitude, radiusKm: d.radiusKm, includeGrounded: Boolean(d.includeGrounded), debugPack: selectedDebugPack(d.debugMode)?.id || null, rotationRequested: Boolean(d.rotationRequested) }; }
+function publicDevice(d) { return { id: d.id, name: d.name, latitude: d.latitude, longitude: d.longitude, radiusKm: d.radiusKm, includeGrounded: Boolean(d.includeGrounded), hideIncompleteData: Boolean(d.hideIncompleteData), debugPack: selectedDebugPack(d.debugMode)?.id || null, rotationRequested: Boolean(d.rotationRequested) }; }
 async function getTrackedFlights(request, store) {
   const device = await authenticateSession(request, store);
   return device ? json({ trackedFlights: await store.getTrackedFlights(device.id) }) : json({ error: "Unauthorized" }, 401);
@@ -682,7 +693,7 @@ export class D1Store {
   async consumePairing(h, now) { const row = await this.db.prepare("UPDATE pairing_codes SET used_at = ? WHERE token_hash = ? AND used_at IS NULL AND expires_at > ? RETURNING device_id").bind(now, h, now).first(); return row?.device_id || null; }
   async createSession(h, id, expires, now) { await this.db.prepare("INSERT INTO sessions (token_hash, device_id, expires_at, created_at) VALUES (?, ?, ?, ?)").bind(h, id, expires, now).run(); }
   async findDeviceBySessionHash(h, now) { return deviceRow(await this.db.prepare("SELECT d.* FROM sessions s JOIN devices d ON d.id=s.device_id WHERE s.token_hash=? AND s.expires_at > ?").bind(h, now).first()); }
-  async updateSettings(id, s, now) { await this.db.prepare("UPDATE devices SET name=?, latitude=?, longitude=?, radius_km=?, include_grounded=?, debug_mode=?, updated_at=? WHERE id=?").bind(s.name, s.latitude, s.longitude, s.radiusKm, s.includeGrounded ? 1 : 0, s.debugMode || "", now, id).run(); }
+  async updateSettings(id, s, now) { await this.db.prepare("UPDATE devices SET name=?, latitude=?, longitude=?, radius_km=?, include_grounded=?, hide_incomplete_data=?, debug_mode=?, updated_at=? WHERE id=?").bind(s.name, s.latitude, s.longitude, s.radiusKm, s.includeGrounded ? 1 : 0, s.hideIncompleteData ? 1 : 0, s.debugMode || "", now, id).run(); }
   async requestRotation(id, now) { await this.db.prepare("UPDATE devices SET rotation_requested=1, updated_at=? WHERE id=?").bind(now, id).run(); }
   async rotateKey(id, next, prior, expires, now) { await this.db.prepare("UPDATE devices SET api_key_hash=?, previous_api_key_hash=?, previous_key_expires_at=?, rotation_requested=0, updated_at=? WHERE id=?").bind(next, prior, expires, now, id).run(); }
   async deleteSession(h) { await this.db.prepare("DELETE FROM sessions WHERE token_hash=?").bind(h).run(); }
@@ -703,5 +714,5 @@ function trackedFlightRow(row) { const identifierType = row.identifier_type || "
 
 function deviceRow(row) {
   if (!row) return null;
-  return { id: row.id, name: row.name, apiKeyHash: row.api_key_hash, latitude: row.latitude, longitude: row.longitude, radiusKm: row.radius_km, includeGrounded: row.include_grounded, debugMode: row.debug_mode, rotationRequested: row.rotation_requested };
+  return { id: row.id, name: row.name, apiKeyHash: row.api_key_hash, latitude: row.latitude, longitude: row.longitude, radiusKm: row.radius_km, includeGrounded: row.include_grounded, hideIncompleteData: row.hide_incomplete_data, debugMode: row.debug_mode, rotationRequested: row.rotation_requested };
 }

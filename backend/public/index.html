@@ -36,6 +36,7 @@
             <div class="grid"><label>Latitude<input name="latitude" type="number" step="any" min="-90" max="90" inputmode="decimal" required></label><label>Longitude<input name="longitude" type="number" step="any" min="-180" max="180" inputmode="decimal" required></label></div>
             <label class="range-label">Tracking radius <output id="radiusOut">100 km</output><input name="radiusKm" type="range" min="1" max="100" step="1"></label>
             <label class="toggle"><input name="includeGrounded" type="checkbox"><span>Include aircraft on the ground</span></label>
+            <label class="toggle"><input name="hideIncompleteData" type="checkbox"><span>Hide planes with missing data</span></label>
             <fieldset class="debug-packs"><legend>Display debug mode</legend><p>Choose one 20-aircraft logo pack, or leave this off for live aircraft. Each route number identifies the logo: for example, <code>WJA1</code>, <code>ACA2</code>, <code>POE7</code>.</p>
               <label class="debug-pack"><input name="debugPack" type="radio" value="" checked><span><strong>Off — live aircraft</strong><small>No simulated flights.</small></span></label>
               <label class="debug-pack"><input name="debugPack" type="radio" value="canadian-scheduled"><span><strong>Canadian scheduled</strong><small>WestJet, Air Canada, Jazz, Rouge, Encore, Flair, Porter, Air Transat, Canadian North, Calm Air, Air Inuit, Air North, Air Creebec, Bearskin, Pacific Coastal, Central Mountain, Perimeter, Wasaya, PAL, Air Sprint.</small></span></label>
