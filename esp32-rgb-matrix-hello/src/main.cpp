@@ -211,9 +211,7 @@ constexpr uint8_t kMinecraftFont[][7] PROGMEM = {
     {0x00,0x00,0x11,0x11,0x11,0x13,0x0D}, {0x00,0x00,0x11,0x11,0x11,0x0A,0x04},
     {0x00,0x00,0x11,0x11,0x15,0x15,0x0A}, {0x00,0x00,0x11,0x0A,0x04,0x0A,0x11},
     {0x00,0x00,0x11,0x11,0x0F,0x01,0x0E}, {0x00,0x00,0x1F,0x02,0x04,0x08,0x1F},
-    // The zero is deliberately four pixels wide, preserving its angular
-    // interior while giving dense telemetry a little more breathing room.
-    {0x0C,0x12,0x12,0x16,0x1A,0x12,0x0C}, {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E},
+    {0x0E,0x11,0x11,0x15,0x19,0x11,0x0E}, {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E},
     {0x0E,0x11,0x01,0x02,0x04,0x08,0x1F}, {0x1E,0x01,0x01,0x0E,0x01,0x01,0x1E},
     {0x02,0x06,0x0A,0x12,0x1F,0x02,0x02}, {0x1F,0x10,0x10,0x1E,0x01,0x01,0x1E},
     {0x0E,0x10,0x10,0x1E,0x11,0x11,0x0E}, {0x1F,0x01,0x02,0x04,0x08,0x08,0x08},
@@ -221,6 +219,10 @@ constexpr uint8_t kMinecraftFont[][7] PROGMEM = {
     {0x01,0x02,0x04,0x08,0x10,0x00,0x00}, {0x00,0x00,0x1F,0x00,0x00,0x00,0x00},
     {0x00,0x00,0x00,0x00,0x00,0x00,0x00},
 };
+
+// The full face uses a standard five-wide zero. Only dense telemetry on the
+// right side gets this compact four-wide variant.
+constexpr uint8_t kMinecraftTelemetryZero[7] PROGMEM = {0x0C,0x12,0x12,0x16,0x1A,0x12,0x0C};
 
 constexpr uint8_t kTelemetryUnitGlyphs[][5] PROGMEM = {
     {0x3,0x4,0x6,0x4,0x4},  // f
@@ -308,7 +310,9 @@ int16_t drawMinecraftTelemetryNumber(const char* text, int16_t x, int16_t y, uin
     }
     const uint8_t glyph = minecraftGlyphIndex(*character);
     for (uint8_t row = 0; row < 7; ++row) {
-      const uint8_t pixels = pgm_read_byte(&kMinecraftFont[glyph][row]);
+      const uint8_t pixels = *character == '0'
+                                 ? pgm_read_byte(&kMinecraftTelemetryZero[row])
+                                 : pgm_read_byte(&kMinecraftFont[glyph][row]);
       for (uint8_t column = 0; column < 5; ++column) {
         if (pixels & (1 << (4 - column))) drawTelemetryPixel(x + column, y + row, color, left, right);
       }
@@ -1253,6 +1257,8 @@ const char* displayAircraftType(const Route& route) {
 }
 
 void drawAirportRoute(const Route& route, int16_t x, int16_t y, uint16_t color) {
+  // drawMinecraftBoldCaps returns the final advance column. Leave exactly three
+  // dark columns before and after the route arrow, matching drawCityMarquee.
   x = drawMinecraftBoldCaps(route.origin, x, y, color) + 3;
   for (uint8_t row = 0; row < 5; ++row) {
     for (uint8_t column = 0; column < 6; ++column) {
@@ -1315,7 +1321,7 @@ void refreshActiveMarquees(const Route& route) {
     matrix.fillRect(1, 47, 32, 7, black);
     drawMinecraftMarquee(aircraftType, 1, 47, 32, secondaryWhite);
   }
-  if (normalTextWidth(originCity) + 3 + 6 + 3 + normalTextWidth(destinationCity) > 60) {
+  if (cityTextWidth(originCity) + 3 + 6 + 3 + cityTextWidth(destinationCity) > 60) {
     matrix.fillRect(34, 16, 60, 7, black);
     drawCityMarquee(originCity, destinationCity, 34, 16, 60, secondaryWhite);
   }
@@ -1887,7 +1893,9 @@ void drawAnimatedTelemetryNumber(const char* text, int16_t x, int16_t y, int16_t
     for (uint8_t row = 0; row < 7; ++row) {
       const int16_t pixelY = y + row + offset;
       if (pixelY < y || pixelY >= y + 7) continue;
-      const uint8_t pixels = pgm_read_byte(&kMinecraftFont[glyph][row]);
+      const uint8_t pixels = *character == '0'
+                                 ? pgm_read_byte(&kMinecraftTelemetryZero[row])
+                                 : pgm_read_byte(&kMinecraftFont[glyph][row]);
       for (uint8_t column = 0; column < 5; ++column) {
         const int16_t pixelX = x + column;
         if ((pixels & (1 << (4 - column))) && pixelX >= left && pixelX < right) matrix.drawPixel(pixelX, pixelY, color);
@@ -2393,7 +2401,7 @@ bool fetchAndDrawPairingQr() {
   drawPairingQrLoading();
   if (pairingQrRequestActive) return true;
   if (strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(LED_PLANE_DEVICE_KEY) == 0 ||
-      WiFi.status() != WL_CONNECTED || flightFetchInProgress || millis() < pairingQrRetryMillis) {
+      WiFi.status() != WL_CONNECTED || millis() < pairingQrRetryMillis) {
     return true;
   }
   pairingQrSpinnerStartMillis = millis();
