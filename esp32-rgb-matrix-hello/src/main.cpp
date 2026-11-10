@@ -135,6 +135,9 @@ int16_t nextNoPlanesSpriteX = -kNoPlanesSpriteWidth;
 uint8_t nextNoPlanesAircraftSprite = 0;
 bool nextNoPlanesSpriteActive = false;
 bool showingNoPlanes = false;
+// The colourful boot vignette ends on a deliberately blank panel. Preserve
+// that clean canvas until the first result decides which real scene to reveal.
+bool bootTransitionPending = false;
 bool hideUnknownRoutes = false;
 volatile bool flightFetchInProgress = false;
 volatile bool flightFetchFinished = false;
@@ -1210,6 +1213,10 @@ void drawRouteChrome(const Route& route, float progressOverride = -2.0f, float p
   // centre text. It is not otherwise painted, so explicitly clear it to
   // prevent an old incremental frame leaving a bright sleeping pixel there.
   matrix.fillRect(33, 2, 1, matrix.height() - 3, matrix.color565(0, 0, 0));
+  // The other deliberately-off gutter separates the city marquee from the
+  // telemetry column. Clear it on every card paint so incremental drawing
+  // can never leave a coloured pixel between those two regions.
+  matrix.fillRect(94, 2, 1, matrix.height() - 3, matrix.color565(0, 0, 0));
   drawOperatorLogo(route, 1, 3);
   drawRouteProgress(progressOverride > -1.5f ? progressOverride : route.flightProgressPercent,
                     progressOpacity);
@@ -1355,6 +1362,7 @@ void refreshActiveMarquees(const Route& route) {
   // Keep the unpainted badge/text gutter deterministic across all partial
   // marquee redraws, rather than relying on a future full-screen render.
   matrix.fillRect(33, 2, 1, matrix.height() - 3, black);
+  matrix.fillRect(94, 2, 1, matrix.height() - 3, black);
   char registration[sizeof(route.registration)];
   strlcpy(registration, route.registration[0] ? route.registration : "UNKNOWN", sizeof(registration));
   for (char* character = registration; *character; ++character) *character = toupper(*character);
@@ -1791,6 +1799,7 @@ void drawNoPlanesFrame() {
 
 void drawNoPlanes() {
   showingNoPlanes = true;
+  bootTransitionPending = false;
   noPlanesSpriteX = -kNoPlanesSpriteWidth;
   noPlanesAircraftSprite = random(0, kAircraftSpriteCount);
   nextNoPlanesSpriteX = -kNoPlanesSpriteWidth;
@@ -1798,6 +1807,40 @@ void drawNoPlanes() {
   nextNoPlanesSpriteActive = false;
   nextNoPlanesAnimationMillis = millis() + kNoPlanesAnimationStepMillis;
   drawNoPlanesFrame();
+}
+
+// A short, self-contained boot vignette: a colourful aircraft accelerates
+// across a dark runway, climbs away, and leaves the panel completely black.
+// It does not depend on Wi-Fi or provider data, so every power-on starts clean.
+void playBootAnimation() {
+  constexpr uint8_t frames = 38;
+  constexpr uint16_t frameMillis = 38;
+  const uint16_t black = matrix.color565(0, 0, 0);
+  for (uint8_t frame = 0; frame < frames; ++frame) {
+    matrix.fillScreen(black);
+    const int16_t planeX = -32 + frame * 5;
+    const float normalized = static_cast<float>(frame) / (frames - 1);
+    const int16_t planeY = 25 - static_cast<int16_t>(normalized * normalized * 18.0f);
+    // Three crisp contrails fade from rich blue to warm pink behind the plane.
+    const uint8_t trailLength = min<uint8_t>(28, frame * 2);
+    for (uint8_t pixel = 0; pixel < trailLength; ++pixel) {
+      const float fade = 1.0f - static_cast<float>(pixel) / max<uint8_t>(1, trailLength);
+      const uint8_t red = static_cast<uint8_t>(210 * fade);
+      const uint8_t green = static_cast<uint8_t>(45 * fade);
+      const uint8_t blue = static_cast<uint8_t>(180 * fade);
+      const int16_t trailX = planeX - pixel;
+      matrix.drawPixel(trailX, planeY + 15, matrix.color565(red, green, blue));
+      if ((pixel & 1) == 0) matrix.drawPixel(trailX, planeY + 16, matrix.color565(0, red, blue));
+    }
+    const uint8_t red = static_cast<uint8_t>(60 + normalized * 190);
+    const uint8_t green = static_cast<uint8_t>(210 - normalized * 120);
+    const uint8_t blue = static_cast<uint8_t>(255 - normalized * 90);
+    drawNoPlanesAircraftSprite(AircraftSprite::NarrowbodyJet, planeX, planeY,
+                               matrix.color565(red, green, blue));
+    delay(frameMillis);
+  }
+  matrix.fillScreen(black);
+  bootTransitionPending = true;
 }
 
 void advanceNoPlanesAnimation() {
@@ -2176,6 +2219,10 @@ void drawAnimatedAirportRoute(const Route& route, unsigned long phase, bool ente
 
 void clearTransitionTextAreas() {
   const uint16_t black = matrix.color565(0, 0, 0);
+  // Keep both permanent layout gutters dark during the otherwise incremental
+  // letter-drop animation too.
+  matrix.fillRect(33, 2, 1, matrix.height() - 3, black);
+  matrix.fillRect(94, 2, 1, matrix.height() - 3, black);
   matrix.fillRect(34, 4, 60, 7, black);
   matrix.fillRect(34, 16, 60, 7, black);
   matrix.fillRect(34, 28, 60, 7, black);
@@ -2487,7 +2534,8 @@ bool routesHaveSameIdentity(const Route& first, const Route& second) {
 // until it has finished its 20-second scene and its exit animation.
 void mergeRefreshedRouteQueue(uint8_t refreshedCount) {
   if (routeCount == 0) {
-    const bool enteringFromIdle = showingNoPlanes;
+    const bool enteringFromIdle = showingNoPlanes || bootTransitionPending;
+    bootTransitionPending = false;
     memcpy(routes, refreshedRoutes, sizeof(Route) * refreshedCount);
     routeCount = refreshedCount;
     routeIndex = 0;
@@ -2859,7 +2907,7 @@ void setup() {
   // 5 V panel supply is verified.
   matrix.setBrightness8(255);
   lastDisplayMaintenanceWipeMillis = millis();
-  drawNoPlanes();
+  playBootAnimation();
   pinMode(kBootButtonPin, INPUT_PULLUP);
   loadDisplayPreferences();
   connectWifiAndEnableLocalUpdater();
