@@ -250,9 +250,20 @@ test("ticket flight numbers resolve to operating ADS-B callsign choices", async 
   const { store } = await setup();
   const token = "b".repeat(43);
   await store.createSession(await hash(token), "test", Math.floor(Date.now() / 1000) + 60, Math.floor(Date.now() / 1000));
-  const response = await handle(request("/api/settings/tracked-flights/resolve", { method: "POST", headers: { Cookie: `plane_session=${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ identifier: "ws 1098", identifierType: "flightNumber" }) }), store);
+  const source = { fetch: async (url, init = {}) => {
+    if (String(url).includes("/v2/callsign/WJA1098")) return new Response(JSON.stringify({ ac: [{ flight: "WJA1098", lat: 53.5, lon: -113.5 }] }));
+    if (String(url).includes("/v2/callsign/WEN1098")) return new Response(JSON.stringify({ ac: [{ flight: "WEN1098", lat: 53.5, lon: -113.5 }] }));
+    if (String(url).includes("/api/0/routeset")) {
+      const callsign = JSON.parse(init.body).planes[0].callsign;
+      const destination = callsign === "WJA1098" ? "YYC" : "YXE";
+      return new Response(JSON.stringify([{ callsign, _airports: [{ iata: "YEG" }, { iata: destination }] }]));
+    }
+    throw new Error(`unexpected lookup: ${url}`);
+  } };
+  const response = await handle(request("/api/settings/tracked-flights/resolve", { method: "POST", headers: { Cookie: `plane_session=${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ identifier: "ws 1098", identifierType: "flightNumber" }) }), store, source);
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.deepEqual(body.candidates.map(candidate => candidate.identifier), ["WJA1098", "WEN1098"]);
   assert.equal(body.candidates[0].statusIdentifier, "WS1098");
+  assert.deepEqual(body.candidates.map(candidate => candidate.route), ["YEG → YYC", "YEG → YXE"]);
 });

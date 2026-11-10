@@ -85,7 +85,15 @@ async function resolveFlightInput() {
     const button = document.createElement("button");
     button.type = "button";
     button.dataset.identifier = candidate.identifier;
-    button.textContent = candidate.label;
+    const label = document.createElement("strong");
+    label.textContent = candidate.label;
+    button.append(label);
+    if (candidate.route) {
+      const route = document.createElement("span");
+      route.className = "flight-match-route";
+      route.textContent = candidate.route;
+      button.append(route);
+    }
     button.addEventListener("click", () => chooseFlightMatch(candidate));
     options.append(button);
   }

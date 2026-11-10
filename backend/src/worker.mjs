@@ -25,7 +25,7 @@ export async function handle(request, store, env = {}) {
   if (path === "/api/settings" && request.method === "GET") return getSettings(request, store);
   if (path === "/api/settings/flights" && request.method === "GET") return settingsFlights(request, store, env, url);
   if (path === "/api/settings/tracked-flights" && request.method === "GET") return getTrackedFlights(request, store);
-  if (path === "/api/settings/tracked-flights/resolve" && request.method === "POST") return resolveTrackedFlight(request, store);
+  if (path === "/api/settings/tracked-flights/resolve" && request.method === "POST") return resolveTrackedFlight(request, store, env);
   if (path === "/api/settings/tracked-flights" && request.method === "POST") return addTrackedFlight(request, store);
   if (path.startsWith("/api/settings/tracked-flights/") && request.method === "DELETE") return removeTrackedFlight(request, store, path.slice("/api/settings/tracked-flights/".length));
   if (path === "/api/settings" && request.method === "PUT") return saveSettings(request, store);
@@ -592,7 +592,25 @@ const TICKET_TO_CALLSIGNS = Object.freeze({
   TS: [{ code: "TSC", name: "Air Transat" }], UA: [{ code: "UAL", name: "United Airlines" }],
   AA: [{ code: "AAL", name: "American Airlines" }], DL: [{ code: "DAL", name: "Delta Air Lines" }],
 });
-async function resolveTrackedFlight(request, store) {
+async function routeForTrackedCandidate(identifier, fetcher) {
+  try {
+    const response = await fetcher(`https://api.adsb.lol/v2/callsign/${encodeURIComponent(identifier)}`);
+    if (!response.ok) return null;
+    const aircraft = (await response.json()).ac?.find(item => numberOrNull(item.lat) !== null && numberOrNull(item.lon) !== null);
+    if (!aircraft) return null;
+    const routes = await adsbLolRoutes([aircraft], fetcher);
+    const route = routes.find(item => item.callsign?.trim() === identifier);
+    const airports = route?._airports?.filter(airport => airport.iata || airport.icao) || [];
+    if (airports.length < 2) return null;
+    return `${airportCode(airports[0])} → ${airportCode(airports[airports.length - 1])}`;
+  } catch (error) {
+    // Candidate resolution is a convenience; an unavailable lookup should
+    // never prevent the owner from saving an otherwise valid special flight.
+    console.log("Tracked candidate route lookup failed", identifier, error instanceof Error ? error.message : String(error));
+    return null;
+  }
+}
+async function resolveTrackedFlight(request, store, env) {
   const device = await authenticateSession(request, store);
   if (!device) return json({ error: "Unauthorized" }, 401);
   let body; try { body = await request.json(); } catch { return json({ error: "Expected JSON" }, 400); }
@@ -605,6 +623,10 @@ async function resolveTrackedFlight(request, store) {
   const [, airline, number] = ticket;
   const candidates = (TICKET_TO_CALLSIGNS[airline] || []).map(({ code, name }) => ({ identifier: `${code}${number}`, statusIdentifier: input, label: `${name} · ${code}${number}` }));
   if (!candidates.length) candidates.push({ identifier: input, statusIdentifier: input, label: `Use ${input} as the live callsign` });
+  const fetcher = env.fetch || fetch;
+  await Promise.all(candidates.map(async candidate => {
+    candidate.route = await routeForTrackedCandidate(candidate.identifier, fetcher);
+  }));
   return json({ input, identifierType, candidates, needsChoice: candidates.length > 1 });
 }
 async function addTrackedFlight(request, store) {
