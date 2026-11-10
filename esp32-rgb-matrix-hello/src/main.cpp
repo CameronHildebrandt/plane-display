@@ -211,7 +211,7 @@ constexpr uint8_t kMinecraftFont[][7] PROGMEM = {
     {0x00,0x00,0x11,0x11,0x11,0x13,0x0D}, {0x00,0x00,0x11,0x11,0x11,0x0A,0x04},
     {0x00,0x00,0x11,0x11,0x15,0x15,0x0A}, {0x00,0x00,0x11,0x0A,0x04,0x0A,0x11},
     {0x00,0x00,0x11,0x11,0x0F,0x01,0x0E}, {0x00,0x00,0x1F,0x02,0x04,0x08,0x1F},
-    {0x0E,0x11,0x11,0x15,0x19,0x11,0x0E}, {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E},
+    {0x0E,0x11,0x13,0x15,0x19,0x11,0x0E}, {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E},
     {0x0E,0x11,0x01,0x02,0x04,0x08,0x1F}, {0x1E,0x01,0x01,0x0E,0x01,0x01,0x1E},
     {0x02,0x06,0x0A,0x12,0x1F,0x02,0x02}, {0x1F,0x10,0x10,0x1E,0x01,0x01,0x1E},
     {0x0E,0x10,0x10,0x1E,0x11,0x11,0x0E}, {0x1F,0x01,0x02,0x04,0x08,0x08,0x08},
@@ -2334,9 +2334,11 @@ void drawPairingQrLoading() {
   const uint16_t black = matrix.color565(0, 0, 0);
   constexpr int16_t centerX = 64;
   constexpr int16_t centerY = 32;
+  // Clockwise order is important: the old zig-zag ordering put equally bright
+  // pixels on opposite sides of the ring, reading as two competing heads.
   constexpr int8_t kRing[][2] = {
-      {-3, -5}, {0, -6}, {3, -5}, {-5, -3}, {5, -3}, {-6, 0},
-      {6, 0}, {-5, 3}, {5, 3}, {-3, 5}, {0, 6}, {3, 5},
+      {0, -6}, {3, -5}, {5, -3}, {6, 0}, {5, 3}, {3, 5},
+      {0, 6}, {-3, 5}, {-5, 3}, {-6, 0}, {-5, -3}, {-3, -5},
   };
   // Lead, then a smoothly diminishing tail. The final two LEDs deliberately
   // settle at 10% brightness rather than disappearing abruptly.
@@ -2401,7 +2403,7 @@ bool fetchAndDrawPairingQr() {
   drawPairingQrLoading();
   if (pairingQrRequestActive) return true;
   if (strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(LED_PLANE_DEVICE_KEY) == 0 ||
-      WiFi.status() != WL_CONNECTED || millis() < pairingQrRetryMillis) {
+      WiFi.status() != WL_CONNECTED || flightFetchInProgress || millis() < pairingQrRetryMillis) {
     return true;
   }
   pairingQrSpinnerStartMillis = millis();
@@ -2583,7 +2585,10 @@ void fetchFlightsTask(void*) {
   WiFiClientSecure secureClient;
   HTTPClient request;
   if (beginBackendRequest(request, secureClient, LED_PLANE_BACKEND_URL)) {
-    request.setTimeout(60000);
+    // A pairing request and a flight request must not overlap: two TLS clients
+    // can stall the ESP32 Wi-Fi stack. Keep a flight refresh bounded so QR mode
+    // waits briefly at most, then receives the network to itself.
+    request.setTimeout(15000);
     request.addHeader("X-Device-Key", LED_PLANE_DEVICE_KEY);
     status = request.GET();
     if (status == HTTP_CODE_OK) {
