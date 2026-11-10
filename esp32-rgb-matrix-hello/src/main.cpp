@@ -17,11 +17,13 @@
 #include "air_canada_logo_32.h"
 #include "air_canada_jazz_logo_32.h"
 #include "flair_logo_32.h"
+#include "cargojet_logo_32.h"
 #include "canwest_air_logo_32.h"
 #include "central_mountain_air_logo_32.h"
 #include "coywolf_aviation_logo_32.h"
 #include "airsprint_logo_32.h"
 #include "alberta_health_logo_32.h"
+#include "north_cariboo_air_logo_32.h"
 #include "porter_logo_32.h"
 #include "sunwest_logo_32.h"
 #include "stars_logo_32.h"
@@ -583,7 +585,8 @@ void drawCityText(const char* text, int16_t x, int16_t y, int16_t left, int16_t 
 void drawCityMarquee(const char* origin, const char* destination, int16_t left, int16_t y,
                      int16_t width, uint16_t color) {
   const int16_t originWidth = cityTextWidth(origin);
-  // Three blank pixels on either side of the 6px route arrow.
+  // Airport-code and city routes deliberately use the same three-pixel air
+  // on both sides of the shared six-pixel arrow.
   const int16_t textWidth = originWidth + 3 + 6 + 3 + cityTextWidth(destination);
   int16_t offset = 0;
   if (textWidth > width) {
@@ -708,6 +711,17 @@ void drawWestJetLogo(int16_t x, int16_t y) {
   }
 }
 
+void drawCargojetLogo(int16_t x, int16_t y) {
+  for (uint8_t row = 0; row < 32; ++row) for (uint8_t column = 0; column < 32; ++column) {
+    const uint8_t index = pgm_read_byte(&kCargojetLogoPixels[row][column]) - '0';
+    if (!index) continue;
+    const uint8_t red = pgm_read_byte(&kCargojetLogoPalette[index][0]);
+    const uint8_t green = pgm_read_byte(&kCargojetLogoPalette[index][1]);
+    const uint8_t blue = pgm_read_byte(&kCargojetLogoPalette[index][2]);
+    matrix.drawPixel(x + column, y + row, matrix.color565(red, green, blue));
+  }
+}
+
 bool isAirCanadaFlight(const Route& route) {
   // Flight feeds use either the IATA prefix (AC) or the ICAO prefix (ACA).
   return strncmp(route.operatorCode, "ACA", 3) == 0 || strncmp(route.flightNumber, "AC", 2) == 0;
@@ -726,6 +740,14 @@ bool isAirCanadaJazzFlight(const Route& route) {
 
 bool isFlairFlight(const Route& route) {
   return strncmp(route.operatorCode, "FLE", 3) == 0 || strncmp(route.flightNumber, "FLE", 3) == 0;
+}
+
+bool isCargojetFlight(const Route& route) {
+  return strncmp(route.operatorCode, "CJT", 3) == 0 || strncmp(route.flightNumber, "CJT", 3) == 0;
+}
+
+bool isNorthCaribooAirFlight(const Route& route) {
+  return strncmp(route.operatorCode, "NCB", 3) == 0 || strncmp(route.flightNumber, "NCB", 3) == 0;
 }
 
 bool isWestJetFlight(const Route& route) {
@@ -788,6 +810,8 @@ const char* airlineName(const Route& route) {
   if (isAirCanadaJazzFlight(route)) return "Air Canada Jazz";
   if (isAirCanadaFlight(route)) return "Air Canada";
   if (isFlairFlight(route)) return "Flair Airlines";
+  if (isCargojetFlight(route)) return "Cargojet";
+  if (isNorthCaribooAirFlight(route)) return "North Cariboo Air";
   if (isPorterFlight(route)) return "Porter";
   if (isCanWestFlight(route)) return "CanWest Air";
   if (isCentralMountainAirFlight(route)) return "Central Mountain Air";
@@ -808,6 +832,10 @@ void operatorBrandRgb(const Route& route, uint8_t& red, uint8_t& green, uint8_t&
     red = kAirCanadaBrandColor[0]; green = kAirCanadaBrandColor[1]; blue = kAirCanadaBrandColor[2];
   } else if (isFlairFlight(route)) {
     red = kFlairBrandColor[0]; green = kFlairBrandColor[1]; blue = kFlairBrandColor[2];
+  } else if (isCargojetFlight(route)) {
+    red = 237; green = 27; blue = 45;  // Cargojet red, #ED1B2D.
+  } else if (isNorthCaribooAirFlight(route)) {
+    red = kNorthCaribooAirBrandColor[0]; green = kNorthCaribooAirBrandColor[1]; blue = kNorthCaribooAirBrandColor[2];
   } else if (isCanWestFlight(route)) {
     red = kCanWestBrandColor[0]; green = kCanWestBrandColor[1]; blue = kCanWestBrandColor[2];
   } else if (isCentralMountainAirFlight(route)) {
@@ -862,15 +890,12 @@ void drawAirCanadaJazzLogo(int16_t x, int16_t y) {
 }
 
 void drawFlairLogo(int16_t x, int16_t y) {
-  const uint16_t green = visibleColor(kFlairLogoGreen[0], kFlairLogoGreen[1], kFlairLogoGreen[2]);
-  const uint16_t black = matrix.color565(0, 0, 0);
+  const uint16_t green = visibleColor(kFlairBrandColor[0], kFlairBrandColor[1], kFlairBrandColor[2]);
   for (uint8_t row = 0; row < 32; ++row) {
-    const uint32_t greenPixels = pgm_read_dword(&kFlairLogoMask[row][0]);
-    const uint32_t blackPixels = pgm_read_dword(&kFlairLogoMask[row][1]);
+    const uint32_t pixels = pgm_read_dword(&kFlairLogoMask[row]);
     for (uint8_t column = 0; column < 32; ++column) {
       const uint32_t bit = 1UL << (31 - column);
-      if (blackPixels & bit) matrix.drawPixel(x + column, y + row, black);
-      else if (greenPixels & bit) matrix.drawPixel(x + column, y + row, green);
+      if (pixels & bit) matrix.drawPixel(x + column, y + row, green);
     }
   }
 }
@@ -942,6 +967,18 @@ void drawAirSprintLogo(int16_t x, int16_t y) {
     const uint32_t pixels = pgm_read_dword(&kAirSprintLogoMask[row]);
     for (uint8_t column = 0; column < 32; ++column) {
       if (pixels & (1UL << (31 - column))) matrix.drawPixel(x + column, y + row, blue);
+    }
+  }
+}
+
+void drawNorthCaribooAirLogo(int16_t x, int16_t y) {
+  const uint16_t gold = visibleColor(kNorthCaribooAirBrandColor[0],
+                                     kNorthCaribooAirBrandColor[1],
+                                     kNorthCaribooAirBrandColor[2]);
+  for (uint8_t row = 0; row < 32; ++row) {
+    const uint32_t pixels = pgm_read_dword(&kNorthCaribooAirLogoMask[row]);
+    for (uint8_t column = 0; column < 32; ++column) {
+      if (pixels & (1UL << (31 - column))) matrix.drawPixel(x + column, y + row, gold);
     }
   }
 }
@@ -1023,10 +1060,12 @@ void drawOperatorLogo(const Route& route, int16_t x, int16_t y) {
   } else if (isAirCanadaJazzFlight(route)) drawAirCanadaJazzLogo(x, y);
   else if (isAirCanadaFlight(route)) drawAirCanadaLogo(x, y);
   else if (isFlairFlight(route)) drawFlairLogo(x, y);
+  else if (isCargojetFlight(route)) drawCargojetLogo(x, y);
   else if (isCanWestFlight(route)) drawCanWestLogo(x, y);
   else if (isCentralMountainAirFlight(route)) drawCentralMountainAirLogo(x, y);
   else if (isCoywolfFlight(route)) drawCoywolfLogo(x, y);
   else if (isAirSprintFlight(route)) drawAirSprintLogo(x, y);
+  else if (isNorthCaribooAirFlight(route)) drawNorthCaribooAirLogo(x, y);
   else if (isPorterFlight(route)) drawPorterLogo(x, y);
   else if (isSunwestFlight(route)) drawSunwestLogo(x, y);
   else if (isStarsFlight(route)) drawStarsLogo(x, y);
