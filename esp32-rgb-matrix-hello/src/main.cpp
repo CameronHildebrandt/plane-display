@@ -579,11 +579,11 @@ void drawCityAccent(CityAccent accent, int16_t x, int16_t y, int16_t left, int16
 void drawCityText(const char* text, int16_t x, int16_t y, int16_t left, int16_t right, uint16_t color) {
   for (const char* cursor = text; *cursor;) {
     const CityGlyph glyphInfo = nextCityGlyph(cursor);
-    // The city fallback `---` uses the same centred dash baseline as the
-    // bold airport-code line above. It stays normal-weight and grey, but the
-    // two route rows now line up cleanly when both ends are unknown.
+    // The generic normal-font dash sits one row too high for the route arrow.
+    // City-route placeholders therefore use the airport route's shared
+    // baseline, so --- -> --- reads as one clean horizontal composition.
     if (glyphInfo.base == '-') {
-      if (x >= left && x + 4 < right) matrix.fillRect(x, y + 3, 5, 1, color);
+      if (x + 4 >= left && x < right) matrix.fillRect(x, y + 3, 5, 1, color);
       x += 6;
       cursor += glyphInfo.bytes;
       continue;
@@ -2003,7 +2003,7 @@ void drawAnimatedCityText(const char* text, int16_t x, int16_t y, int16_t left, 
     const int8_t offset = letterDropOffset(phase, line, glyphIndex, entering);
     if (glyphInfo.base == '-') {
       const int16_t pixelY = y + 3 + offset;
-      if (x >= left && x + 4 < right && pixelY >= y && pixelY < y + 7) {
+      if (pixelY >= y && pixelY < y + 7 && x + 4 >= left && x < right) {
         matrix.fillRect(x, pixelY, 5, 1, color);
       }
       x += 6;
