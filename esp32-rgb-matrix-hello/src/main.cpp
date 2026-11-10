@@ -757,26 +757,29 @@ void drawAlbertaHealthLogo(int16_t x, int16_t y) {
   }
 }
 
+uint64_t readRcafMask(const uint64_t* masks, uint8_t row) {
+  // ESP32's PROGMEM helpers expose 32-bit reads; combine the two native words
+  // that make up one 33-bit raster row.
+  const uint32_t* words = reinterpret_cast<const uint32_t*>(&masks[row]);
+  return static_cast<uint64_t>(pgm_read_dword(words)) |
+         (static_cast<uint64_t>(pgm_read_dword(words + 1)) << 32);
+}
+
 void drawRcafLogo(int16_t x, int16_t y) {
   const uint16_t navy = visibleColor(kRcafNavy[0], kRcafNavy[1], kRcafNavy[2]);
   const uint16_t white = matrix.color565(255, 255, 255);
   const uint16_t red = visibleColor(kRcafRed[0], kRcafRed[1], kRcafRed[2]);
   for (uint8_t row = 0; row < 33; ++row) {
-    const uint8_t sourceRow = static_cast<uint8_t>((row * 31 + 16) / 32);
-    const uint32_t navyPixels = pgm_read_dword(&kRcafRoundelNavyMask[sourceRow]);
-    const uint32_t whitePixels = pgm_read_dword(&kRcafRoundelWhiteMask[sourceRow]);
-    const uint32_t redPixels = pgm_read_dword(&kRcafRoundelRedMask[sourceRow]);
+    const uint64_t navyPixels = readRcafMask(kRcafRoundelNavyMask, row);
+    const uint64_t whitePixels = readRcafMask(kRcafRoundelWhiteMask, row);
+    const uint64_t redPixels = readRcafMask(kRcafRoundelRedMask, row);
     for (uint8_t column = 0; column < 33; ++column) {
-      const uint8_t sourceColumn = static_cast<uint8_t>((column * 31 + 16) / 32);
-      const uint32_t bit = 1UL << (31 - sourceColumn);
+      const uint64_t bit = 1ULL << (32 - column);
       if (navyPixels & bit) matrix.drawPixel(x + column, y + row, navy);
       else if (whitePixels & bit) matrix.drawPixel(x + column, y + row, white);
       else if (redPixels & bit) matrix.drawPixel(x + column, y + row, red);
     }
   }
-  // The shared logo lane is 33px square. Finish the maple leaf's stem in the
-  // final row, rather than cropping it with the original 32px asset bounds.
-  matrix.drawPixel(x + 16, y + 32, red);
 }
 
 bool isAirCanadaFlight(const Route& route) {
