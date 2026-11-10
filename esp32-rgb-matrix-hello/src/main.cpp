@@ -16,13 +16,17 @@
 #include "aircraft_sprites.h"
 #include "air_canada_logo_32.h"
 #include "air_canada_jazz_logo_32.h"
+#include "alberta_health_logo_32.h"
 #include "flair_logo_32.h"
+#include "cargojet_logo_32.h"
 #include "canwest_air_logo_32.h"
 #include "central_mountain_air_logo_32.h"
 #include "coywolf_aviation_logo_32.h"
 #include "airsprint_logo_32.h"
 #include "alberta_health_logo_32.h"
+#include "north_cariboo_air_logo_32.h"
 #include "porter_logo_32.h"
+#include "rcaf_roundel_32.h"
 #include "sunwest_logo_32.h"
 #include "stars_logo_32.h"
 #include "klm_logo_32.h"
@@ -57,7 +61,8 @@ constexpr unsigned long kIndicatorTransitionMillis = 2000;
 constexpr unsigned long kDisplayMaintenanceWipeMillis = 60UL * 60UL * 1000UL;
 constexpr unsigned long kNoPlanesAnimationStepMillis = 125;
 constexpr int16_t kNoPlanesSpriteWidth = 33;
-constexpr int16_t kRotationIndicatorWidth = 12;
+constexpr size_t kFlightResponseCapacity = 16384;
+constexpr int16_t kRotationIndicatorWidth = 32;
 constexpr int16_t kRotationIndicatorHeight = 4;
 constexpr unsigned long kRotationPipBubbleMillis = 600;
 constexpr char kDeviceHostname[] = "led-plane";
@@ -97,12 +102,10 @@ unsigned long nextFlightPollMillis = 0;
 String pairingUrl;
 unsigned long pairingUrlRefreshMillis = 0;
 bool showingPairingQr = false;
-volatile bool pairingQrRequestActive = false;
-volatile bool pairingQrRequestFinished = false;
-volatile bool pairingQrRequestSucceeded = false;
-char pairingQrRequestUrl[256] = {};
+int pairingQrRequestStatus = 0;
+bool pairingQrRetryPending = false;
+unsigned long pairingQrRetryMillis = 0;
 unsigned long pairingQrSpinnerStartMillis = 0;
-TaskHandle_t pairingQrTaskHandle = nullptr;
 bool bootButtonWasPressed = false;
 unsigned long lastBootButtonPressMillis = 0;
 unsigned long nextFlightRotationMillis = 0;
@@ -128,8 +131,24 @@ unsigned long nextNoPlanesAnimationMillis = 0;
 unsigned long lastDisplayMaintenanceWipeMillis = 0;
 int16_t noPlanesSpriteX = -kNoPlanesSpriteWidth;
 uint8_t noPlanesAircraftSprite = 0;
+int16_t nextNoPlanesSpriteX = -kNoPlanesSpriteWidth;
+uint8_t nextNoPlanesAircraftSprite = 0;
+bool nextNoPlanesSpriteActive = false;
 bool showingNoPlanes = false;
+// The colourful boot vignette ends on a deliberately blank panel. Preserve
+// that clean canvas until the first result decides which real scene to reveal.
+bool bootTransitionPending = false;
 bool hideUnknownRoutes = false;
+volatile bool flightFetchInProgress = false;
+volatile bool flightFetchFinished = false;
+volatile int flightFetchStatus = 0;
+size_t flightFetchLength = 0;
+char flightFetchResponse[kFlightResponseCapacity] = {};
+bool idleToRouteTransitionActive = false;
+bool routeToIdleTransitionActive = false;
+bool idleToRouteCardDrawn = false;
+unsigned long idleToRouteTransitionStartMillis = 0;
+unsigned long routeToIdleTransitionStartMillis = 0;
 
 struct Route {
   char identity[16];
@@ -138,10 +157,12 @@ struct Route {
   char flightNumber[12];
   char operatorCode[8];
   char registration[12];
+  char specialFlightTitle[48];
+  bool specialFlight;
   int altFt;
   int speedKt;
   int verticalSpeedFpm;
-  int headingDeg;
+  int trackDeg;
   char aircraftType[12];
   float distanceKm;
   float flightProgressPercent;
@@ -156,16 +177,15 @@ enum class TailOverrideLogo : uint8_t { None, AlbertaHealth };
 struct TailOverride {
   const char* registration;
   const char* operatorName;
-  const char* aircraftType;
   const uint8_t* brandColor;
   TailOverrideLogo logo;
 };
 
 constexpr TailOverride kTailOverrides[] = {
-    {"C-GLUD", "Alberta Health Services", "B350", kAlbertaHealthBrandColor, TailOverrideLogo::AlbertaHealth},
-    {"C-GLUL", "Alberta Health Services", "B250", kAlbertaHealthBrandColor, TailOverrideLogo::AlbertaHealth},
-    {"C-GLUN", "Alberta Health Services", "B250", kAlbertaHealthBrandColor, TailOverrideLogo::AlbertaHealth},
-    {"C-FSUG", "Alberta Health Services", "B200", kAlbertaHealthBrandColor, TailOverrideLogo::AlbertaHealth},
+    {"C-GLUD", "Alberta Health Services", kAlbertaHealthBrandColor, TailOverrideLogo::AlbertaHealth},
+    {"C-GLUL", "Alberta Health Services", kAlbertaHealthBrandColor, TailOverrideLogo::AlbertaHealth},
+    {"C-GLUN", "Alberta Health Services", kAlbertaHealthBrandColor, TailOverrideLogo::AlbertaHealth},
+    {"C-FSUG", "Alberta Health Services", kAlbertaHealthBrandColor, TailOverrideLogo::AlbertaHealth},
 };
 constexpr size_t kTailOverrideCount = sizeof(kTailOverrides) / sizeof(kTailOverrides[0]);
 
@@ -192,9 +212,7 @@ constexpr uint8_t kMinecraftFont[][7] PROGMEM = {
     {0x00,0x00,0x11,0x11,0x11,0x13,0x0D}, {0x00,0x00,0x11,0x11,0x11,0x0A,0x04},
     {0x00,0x00,0x11,0x11,0x15,0x15,0x0A}, {0x00,0x00,0x11,0x0A,0x04,0x0A,0x11},
     {0x00,0x00,0x11,0x11,0x0F,0x01,0x0E}, {0x00,0x00,0x1F,0x02,0x04,0x08,0x1F},
-    // The zero is deliberately four pixels wide, preserving its angular
-    // interior while giving dense telemetry a little more breathing room.
-    {0x0C,0x12,0x12,0x16,0x1A,0x12,0x0C}, {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E},
+    {0x0E,0x11,0x13,0x15,0x19,0x11,0x0E}, {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E},
     {0x0E,0x11,0x01,0x02,0x04,0x08,0x1F}, {0x1E,0x01,0x01,0x0E,0x01,0x01,0x1E},
     {0x02,0x06,0x0A,0x12,0x1F,0x02,0x02}, {0x1F,0x10,0x10,0x1E,0x01,0x01,0x1E},
     {0x0E,0x10,0x10,0x1E,0x11,0x11,0x0E}, {0x1F,0x01,0x02,0x04,0x08,0x08,0x08},
@@ -202,6 +220,10 @@ constexpr uint8_t kMinecraftFont[][7] PROGMEM = {
     {0x01,0x02,0x04,0x08,0x10,0x00,0x00}, {0x00,0x00,0x1F,0x00,0x00,0x00,0x00},
     {0x00,0x00,0x00,0x00,0x00,0x00,0x00},
 };
+
+// The full face uses a standard five-wide zero. Only dense telemetry on the
+// right side gets this compact four-wide variant.
+constexpr uint8_t kMinecraftTelemetryZero[7] PROGMEM = {0x0C,0x12,0x12,0x16,0x1A,0x12,0x0C};
 
 constexpr uint8_t kTelemetryUnitGlyphs[][5] PROGMEM = {
     {0x3,0x4,0x6,0x4,0x4},  // f
@@ -289,7 +311,9 @@ int16_t drawMinecraftTelemetryNumber(const char* text, int16_t x, int16_t y, uin
     }
     const uint8_t glyph = minecraftGlyphIndex(*character);
     for (uint8_t row = 0; row < 7; ++row) {
-      const uint8_t pixels = pgm_read_byte(&kMinecraftFont[glyph][row]);
+      const uint8_t pixels = *character == '0'
+                                 ? pgm_read_byte(&kMinecraftTelemetryZero[row])
+                                 : pgm_read_byte(&kMinecraftFont[glyph][row]);
       for (uint8_t column = 0; column < 5; ++column) {
         if (pixels & (1 << (4 - column))) drawTelemetryPixel(x + column, y + row, color, left, right);
       }
@@ -556,11 +580,11 @@ void drawCityAccent(CityAccent accent, int16_t x, int16_t y, int16_t left, int16
 void drawCityText(const char* text, int16_t x, int16_t y, int16_t left, int16_t right, uint16_t color) {
   for (const char* cursor = text; *cursor;) {
     const CityGlyph glyphInfo = nextCityGlyph(cursor);
-    // The city fallback `---` uses the same centred dash baseline as the
-    // bold airport-code line above. It stays normal-weight and grey, but the
-    // two route rows now line up cleanly when both ends are unknown.
+    // The generic normal-font dash sits one row too high for the route arrow.
+    // City-route placeholders therefore use the airport route's shared
+    // baseline, so --- -> --- reads as one clean horizontal composition.
     if (glyphInfo.base == '-') {
-      if (x >= left && x + 4 < right) matrix.fillRect(x, y + 3, 5, 1, color);
+      if (x + 4 >= left && x < right) matrix.fillRect(x, y + 3, 5, 1, color);
       x += 6;
       cursor += glyphInfo.bytes;
       continue;
@@ -583,7 +607,8 @@ void drawCityText(const char* text, int16_t x, int16_t y, int16_t left, int16_t 
 void drawCityMarquee(const char* origin, const char* destination, int16_t left, int16_t y,
                      int16_t width, uint16_t color) {
   const int16_t originWidth = cityTextWidth(origin);
-  // Three blank pixels on either side of the 6px route arrow.
+  // Airport-code and city routes deliberately use the same three-pixel air
+  // on both sides of the shared six-pixel arrow.
   const int16_t textWidth = originWidth + 3 + 6 + 3 + cityTextWidth(destination);
   int16_t offset = 0;
   if (textWidth > width) {
@@ -607,7 +632,7 @@ void drawRegistrationMarquee(const char* text, int16_t left, int16_t y, int16_t 
                              uint16_t color) {
   int16_t textWidth = -1;
   for (const char* character = text; *character; ++character) {
-    textWidth += (*character == '-' ? 2 : 5) + 1;
+    textWidth += (*character == '-' ? 2 : (*character == '0' ? 4 : 5)) + 1;
   }
   int16_t offset = 0;
   if (textWidth > width) {
@@ -627,11 +652,13 @@ void drawRegistrationMarquee(const char* text, int16_t left, int16_t y, int16_t 
       ++character;
       continue;
     }
+    const bool compactZero = *character == '0';
     const bool uppercase = *character >= 'A' && *character <= 'Z';
     const uint8_t glyph = uppercase ? static_cast<uint8_t>(*character - 'A')
                                     : minecraftGlyphIndex(*character);
     for (uint8_t row = 0; row < 7; ++row) {
-      const uint8_t pixels = uppercase ? pgm_read_byte(&kMinecraftNormalCaps[glyph][row])
+      const uint8_t pixels = compactZero ? pgm_read_byte(&kMinecraftTelemetryZero[row])
+                                       : uppercase ? pgm_read_byte(&kMinecraftNormalCaps[glyph][row])
                                        : pgm_read_byte(&kMinecraftFont[glyph][row]);
       for (uint8_t column = 0; column < 5; ++column) {
         const int16_t pixelX = x + column;
@@ -640,7 +667,7 @@ void drawRegistrationMarquee(const char* text, int16_t left, int16_t y, int16_t 
         }
       }
     }
-    x += 6;
+    x += compactZero ? 5 : 6;
     ++character;
   }
 }
@@ -708,14 +735,85 @@ void drawWestJetLogo(int16_t x, int16_t y) {
   }
 }
 
+void drawCargojetLogo(int16_t x, int16_t y) {
+  for (uint8_t row = 0; row < 32; ++row) for (uint8_t column = 0; column < 32; ++column) {
+    const uint8_t index = pgm_read_byte(&kCargojetLogoPixels[row][column]) - '0';
+    if (!index) continue;
+    const uint8_t red = pgm_read_byte(&kCargojetLogoPalette[index][0]);
+    const uint8_t green = pgm_read_byte(&kCargojetLogoPalette[index][1]);
+    const uint8_t blue = pgm_read_byte(&kCargojetLogoPalette[index][2]);
+    matrix.drawPixel(x + column, y + row, matrix.color565(red, green, blue));
+  }
+}
+
+void drawAlbertaHealthLogo(int16_t x, int16_t y) {
+  const uint16_t green = visibleColor(kAlbertaHealthBrandColor[0], kAlbertaHealthBrandColor[1],
+                                      kAlbertaHealthBrandColor[2]);
+  const uint16_t blue = visibleColor(kAlbertaHealthBlue[0], kAlbertaHealthBlue[1],
+                                     kAlbertaHealthBlue[2]);
+  for (uint8_t row = 0; row < 32; ++row) {
+    const uint32_t greenPixels = pgm_read_dword(&kAlbertaHealthLogoMask[row][0]);
+    const uint32_t bluePixels = pgm_read_dword(&kAlbertaHealthLogoMask[row][1]);
+    for (uint8_t column = 0; column < 32; ++column) {
+      const uint32_t bit = 1UL << (31 - column);
+      if (greenPixels & bit) matrix.drawPixel(x + column, y + row, green);
+      else if (bluePixels & bit) matrix.drawPixel(x + column, y + row, blue);
+    }
+  }
+}
+
+uint64_t readRcafMask(const uint64_t* masks, uint8_t row) {
+  // ESP32's PROGMEM helpers expose 32-bit reads; combine the two native words
+  // that make up one 33-bit raster row.
+  const uint32_t* words = reinterpret_cast<const uint32_t*>(&masks[row]);
+  return static_cast<uint64_t>(pgm_read_dword(words)) |
+         (static_cast<uint64_t>(pgm_read_dword(words + 1)) << 32);
+}
+
+void drawRcafLogo(int16_t x, int16_t y) {
+  const uint16_t navy = visibleColor(kRcafNavy[0], kRcafNavy[1], kRcafNavy[2]);
+  const uint16_t white = matrix.color565(255, 255, 255);
+  const uint16_t red = visibleColor(kRcafRed[0], kRcafRed[1], kRcafRed[2]);
+  for (uint8_t row = 0; row < 33; ++row) {
+    const uint64_t navyPixels = readRcafMask(kRcafRoundelNavyMask, row);
+    const uint64_t whitePixels = readRcafMask(kRcafRoundelWhiteMask, row);
+    const uint64_t redPixels = readRcafMask(kRcafRoundelRedMask, row);
+    for (uint8_t column = 0; column < 33; ++column) {
+      const uint64_t bit = 1ULL << (32 - column);
+      if (navyPixels & bit) matrix.drawPixel(x + column, y + row, navy);
+      else if (whitePixels & bit) matrix.drawPixel(x + column, y + row, white);
+      else if (redPixels & bit) matrix.drawPixel(x + column, y + row, red);
+    }
+  }
+}
+
 bool isAirCanadaFlight(const Route& route) {
   // Flight feeds use either the IATA prefix (AC) or the ICAO prefix (ACA).
   return strncmp(route.operatorCode, "ACA", 3) == 0 || strncmp(route.flightNumber, "AC", 2) == 0;
 }
 
+bool registrationsMatch(const char* first, const char* second) {
+  // Providers vary between C-GLUN and CGLUN. Compare the meaningful letters
+  // and digits only so a formatting difference never loses an override.
+  if (!first || !*first) return false;
+  while (*first || *second) {
+    while (*first && !isalnum(static_cast<unsigned char>(*first))) ++first;
+    while (*second && !isalnum(static_cast<unsigned char>(*second))) ++second;
+    if (toupper(static_cast<unsigned char>(*first)) != toupper(static_cast<unsigned char>(*second))) {
+      return false;
+    }
+    if (!*first) return true;
+    ++first;
+    ++second;
+  }
+  return true;
+}
+
 const TailOverride* tailOverrideFor(const Route& route) {
   for (size_t index = 0; index < kTailOverrideCount; ++index) {
-    if (strcasecmp(route.registration, kTailOverrides[index].registration) == 0) return &kTailOverrides[index];
+    if (registrationsMatch(route.registration, kTailOverrides[index].registration)) {
+      return &kTailOverrides[index];
+    }
   }
   return nullptr;
 }
@@ -726,6 +824,20 @@ bool isAirCanadaJazzFlight(const Route& route) {
 
 bool isFlairFlight(const Route& route) {
   return strncmp(route.operatorCode, "FLE", 3) == 0 || strncmp(route.flightNumber, "FLE", 3) == 0;
+}
+
+bool isCargojetFlight(const Route& route) {
+  return strncmp(route.operatorCode, "CJT", 3) == 0 || strncmp(route.flightNumber, "CJT", 3) == 0;
+}
+
+bool isRcafFlight(const Route& route) {
+  // CFC is the RCAF's standard ADS-B callsign prefix. The numeric military
+  // registration (such as 330004) is not used for carrier identification.
+  return strncmp(route.operatorCode, "CFC", 3) == 0 || strncmp(route.flightNumber, "CFC", 3) == 0;
+}
+
+bool isNorthCaribooAirFlight(const Route& route) {
+  return strncmp(route.operatorCode, "NCB", 3) == 0 || strncmp(route.flightNumber, "NCB", 3) == 0;
 }
 
 bool isWestJetFlight(const Route& route) {
@@ -747,11 +859,6 @@ bool isCoywolfFlight(const Route& route) {
 
 bool isAirSprintFlight(const Route& route) {
   return strncmp(route.operatorCode, "ASP", 3) == 0 || strncmp(route.flightNumber, "ASP", 3) == 0;
-}
-
-bool isRcafFlight(const Route& route) {
-  // ADSBDB's registered-owner flag for the Royal Canadian Air Force is CFC.
-  return strncmp(route.operatorCode, "CFC", 3) == 0 || strncmp(route.flightNumber, "CFC", 3) == 0;
 }
 
 bool isPorterFlight(const Route& route) {
@@ -788,6 +895,9 @@ const char* airlineName(const Route& route) {
   if (isAirCanadaJazzFlight(route)) return "Air Canada Jazz";
   if (isAirCanadaFlight(route)) return "Air Canada";
   if (isFlairFlight(route)) return "Flair Airlines";
+  if (isCargojetFlight(route)) return "Cargojet";
+  if (isRcafFlight(route)) return "Royal Canadian Air Force";
+  if (isNorthCaribooAirFlight(route)) return "North Cariboo Air";
   if (isPorterFlight(route)) return "Porter";
   if (isCanWestFlight(route)) return "CanWest Air";
   if (isCentralMountainAirFlight(route)) return "Central Mountain Air";
@@ -808,6 +918,12 @@ void operatorBrandRgb(const Route& route, uint8_t& red, uint8_t& green, uint8_t&
     red = kAirCanadaBrandColor[0]; green = kAirCanadaBrandColor[1]; blue = kAirCanadaBrandColor[2];
   } else if (isFlairFlight(route)) {
     red = kFlairBrandColor[0]; green = kFlairBrandColor[1]; blue = kFlairBrandColor[2];
+  } else if (isCargojetFlight(route)) {
+    red = 237; green = 27; blue = 45;  // Cargojet red, #ED1B2D.
+  } else if (isRcafFlight(route)) {
+    red = kRcafNavy[0]; green = kRcafNavy[1]; blue = kRcafNavy[2];  // #012169.
+  } else if (isNorthCaribooAirFlight(route)) {
+    red = kNorthCaribooAirBrandColor[0]; green = kNorthCaribooAirBrandColor[1]; blue = kNorthCaribooAirBrandColor[2];
   } else if (isCanWestFlight(route)) {
     red = kCanWestBrandColor[0]; green = kCanWestBrandColor[1]; blue = kCanWestBrandColor[2];
   } else if (isCentralMountainAirFlight(route)) {
@@ -831,7 +947,9 @@ void operatorBrandRgb(const Route& route, uint8_t& red, uint8_t& green, uint8_t&
   } else if (isWestJetFlight(route)) {
     red = 0; green = 170; blue = 166;  // WestJet teal, #00AAA6.
   } else {
-    red = 255; green = 255; blue = 255;  // Unknown operator: neutral ticket.
+    // Keep the two-row ticket area reserved, but leave it unlit when we do
+    // not know the operator rather than implying a generic white brand.
+    red = 0; green = 0; blue = 0;
   }
 }
 
@@ -860,15 +978,12 @@ void drawAirCanadaJazzLogo(int16_t x, int16_t y) {
 }
 
 void drawFlairLogo(int16_t x, int16_t y) {
-  const uint16_t green = visibleColor(kFlairLogoGreen[0], kFlairLogoGreen[1], kFlairLogoGreen[2]);
-  const uint16_t black = matrix.color565(0, 0, 0);
+  const uint16_t green = visibleColor(kFlairBrandColor[0], kFlairBrandColor[1], kFlairBrandColor[2]);
   for (uint8_t row = 0; row < 32; ++row) {
-    const uint32_t greenPixels = pgm_read_dword(&kFlairLogoMask[row][0]);
-    const uint32_t blackPixels = pgm_read_dword(&kFlairLogoMask[row][1]);
+    const uint32_t pixels = pgm_read_dword(&kFlairLogoMask[row]);
     for (uint8_t column = 0; column < 32; ++column) {
       const uint32_t bit = 1UL << (31 - column);
-      if (blackPixels & bit) matrix.drawPixel(x + column, y + row, black);
-      else if (greenPixels & bit) matrix.drawPixel(x + column, y + row, green);
+      if (pixels & bit) matrix.drawPixel(x + column, y + row, green);
     }
   }
 }
@@ -917,22 +1032,6 @@ void drawCoywolfLogo(int16_t x, int16_t y) {
   }
 }
 
-void drawAlbertaHealthLogo(int16_t x, int16_t y) {
-  const uint16_t green = visibleColor(kAlbertaHealthBrandColor[0], kAlbertaHealthBrandColor[1],
-                                      kAlbertaHealthBrandColor[2]);
-  const uint16_t blue = visibleColor(kAlbertaHealthBlue[0], kAlbertaHealthBlue[1],
-                                     kAlbertaHealthBlue[2]);
-  for (uint8_t row = 0; row < 32; ++row) {
-    const uint32_t greenPixels = pgm_read_dword(&kAlbertaHealthLogoMask[row][0]);
-    const uint32_t bluePixels = pgm_read_dword(&kAlbertaHealthLogoMask[row][1]);
-    for (uint8_t column = 0; column < 32; ++column) {
-      const uint32_t bit = 1UL << (31 - column);
-      if (greenPixels & bit) matrix.drawPixel(x + column, y + row, green);
-      else if (bluePixels & bit) matrix.drawPixel(x + column, y + row, blue);
-    }
-  }
-}
-
 void drawAirSprintLogo(int16_t x, int16_t y) {
   const uint16_t blue = visibleColor(kAirSprintBrandColor[0], kAirSprintBrandColor[1],
                                      kAirSprintBrandColor[2]);
@@ -940,6 +1039,18 @@ void drawAirSprintLogo(int16_t x, int16_t y) {
     const uint32_t pixels = pgm_read_dword(&kAirSprintLogoMask[row]);
     for (uint8_t column = 0; column < 32; ++column) {
       if (pixels & (1UL << (31 - column))) matrix.drawPixel(x + column, y + row, blue);
+    }
+  }
+}
+
+void drawNorthCaribooAirLogo(int16_t x, int16_t y) {
+  const uint16_t gold = visibleColor(kNorthCaribooAirBrandColor[0],
+                                     kNorthCaribooAirBrandColor[1],
+                                     kNorthCaribooAirBrandColor[2]);
+  for (uint8_t row = 0; row < 32; ++row) {
+    const uint32_t pixels = pgm_read_dword(&kNorthCaribooAirLogoMask[row]);
+    for (uint8_t column = 0; column < 32; ++column) {
+      if (pixels & (1UL << (31 - column))) matrix.drawPixel(x + column, y + row, gold);
     }
   }
 }
@@ -1021,10 +1132,13 @@ void drawOperatorLogo(const Route& route, int16_t x, int16_t y) {
   } else if (isAirCanadaJazzFlight(route)) drawAirCanadaJazzLogo(x, y);
   else if (isAirCanadaFlight(route)) drawAirCanadaLogo(x, y);
   else if (isFlairFlight(route)) drawFlairLogo(x, y);
+  else if (isCargojetFlight(route)) drawCargojetLogo(x, y);
+  else if (isRcafFlight(route)) drawRcafLogo(0, y);
   else if (isCanWestFlight(route)) drawCanWestLogo(x, y);
   else if (isCentralMountainAirFlight(route)) drawCentralMountainAirLogo(x, y);
   else if (isCoywolfFlight(route)) drawCoywolfLogo(x, y);
   else if (isAirSprintFlight(route)) drawAirSprintLogo(x, y);
+  else if (isNorthCaribooAirFlight(route)) drawNorthCaribooAirLogo(x, y);
   else if (isPorterFlight(route)) drawPorterLogo(x, y);
   else if (isSunwestFlight(route)) drawSunwestLogo(x, y);
   else if (isStarsFlight(route)) drawStarsLogo(x, y);
@@ -1101,14 +1215,23 @@ void drawRouteChrome(const Route& route, float progressOverride = -2.0f, float p
   // centre text. It is not otherwise painted, so explicitly clear it to
   // prevent an old incremental frame leaving a bright sleeping pixel there.
   matrix.fillRect(33, 2, 1, matrix.height() - 3, matrix.color565(0, 0, 0));
+  // The other deliberately-off gutter separates the city marquee from the
+  // telemetry column. Clear it on every card paint so incremental drawing
+  // can never leave a coloured pixel between those two regions.
+  matrix.fillRect(94, 2, 1, matrix.height() - 3, matrix.color565(0, 0, 0));
   drawOperatorLogo(route, 1, 3);
   drawRouteProgress(progressOverride > -1.5f ? progressOverride : route.flightProgressPercent,
                     progressOpacity);
 }
 
 uint8_t rotationIndicatorPipForRoute(uint8_t index) {
-  const uint8_t pipCount = min<uint8_t>(routeCount, 5);
-  return routeCount <= 5 ? index : static_cast<uint8_t>(index * pipCount / routeCount);
+  return min<uint8_t>(index, kMaxRoutableFlights - 1);
+}
+
+int16_t rotationIndicatorPipOffset(uint8_t index) {
+  // Sixteen comfortably fit in 32px with a dark LED between every pair.
+  // Only a genuinely dense 17–20 aircraft queue gives up that breathing room.
+  return routeCount <= 16 ? index * 2 : index;
 }
 
 void drawRotationIndicator() {
@@ -1122,34 +1245,33 @@ void drawRotationIndicator() {
   const uint16_t dimPink = visibleColor(19, 3, 9);
   matrix.fillRect(x, y, kRotationIndicatorWidth, kRotationIndicatorHeight, black);
 
-  // Five 1px pips at columns 1, 3, 5, 7, and 9 deliberately reproduce the
-  // compact 12px pattern. Most nearby-aircraft rotations fit directly; for a
-  // longer list the pips represent evenly spaced positions through the list.
-  const uint8_t pipCount = min<uint8_t>(routeCount, 5);
+  // Keep the original 1px gap through 16 aircraft. Above that, fit each of
+  // the remaining positions contiguously rather than hiding aircraft.
+  const uint8_t pipCount = min<uint8_t>(routeCount, kMaxRoutableFlights);
   const uint8_t activePip = rotationIndicatorPipForRoute(routeIndex);
   for (uint8_t pip = 0; pip < pipCount; ++pip) {
     const bool stableActive = !rotationPipTransitionActive && pip == activePip;
-    matrix.drawPixel(x + 1 + pip * 2, y + 1, stableActive ? brightPink : dimPink);
+    matrix.drawPixel(x + rotationIndicatorPipOffset(pip), y + 1, stableActive ? brightPink : dimPink);
   }
 
   if (rotationPipTransitionActive) {
     const unsigned long elapsed = millis() - rotationPipTransitionStartMillis;
-    int16_t bubbleX = x + 1 + rotationPipFrom * 2;
+    int16_t bubbleX = x + rotationIndicatorPipOffset(rotationPipFrom);
     if (rotationPipTo > rotationPipFrom) {
-      // Adjacent pips have exactly one LED between them: that is the bubble's
-      // travel lane. After crossing it, the bubble settles into the new dot.
-      if (elapsed >= kRotationPipBubbleMillis / 3 && elapsed < 2 * kRotationPipBubbleMillis / 3) {
+      // In the spaced mode, the dark LED between pips is the bubble's travel
+      // lane. Dense mode settles directly into the adjacent position.
+      if (routeCount <= 16 && elapsed >= kRotationPipBubbleMillis / 3 && elapsed < 2 * kRotationPipBubbleMillis / 3) {
         bubbleX += 1;
       } else if (elapsed >= 2 * kRotationPipBubbleMillis / 3) {
-        bubbleX = x + 1 + rotationPipTo * 2;
+        bubbleX = x + rotationIndicatorPipOffset(rotationPipTo);
       }
     } else if (rotationPipTo < rotationPipFrom) {
       // The last-to-first transition loops through the otherwise-unused outer
       // pixels, retaining the same little travelling-bubble feel.
       const uint8_t phase = min<uint8_t>(3, elapsed * 4 / kRotationPipBubbleMillis);
       static constexpr int8_t kWrapOffsets[] = {0, 1, 2, -1};
-      bubbleX = x + 1 + rotationPipFrom * 2 + kWrapOffsets[phase];
-      if (phase == 3) bubbleX = x + 1 + rotationPipTo * 2;
+      bubbleX = x + rotationIndicatorPipOffset(rotationPipFrom) + kWrapOffsets[phase];
+      if (phase == 3) bubbleX = x + rotationIndicatorPipOffset(rotationPipTo);
     }
     matrix.drawPixel(bubbleX, y + 1, brightPink);
   }
@@ -1184,8 +1306,7 @@ const char* airportCity(const char* code) {
 }
 
 const char* displayAircraftType(const Route& route) {
-  const TailOverride* override = tailOverrideFor(route);
-  const char* type = override ? override->aircraftType : route.aircraftType;
+  const char* type = route.aircraftType;
   // Some feeds use the literal word TAIL as a placeholder rather than an
   // ICAO type. Treat it exactly like missing data on the display.
   const bool tailPlaceholder = strlen(type) == 4 &&
@@ -1195,6 +1316,8 @@ const char* displayAircraftType(const Route& route) {
 }
 
 void drawAirportRoute(const Route& route, int16_t x, int16_t y, uint16_t color) {
+  // drawMinecraftBoldCaps returns the final advance column. Leave exactly three
+  // dark columns before and after the route arrow, matching drawCityMarquee.
   x = drawMinecraftBoldCaps(route.origin, x, y, color) + 3;
   for (uint8_t row = 0; row < 5; ++row) {
     for (uint8_t column = 0; column < 6; ++column) {
@@ -1206,7 +1329,7 @@ void drawAirportRoute(const Route& route, int16_t x, int16_t y, uint16_t color) 
 
 int16_t registrationTextWidth(const char* text) {
   int16_t width = -1;
-  for (const char* character = text; *character; ++character) width += *character == '-' ? 3 : 6;
+  for (const char* character = text; *character; ++character) width += *character == '-' ? 3 : (*character == '0' ? 5 : 6);
   return width;
 }
 
@@ -1224,11 +1347,15 @@ void drawRouteMarquees(const Route& route) {
   matrix.fillRect(34, 16, 60, 7, black);
   matrix.fillRect(34, 28, 60, 7, black);
   matrix.fillRect(34, 40, 60, 7, black);
+  matrix.fillRect(34, 52, 60, 7, black);
   drawRegistrationMarquee(registration, 1, 37, 32, secondaryWhite);
   drawMinecraftMarquee(displayAircraftType(route), 1, 47, 32, secondaryWhite);
   drawCityMarquee(originCity, destinationCity, 34, 16, 60, secondaryWhite);
   drawMinecraftMarquee(route.flightNumber[0] ? route.flightNumber : "-----", 34, 28, 60, tertiaryWhite);
   drawMinecraftMarquee(airlineName(route), 34, 40, 60, tertiaryWhite);
+  if (route.specialFlightTitle[0]) {
+    drawMinecraftMarquee(route.specialFlightTitle, 34, 52, 60, secondaryWhite);
+  }
 }
 
 // The initial card render paints every label. Subsequent 75ms refreshes paint
@@ -1241,6 +1368,7 @@ void refreshActiveMarquees(const Route& route) {
   // Keep the unpainted badge/text gutter deterministic across all partial
   // marquee redraws, rather than relying on a future full-screen render.
   matrix.fillRect(33, 2, 1, matrix.height() - 3, black);
+  matrix.fillRect(94, 2, 1, matrix.height() - 3, black);
   char registration[sizeof(route.registration)];
   strlcpy(registration, route.registration[0] ? route.registration : "UNKNOWN", sizeof(registration));
   for (char* character = registration; *character; ++character) *character = toupper(*character);
@@ -1257,7 +1385,7 @@ void refreshActiveMarquees(const Route& route) {
     matrix.fillRect(1, 47, 32, 7, black);
     drawMinecraftMarquee(aircraftType, 1, 47, 32, secondaryWhite);
   }
-  if (normalTextWidth(originCity) + 3 + 6 + 3 + normalTextWidth(destinationCity) > 60) {
+  if (cityTextWidth(originCity) + 3 + 6 + 3 + cityTextWidth(destinationCity) > 60) {
     matrix.fillRect(34, 16, 60, 7, black);
     drawCityMarquee(originCity, destinationCity, 34, 16, 60, secondaryWhite);
   }
@@ -1269,15 +1397,19 @@ void refreshActiveMarquees(const Route& route) {
     matrix.fillRect(34, 40, 60, 7, black);
     drawMinecraftMarquee(operatorName, 34, 40, 60, tertiaryWhite);
   }
+  if (route.specialFlightTitle[0] && normalTextWidth(route.specialFlightTitle) > 60) {
+    matrix.fillRect(34, 52, 60, 7, black);
+    drawMinecraftMarquee(route.specialFlightTitle, 34, 52, 60, secondaryWhite);
+  }
 
   // Telemetry normally stays completely still. Only the exceptional values
   // wider than their 32-pixel slot are re-rendered as a marquee.
-  char altitude[12], verticalSpeed[12], speed[12], heading[12], distance[12];
+  char altitude[12], verticalSpeed[12], speed[12], track[12], distance[12];
   if (route.altFt >= 0) snprintf(altitude, sizeof(altitude), "%d", route.altFt); else strlcpy(altitude, "--", sizeof(altitude));
   if (route.verticalSpeedFpm <= -99999) strlcpy(verticalSpeed, "--", sizeof(verticalSpeed));
   else snprintf(verticalSpeed, sizeof(verticalSpeed), "%d", route.verticalSpeedFpm < 0 ? -route.verticalSpeedFpm : route.verticalSpeedFpm);
   if (route.speedKt >= 0) snprintf(speed, sizeof(speed), "%d", route.speedKt); else strlcpy(speed, "--", sizeof(speed));
-  if (route.headingDeg >= 0) snprintf(heading, sizeof(heading), "%d", route.headingDeg); else strlcpy(heading, "--", sizeof(heading));
+  if (route.trackDeg >= 0) snprintf(track, sizeof(track), "%d", route.trackDeg); else strlcpy(track, "--", sizeof(track));
   if (route.distanceKm >= 0.0f) snprintf(distance, sizeof(distance), "%.1f", route.distanceKm); else strlcpy(distance, "--", sizeof(distance));
 
   const uint16_t telemetry = matrix.color565(85, 85, 85);
@@ -1285,7 +1417,7 @@ void refreshActiveMarquees(const Route& route) {
       {altitude, route.altFt >= 0 ? TelemetryUnit::Feet : TelemetryUnit::None, false, false, false, 4},
       {verticalSpeed, TelemetryUnit::None, route.verticalSpeedFpm > -99999, route.verticalSpeedFpm > 0, route.verticalSpeedFpm == 0, 16},
       {speed, route.speedKt >= 0 ? TelemetryUnit::Knots : TelemetryUnit::None, false, false, false, 28},
-      {heading, route.headingDeg >= 0 ? TelemetryUnit::Degrees : TelemetryUnit::None, false, false, false, 40},
+      {track, route.trackDeg >= 0 ? TelemetryUnit::Degrees : TelemetryUnit::None, false, false, false, 40},
       {distance, route.distanceKm >= 0.0f ? TelemetryUnit::Kilometres : TelemetryUnit::None, false, false, false, 52},
   };
   for (const auto& line : lines) {
@@ -1322,15 +1454,15 @@ void drawTelemetryValues(const Route& route) {
   matrix.fillRect(95, 40, 32, 7, black);
   matrix.fillRect(95, 52, 32, 7, black);
 
-  char altitude[12], verticalSpeed[12], speed[12], heading[12], distance[12];
+  char altitude[12], verticalSpeed[12], speed[12], track[12], distance[12];
   if (route.altFt >= 0) snprintf(altitude, sizeof(altitude), "%d", route.altFt);
   else strlcpy(altitude, "--", sizeof(altitude));
   if (route.verticalSpeedFpm <= -99999) strlcpy(verticalSpeed, "--", sizeof(verticalSpeed));
   else snprintf(verticalSpeed, sizeof(verticalSpeed), "%d", route.verticalSpeedFpm < 0 ? -route.verticalSpeedFpm : route.verticalSpeedFpm);
   if (route.speedKt >= 0) snprintf(speed, sizeof(speed), "%d", route.speedKt);
   else strlcpy(speed, "--", sizeof(speed));
-  if (route.headingDeg >= 0) snprintf(heading, sizeof(heading), "%d", route.headingDeg);
-  else strlcpy(heading, "--", sizeof(heading));
+  if (route.trackDeg >= 0) snprintf(track, sizeof(track), "%d", route.trackDeg);
+  else strlcpy(track, "--", sizeof(track));
   if (route.distanceKm >= 0.0f) snprintf(distance, sizeof(distance), "%.1f", route.distanceKm);
   else strlcpy(distance, "--", sizeof(distance));
 
@@ -1338,7 +1470,7 @@ void drawTelemetryValues(const Route& route) {
   drawTelemetryLine(verticalSpeed, TelemetryUnit::None,
                     route.verticalSpeedFpm > -99999, route.verticalSpeedFpm > 0, route.verticalSpeedFpm == 0, 16, text);
   drawTelemetryLine(speed, route.speedKt >= 0 ? TelemetryUnit::Knots : TelemetryUnit::None, false, false, false, 28, text);
-  drawTelemetryLine(heading, route.headingDeg >= 0 ? TelemetryUnit::Degrees : TelemetryUnit::None, false, false, false, 40, text);
+  drawTelemetryLine(track, route.trackDeg >= 0 ? TelemetryUnit::Degrees : TelemetryUnit::None, false, false, false, 40, text);
   drawTelemetryLine(distance, route.distanceKm >= 0.0f ? TelemetryUnit::Kilometres : TelemetryUnit::None, false, false, false, 52, text);
 }
 
@@ -1668,15 +1800,57 @@ void drawNoPlanesFrame() {
   const uint16_t dimWhite = matrix.color565(100, 100, 100);
   matrix.fillScreen(black);
   drawNoPlanesAircraftSprite(static_cast<AircraftSprite>(noPlanesAircraftSprite), noPlanesSpriteX, 12, white);
+  if (nextNoPlanesSpriteActive) {
+    drawNoPlanesAircraftSprite(static_cast<AircraftSprite>(nextNoPlanesAircraftSprite),
+                               nextNoPlanesSpriteX, 12, white);
+  }
   drawMinecraftCentered("no planes", 54, dimWhite);
 }
 
 void drawNoPlanes() {
   showingNoPlanes = true;
+  bootTransitionPending = false;
   noPlanesSpriteX = -kNoPlanesSpriteWidth;
   noPlanesAircraftSprite = random(0, kAircraftSpriteCount);
+  nextNoPlanesSpriteX = -kNoPlanesSpriteWidth;
+  nextNoPlanesAircraftSprite = noPlanesAircraftSprite;
+  nextNoPlanesSpriteActive = false;
   nextNoPlanesAnimationMillis = millis() + kNoPlanesAnimationStepMillis;
   drawNoPlanesFrame();
+}
+
+// A short, self-contained boot vignette: a colourful aircraft accelerates
+// across a dark runway, climbs away, and leaves the panel completely black.
+// It does not depend on Wi-Fi or provider data, so every power-on starts clean.
+void playBootAnimation() {
+  constexpr uint8_t frames = 38;
+  constexpr uint16_t frameMillis = 38;
+  const uint16_t black = matrix.color565(0, 0, 0);
+  for (uint8_t frame = 0; frame < frames; ++frame) {
+    matrix.fillScreen(black);
+    const int16_t planeX = -32 + frame * 5;
+    const float normalized = static_cast<float>(frame) / (frames - 1);
+    const int16_t planeY = 25 - static_cast<int16_t>(normalized * normalized * 18.0f);
+    // Three crisp contrails fade from rich blue to warm pink behind the plane.
+    const uint8_t trailLength = min<uint8_t>(28, frame * 2);
+    for (uint8_t pixel = 0; pixel < trailLength; ++pixel) {
+      const float fade = 1.0f - static_cast<float>(pixel) / max<uint8_t>(1, trailLength);
+      const uint8_t red = static_cast<uint8_t>(210 * fade);
+      const uint8_t green = static_cast<uint8_t>(45 * fade);
+      const uint8_t blue = static_cast<uint8_t>(180 * fade);
+      const int16_t trailX = planeX - pixel;
+      matrix.drawPixel(trailX, planeY + 15, matrix.color565(red, green, blue));
+      if ((pixel & 1) == 0) matrix.drawPixel(trailX, planeY + 16, matrix.color565(0, red, blue));
+    }
+    const uint8_t red = static_cast<uint8_t>(60 + normalized * 190);
+    const uint8_t green = static_cast<uint8_t>(210 - normalized * 120);
+    const uint8_t blue = static_cast<uint8_t>(255 - normalized * 90);
+    drawNoPlanesAircraftSprite(AircraftSprite::NarrowbodyJet, planeX, planeY,
+                               matrix.color565(red, green, blue));
+    delay(frameMillis);
+  }
+  matrix.fillScreen(black);
+  bootTransitionPending = true;
 }
 
 void advanceNoPlanesAnimation() {
@@ -1684,27 +1858,39 @@ void advanceNoPlanesAnimation() {
   // then paint its next position, so the border and status label never blink.
   const uint16_t black = matrix.color565(0, 0, 0);
   matrix.fillRect(noPlanesSpriteX, 12, 33, 33, black);
+  if (nextNoPlanesSpriteActive) matrix.fillRect(nextNoPlanesSpriteX, 12, 33, 33, black);
 
   ++noPlanesSpriteX;
+  if (nextNoPlanesSpriteActive) ++nextNoPlanesSpriteX;
+  // Dispatch the next aircraft as soon as this one's nose reaches the right
+  // edge. The two silhouettes overlap briefly rather than leaving a dead gap.
+  if (!nextNoPlanesSpriteActive && noPlanesSpriteX + 32 >= static_cast<int16_t>(matrix.width() - 1)) {
+    const uint8_t spriteCount = kAircraftSpriteCount;
+    uint8_t sprite = random(0, spriteCount - 1);
+    if (sprite >= noPlanesAircraftSprite) ++sprite;
+    nextNoPlanesAircraftSprite = sprite;
+    nextNoPlanesSpriteX = -kNoPlanesSpriteWidth;
+    nextNoPlanesSpriteActive = true;
+  }
   // matrix.width() is unsigned; cast it so a negative off-screen x position
   // remains negative rather than turning into a very large positive number.
   if (noPlanesSpriteX > static_cast<int16_t>(matrix.width())) {
-    noPlanesSpriteX = -kNoPlanesSpriteWidth;
-    const uint8_t spriteCount = kAircraftSpriteCount;
-    // A pass always changes family, even if the random draw repeats the last one.
-    uint8_t nextSprite = random(0, spriteCount - 1);
-    if (nextSprite >= noPlanesAircraftSprite) ++nextSprite;
-    noPlanesAircraftSprite = nextSprite;
+    noPlanesSpriteX = nextNoPlanesSpriteX;
+    noPlanesAircraftSprite = nextNoPlanesAircraftSprite;
+    nextNoPlanesSpriteActive = false;
   }
   drawNoPlanesAircraftSprite(static_cast<AircraftSprite>(noPlanesAircraftSprite), noPlanesSpriteX, 12,
                               matrix.color565(255, 255, 255));
+  if (nextNoPlanesSpriteActive) {
+    drawNoPlanesAircraftSprite(static_cast<AircraftSprite>(nextNoPlanesAircraftSprite),
+                               nextNoPlanesSpriteX, 12, matrix.color565(255, 255, 255));
+  }
 }
 
 void showNoPlanesAfterDataFailure() {
-  // A transport failure used to paint a teal "data offline" card while the
-  // old route scheduler remained active. Its marquee/telemetry updates then
-  // wrote through that card. Treat unavailable data exactly like no aircraft:
-  // clear every route-owned animation state before drawing the clean idle scene.
+  // Never let a transient transport failure erase a visible card. A later
+  // successful refresh will decide whether the queue should gracefully leave.
+  if (routeCount > 0 || showingNoPlanes) return;
   routeCount = 0;
   routeIndex = 0;
   letterTransitionActive = false;
@@ -1755,7 +1941,8 @@ int8_t letterDropOffset(unsigned long phase, uint8_t line, uint8_t character,
 
 void drawAnimatedNormalLine(const char* text, int16_t left, int16_t y, int16_t width,
                             uint16_t color, uint8_t line, unsigned long phase,
-                            bool entering, bool compactHyphen = false, uint8_t startIndex = 0) {
+                            bool entering, bool compactHyphen = false, uint8_t startIndex = 0,
+                            bool compactZero = false) {
   int16_t x = left;
   uint8_t characterIndex = 0;
   for (const char* character = text; *character; ++character, ++characterIndex) {
@@ -1773,7 +1960,8 @@ void drawAnimatedNormalLine(const char* text, int16_t left, int16_t y, int16_t w
     for (uint8_t row = 0; row < 7; ++row) {
       const int16_t pixelY = y + row + offset;
       if (pixelY < y || pixelY >= y + 7) continue;
-      const uint8_t pixels = uppercase ? pgm_read_byte(&kMinecraftNormalCaps[glyph][row])
+      const uint8_t pixels = compactZero && *character == '0' ? pgm_read_byte(&kMinecraftTelemetryZero[row])
+                                       : uppercase ? pgm_read_byte(&kMinecraftNormalCaps[glyph][row])
                                        : pgm_read_byte(&kMinecraftFont[glyph][row]);
       for (uint8_t column = 0; column < 5; ++column) {
         const int16_t pixelX = x + column;
@@ -1782,7 +1970,7 @@ void drawAnimatedNormalLine(const char* text, int16_t left, int16_t y, int16_t w
         }
       }
     }
-    x += 6;
+    x += compactZero && *character == '0' ? 5 : 6;
   }
 }
 
@@ -1810,7 +1998,9 @@ void drawAnimatedTelemetryNumber(const char* text, int16_t x, int16_t y, int16_t
     for (uint8_t row = 0; row < 7; ++row) {
       const int16_t pixelY = y + row + offset;
       if (pixelY < y || pixelY >= y + 7) continue;
-      const uint8_t pixels = pgm_read_byte(&kMinecraftFont[glyph][row]);
+      const uint8_t pixels = *character == '0'
+                                 ? pgm_read_byte(&kMinecraftTelemetryZero[row])
+                                 : pgm_read_byte(&kMinecraftFont[glyph][row]);
       for (uint8_t column = 0; column < 5; ++column) {
         const int16_t pixelX = x + column;
         if ((pixels & (1 << (4 - column))) && pixelX >= left && pixelX < right) matrix.drawPixel(pixelX, pixelY, color);
@@ -1918,7 +2108,7 @@ void drawAnimatedCityText(const char* text, int16_t x, int16_t y, int16_t left, 
     const int8_t offset = letterDropOffset(phase, line, glyphIndex, entering);
     if (glyphInfo.base == '-') {
       const int16_t pixelY = y + 3 + offset;
-      if (x >= left && x + 4 < right && pixelY >= y && pixelY < y + 7) {
+      if (pixelY >= y && pixelY < y + 7 && x + 4 >= left && x < right) {
         matrix.fillRect(x, pixelY, 5, 1, color);
       }
       x += 6;
@@ -2039,10 +2229,15 @@ void drawAnimatedAirportRoute(const Route& route, unsigned long phase, bool ente
 
 void clearTransitionTextAreas() {
   const uint16_t black = matrix.color565(0, 0, 0);
+  // Keep both permanent layout gutters dark during the otherwise incremental
+  // letter-drop animation too.
+  matrix.fillRect(33, 2, 1, matrix.height() - 3, black);
+  matrix.fillRect(94, 2, 1, matrix.height() - 3, black);
   matrix.fillRect(34, 4, 60, 7, black);
   matrix.fillRect(34, 16, 60, 7, black);
   matrix.fillRect(34, 28, 60, 7, black);
   matrix.fillRect(34, 40, 60, 7, black);
+  matrix.fillRect(34, 52, 60, 7, black);
   matrix.fillRect(1, 37, 32, 7, black);
   matrix.fillRect(1, 47, 32, 7, black);
   matrix.fillRect(95, 4, 32, 7, black);
@@ -2060,14 +2255,14 @@ void drawAnimatedRouteText(const Route& route, unsigned long phase, bool enterin
   for (char* character = registration; *character; ++character) *character = toupper(*character);
   const char* originCity = airportCity(route.origin);
   const char* destinationCity = airportCity(route.destination);
-  char altitude[12], verticalSpeed[12], speed[12], heading[12], distance[12];
+  char altitude[12], verticalSpeed[12], speed[12], track[12], distance[12];
   if (route.altFt >= 0) snprintf(altitude, sizeof(altitude), "%d", route.altFt);
   else strlcpy(altitude, "--", sizeof(altitude));
   if (route.verticalSpeedFpm <= -99999) strlcpy(verticalSpeed, "--", sizeof(verticalSpeed));
   else snprintf(verticalSpeed, sizeof(verticalSpeed), "%d", route.verticalSpeedFpm < 0 ? -route.verticalSpeedFpm : route.verticalSpeedFpm);
   if (route.speedKt >= 0) snprintf(speed, sizeof(speed), "%d", route.speedKt);
   else strlcpy(speed, "--", sizeof(speed));
-  snprintf(heading, sizeof(heading), route.headingDeg >= 0 ? "%d" : "--", route.headingDeg);
+  snprintf(track, sizeof(track), route.trackDeg >= 0 ? "%d" : "--", route.trackDeg);
   if (route.distanceKm >= 0.0f) snprintf(distance, sizeof(distance), "%.1f", route.distanceKm);
   else strlcpy(distance, "--", sizeof(distance));
   drawAnimatedAirportRoute(route, phase, entering);
@@ -2075,13 +2270,16 @@ void drawAnimatedRouteText(const Route& route, unsigned long phase, bool enterin
   drawAnimatedNormalLine(route.flightNumber[0] ? route.flightNumber : "-----", 34, 28, 60,
                          tertiaryWhite, 2, phase, entering);
   drawAnimatedNormalLine(airlineName(route), 34, 40, 60, tertiaryWhite, 9, phase, entering);
-  drawAnimatedNormalLine(registration, 1, 37, 32, secondaryWhite, 3, phase, entering, true);
+  if (route.specialFlightTitle[0]) {
+    drawAnimatedNormalLine(route.specialFlightTitle, 34, 52, 60, secondaryWhite, 11, phase, entering);
+  }
+  drawAnimatedNormalLine(registration, 1, 37, 32, secondaryWhite, 3, phase, entering, true, 0, true);
   drawAnimatedNormalLine(displayAircraftType(route), 1, 47, 32,
                          secondaryWhite, 4, phase, entering);
   drawAnimatedTelemetryNumber(altitude, 95, 4, 95, 127, tertiaryWhite, 5, phase, entering);
   drawAnimatedTelemetryNumber(verticalSpeed, 95, 16, 95, 127, tertiaryWhite, 6, phase, entering);
   drawAnimatedTelemetryNumber(speed, 95, 28, 95, 127, tertiaryWhite, 7, phase, entering);
-  drawAnimatedTelemetryNumber(heading, 95, 40, 95, 127, tertiaryWhite, 8, phase, entering);
+  drawAnimatedTelemetryNumber(track, 95, 40, 95, 127, tertiaryWhite, 8, phase, entering);
   drawAnimatedTelemetryNumber(distance, 95, 52, 95, 127, tertiaryWhite, 10, phase, entering);
   drawAnimatedTelemetryAdornment(altitude, route.altFt >= 0 ? TelemetryUnit::Feet : TelemetryUnit::None,
                                  false, false, false, 4, 5, phase, entering, tertiaryWhite);
@@ -2091,7 +2289,7 @@ void drawAnimatedRouteText(const Route& route, unsigned long phase, bool enterin
                                  16, 6, phase, entering, tertiaryWhite);
   drawAnimatedTelemetryAdornment(speed, route.speedKt >= 0 ? TelemetryUnit::Knots : TelemetryUnit::None,
                                  false, false, false, 28, 7, phase, entering, tertiaryWhite);
-  drawAnimatedTelemetryAdornment(heading, route.headingDeg >= 0 ? TelemetryUnit::Degrees : TelemetryUnit::None,
+  drawAnimatedTelemetryAdornment(track, route.trackDeg >= 0 ? TelemetryUnit::Degrees : TelemetryUnit::None,
                                  false, false, false, 40, 8, phase, entering, tertiaryWhite);
   drawAnimatedTelemetryAdornment(distance, route.distanceKm >= 0.0f ? TelemetryUnit::Kilometres : TelemetryUnit::None,
                                  false, false, false, 52, 10, phase, entering, tertiaryWhite);
@@ -2159,6 +2357,49 @@ void updateLetterTransition() {
   }
 }
 
+constexpr unsigned long kIdleRouteTransitionMillis = 2000;
+constexpr unsigned long kIdleRouteCardRevealMillis = 650;
+
+void updateIdleToRouteTransition() {
+  if (!idleToRouteTransitionActive || routeCount == 0) return;
+  const unsigned long elapsed = millis() - idleToRouteTransitionStartMillis;
+  // Keep the current idle aircraft moving during the network-result handoff.
+  if (elapsed < kIdleRouteCardRevealMillis) return;
+
+  if (!idleToRouteCardDrawn) {
+    showingNoPlanes = false;
+    matrix.fillScreen(matrix.color565(0, 0, 0));
+    drawRouteChrome(routes[routeIndex]);
+    idleToRouteCardDrawn = true;
+  }
+  clearTransitionTextAreas();
+  drawAnimatedRouteText(routes[routeIndex], elapsed - kIdleRouteCardRevealMillis, true);
+  if (elapsed < kIdleRouteTransitionMillis) return;
+
+  idleToRouteTransitionActive = false;
+  routeSceneStartMillis = millis();
+  nextRouteAnimationMillis = routeSceneStartMillis + 2000;
+  nextRotationIndicatorMillis = routeSceneStartMillis;
+  drawRouteProgress(routes[routeIndex].flightProgressPercent);
+  drawRotationIndicator();
+}
+
+void updateRouteToIdleTransition() {
+  if (!routeToIdleTransitionActive || routeCount == 0) return;
+  const unsigned long elapsed = millis() - routeToIdleTransitionStartMillis;
+  clearTransitionTextAreas();
+  if (elapsed < kLetterExitMillis) {
+    drawAnimatedRouteText(routes[routeIndex], elapsed, false);
+    return;
+  }
+  if (elapsed < kIdleRouteCardRevealMillis + 400) return;
+
+  routeToIdleTransitionActive = false;
+  routeCount = 0;
+  routeIndex = 0;
+  drawNoPlanes();
+}
+
 bool beginBackendRequest(HTTPClient& request, WiFiClientSecure& secureClient,
                          const String& url) {
   if (url.startsWith("https://")) {
@@ -2206,9 +2447,11 @@ void drawPairingQrLoading() {
   const uint16_t black = matrix.color565(0, 0, 0);
   constexpr int16_t centerX = 64;
   constexpr int16_t centerY = 32;
+  // Clockwise order is important: the old zig-zag ordering put equally bright
+  // pixels on opposite sides of the ring, reading as two competing heads.
   constexpr int8_t kRing[][2] = {
-      {-3, -5}, {0, -6}, {3, -5}, {-5, -3}, {5, -3}, {-6, 0},
-      {6, 0}, {-5, 3}, {5, 3}, {-3, 5}, {0, 6}, {3, 5},
+      {0, -6}, {3, -5}, {5, -3}, {6, 0}, {5, 3}, {3, 5},
+      {0, 6}, {-3, 5}, {-5, 3}, {-6, 0}, {-5, -3}, {-3, -5},
   };
   // Lead, then a smoothly diminishing tail. The final two LEDs deliberately
   // settle at 10% brightness rather than disappearing abruptly.
@@ -2225,9 +2468,10 @@ void drawPairingQrLoading() {
   }
 }
 
-void pairingQrRequestTask(void*) {
+bool requestPairingQrNow() {
   bool success = false;
-  char url[sizeof(pairingQrRequestUrl)] = {};
+  int status = -1;
+  char url[256] = {};
 
   WiFiClientSecure secureClient;
   HTTPClient request;
@@ -2235,7 +2479,7 @@ void pairingQrRequestTask(void*) {
   if (!endpoint.isEmpty() && beginBackendRequest(request, secureClient, endpoint)) {
     request.setTimeout(15000);
     request.addHeader("X-Device-Key", LED_PLANE_DEVICE_KEY);
-    const int status = request.POST("");
+    status = request.POST("");
     if (status == HTTP_CODE_OK) {
       JsonDocument payload;
       const DeserializationError error = deserializeJson(payload, request.getStream());
@@ -2250,19 +2494,14 @@ void pairingQrRequestTask(void*) {
     request.end();
   }
 
-  if (success) strlcpy(pairingQrRequestUrl, url, sizeof(pairingQrRequestUrl));
-  pairingQrRequestSucceeded = success;
-  pairingQrRequestFinished = true;
-  pairingQrTaskHandle = nullptr;
-  vTaskDelete(nullptr);
+  pairingQrRequestStatus = status;
+  if (!success) return false;
+  pairingUrl = url;
+  pairingUrlRefreshMillis = millis() + 4UL * 60UL * 1000UL;
+  return true;
 }
 
 bool fetchAndDrawPairingQr() {
-  if (strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(LED_PLANE_DEVICE_KEY) == 0 ||
-      WiFi.status() != WL_CONNECTED) {
-    return false;
-  }
-
   // Pairing links are valid for five minutes. Reuse one for four minutes so a
   // temporarily unavailable flight feed does not fill the database with tokens.
   if (!pairingUrl.isEmpty() && millis() < pairingUrlRefreshMillis) {
@@ -2270,37 +2509,33 @@ bool fetchAndDrawPairingQr() {
     return true;
   }
 
-  if (pairingQrRequestActive) return true;
+  // QR mode is a persistent intent, not a one-shot network action. The
+  // loading spinner stays visible through Wi-Fi/TLS delays and retries.
+  pairingQrRetryPending = true;
   drawPairingQrLoading();
+  if (strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(LED_PLANE_DEVICE_KEY) == 0 ||
+      WiFi.status() != WL_CONNECTED || flightFetchInProgress || millis() < pairingQrRetryMillis) {
+    return true;
+  }
+
+  // Pairing deliberately runs synchronously once it owns the network. Flight
+  // fetches run in the background, but a second concurrent TLS task can wedge
+  // the ESP32 client indefinitely. This restores the formerly reliable QR
+  // path while the DMA panel continues showing the spinner during the brief
+  // request.
   pairingQrSpinnerStartMillis = millis();
-  pairingQrRequestFinished = false;
-  pairingQrRequestSucceeded = false;
-  pairingQrRequestActive = xTaskCreatePinnedToCore(
-      pairingQrRequestTask, "pairing-qr", 8192, nullptr, 1, &pairingQrTaskHandle, 0) == pdPASS;
-  if (!pairingQrRequestActive) {
-    Serial.println("Could not start pairing QR request");
-    return false;
+  if (requestPairingQrNow()) {
+    pairingQrRetryPending = false;
+    if (showingPairingQr) drawPairingQr(pairingUrl);
+  } else {
+    Serial.printf("Pairing request will retry after status %d\n", pairingQrRequestStatus);
+    pairingQrRetryMillis = millis() + 10000;
   }
   return true;
 }
 
 void updatePairingQrRequest() {
-  if (!pairingQrRequestActive) return;
-  if (!pairingQrRequestFinished) {
-    if (showingPairingQr) drawPairingQrLoading();
-    return;
-  }
-
-  pairingQrRequestActive = false;
-  if (pairingQrRequestSucceeded) {
-    pairingUrl = pairingQrRequestUrl;
-    pairingUrlRefreshMillis = millis() + 4UL * 60UL * 1000UL;
-    if (showingPairingQr) drawPairingQr(pairingUrl);
-  } else if (showingPairingQr) {
-    matrix.fillScreen(matrix.color565(0, 0, 0));
-    drawMinecraftCentered("QR", 22, matrix.color565(255, 255, 255));
-    drawMinecraftCentered("OFFLINE", 37, matrix.color565(255, 255, 255));
-  }
+  if (showingPairingQr && pairingQrRetryPending) fetchAndDrawPairingQr();
 }
 
 bool routesHaveSameIdentity(const Route& first, const Route& second) {
@@ -2313,6 +2548,8 @@ bool routesHaveSameIdentity(const Route& first, const Route& second) {
 // until it has finished its 20-second scene and its exit animation.
 void mergeRefreshedRouteQueue(uint8_t refreshedCount) {
   if (routeCount == 0) {
+    const bool enteringFromIdle = showingNoPlanes || bootTransitionPending;
+    bootTransitionPending = false;
     memcpy(routes, refreshedRoutes, sizeof(Route) * refreshedCount);
     routeCount = refreshedCount;
     routeIndex = 0;
@@ -2320,6 +2557,43 @@ void mergeRefreshedRouteQueue(uint8_t refreshedCount) {
     rotationIndicatorResetActive = false;
     rotationPipTransitionActive = false;
     routeProgressTo = routes[routeIndex].flightProgressPercent;
+    nextFlightRotationMillis = millis() + kFlightRotationMillis;
+    if (enteringFromIdle) {
+      // Let the idle plane continue while the request result is applied, then
+      // use the same staggered drop-in language as a route-to-route change.
+      idleToRouteTransitionActive = true;
+      idleToRouteCardDrawn = false;
+      idleToRouteTransitionStartMillis = millis();
+    } else {
+      drawCurrentRoute();
+    }
+    return;
+  }
+
+  // A configured special flight owns the display while it is live. Replace an
+  // ordinary rotation immediately rather than letting its existing queue
+  // position defer the special card by several 20-second scenes. Once this
+  // handoff is complete the queue contains only special flights, so the normal
+  // stable merge below preserves their order as usual.
+  const bool hasSpecialUpdate = refreshedCount > 0 && refreshedRoutes[0].specialFlight;
+  bool queuedOrdinaryFlight = false;
+  for (uint8_t index = 0; index < routeCount; ++index) {
+    if (!routes[index].specialFlight) {
+      queuedOrdinaryFlight = true;
+      break;
+    }
+  }
+  if (hasSpecialUpdate && queuedOrdinaryFlight) {
+    memcpy(routes, refreshedRoutes, sizeof(Route) * refreshedCount);
+    routeCount = refreshedCount;
+    routeIndex = 0;
+    letterTransitionActive = false;
+    routeToIdleTransitionActive = false;
+    idleToRouteTransitionActive = false;
+    routeProgressAnimationActive = false;
+    rotationIndicatorResetActive = false;
+    rotationPipTransitionActive = false;
+    routeProgressTo = routes[0].flightProgressPercent;
     nextFlightRotationMillis = millis() + kFlightRotationMillis;
     drawCurrentRoute();
     return;
@@ -2366,43 +2640,36 @@ void mergeRefreshedRouteQueue(uint8_t refreshedCount) {
   Serial.printf("Queue refreshed: %u aircraft, active index %u\n", routeCount, routeIndex);
 }
 
-void fetchAndDrawFirstFlight() {
-  if (strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(LED_PLANE_DEVICE_KEY) == 0 ||
-      WiFi.status() != WL_CONNECTED) {
+void processFetchedFlightResponse() {
+  if (!flightFetchFinished) return;
+  flightFetchFinished = false;
+  if (flightFetchStatus != HTTP_CODE_OK) {
+    Serial.printf("Flight request failed: HTTP %d\n", flightFetchStatus);
+    // A failed refresh must never erase a perfectly good on-screen card.
+    if (routeCount == 0 && !showingNoPlanes) showNoPlanesAfterDataFailure();
     return;
   }
-
-  WiFiClientSecure secureClient;
-  // Keep the TLS client alive until HTTPClient has finished destroying itself.
-  // Local variables are destroyed in reverse order.
-  HTTPClient request;
-  if (!beginBackendRequest(request, secureClient, LED_PLANE_BACKEND_URL)) {
-    showNoPlanesAfterDataFailure();
-    return;
-  }
-  // A fresh nearby-aircraft lookup can take several seconds before the backend
-  // has a cached snapshot. Give it time rather than leaving the greeting up.
-  request.setTimeout(60000);
-  request.addHeader("X-Device-Key", LED_PLANE_DEVICE_KEY);
-  const int status = request.GET();
-  if (status != HTTP_CODE_OK) {
-    Serial.printf("Flight request failed: HTTP %d\n", status);
-    request.end();
-    showNoPlanesAfterDataFailure();
-    return;
-  }
-
   JsonDocument payload;
-  const DeserializationError error = deserializeJson(payload, request.getStream());
-  request.end();
+  const DeserializationError error = deserializeJson(payload, flightFetchResponse, flightFetchLength);
   if (error) {
     Serial.printf("Flight JSON failed: %s\n", error.c_str());
-    showNoPlanesAfterDataFailure();
+    if (routeCount == 0 && !showingNoPlanes) showNoPlanesAfterDataFailure();
     return;
   }
 
   uint8_t newRouteCount = 0;
+  bool hasSpecialFlight = false;
   for (JsonObject flight : payload["flights"].as<JsonArray>()) {
+    if (flight["specialFlight"] | false) {
+      hasSpecialFlight = true;
+      break;
+    }
+  }
+  for (JsonObject flight : payload["flights"].as<JsonArray>()) {
+    // Special flights exclusively occupy the display rotation. Normal flights
+    // remain in the backend response for diagnostics, but cannot dilute the
+    // on-panel counter or delay a configured aircraft.
+    if (hasSpecialFlight && !(flight["specialFlight"] | false)) continue;
     const char* candidateOrigin = flight["origin"] | "";
     const char* candidateDestination = flight["destination"] | "";
     const char* candidateFlightNumber = flight["flightNumber"] | "";
@@ -2426,11 +2693,17 @@ void fetchAndDrawFirstFlight() {
       strlcpy(route.flightNumber, candidateFlightNumber, sizeof(route.flightNumber));
       strlcpy(route.operatorCode, candidateOperator, sizeof(route.operatorCode));
       strlcpy(route.registration, candidateRegistration, sizeof(route.registration));
+      route.specialFlight = flight["specialFlight"] | false;
+      strlcpy(route.specialFlightTitle, flight["trackedFlightTitle"] | "", sizeof(route.specialFlightTitle));
       route.altFt = flight["altFt"] | -1;
       route.speedKt = flight["speedKt"] | -1;
       route.verticalSpeedFpm = flight["verticalSpeedFpm"] | -100000;
-      route.headingDeg = flight["headingDeg"] | -1;
+      // Accept the former field for the brief lifetime of a cached response,
+      // while all fresh backend responses use trackDeg exclusively.
+      route.trackDeg = flight["trackDeg"] | (flight["headingDeg"] | -1);
       strlcpy(route.aircraftType, flight["aircraftType"] | "", sizeof(route.aircraftType));
+      // Tail-number overrides deliberately affect branding only. The live
+      // aircraft type remains authoritative for the type-specific silhouette.
       route.distanceKm = flight["distanceKm"] | -1.0f;
       route.flightProgressPercent = flight["flightProgressPercent"] | -1.0f;
       route.pendingRemoval = false;
@@ -2439,11 +2712,56 @@ void fetchAndDrawFirstFlight() {
   }
   if (newRouteCount == 0 && routeCount == 0) {
     routeCount = 0;
-    drawNoPlanes();
+    // Preserve the moving idle scene across empty refreshes.
+    if (!showingNoPlanes) drawNoPlanes();
     Serial.println("No routable flights in the current response.");
   } else {
     mergeRefreshedRouteQueue(newRouteCount);
     Serial.printf("Queued %u routable flights\n", routeCount);
+  }
+}
+
+void fetchFlightsTask(void*) {
+  int status = -1;
+  WiFiClientSecure secureClient;
+  HTTPClient request;
+  if (beginBackendRequest(request, secureClient, LED_PLANE_BACKEND_URL)) {
+    // A pairing request and a flight request must not overlap: two TLS clients
+    // can stall the ESP32 Wi-Fi stack. Keep a flight refresh bounded so QR mode
+    // waits briefly at most, then receives the network to itself.
+    request.setTimeout(15000);
+    request.addHeader("X-Device-Key", LED_PLANE_DEVICE_KEY);
+    status = request.GET();
+    if (status == HTTP_CODE_OK) {
+      const String response = request.getString();
+      if (response.length() >= kFlightResponseCapacity) {
+        status = -2;
+      } else {
+        flightFetchLength = response.length();
+        memcpy(flightFetchResponse, response.c_str(), flightFetchLength);
+        flightFetchResponse[flightFetchLength] = '\0';
+      }
+    }
+    request.end();
+  }
+  flightFetchStatus = status;
+  // This flag is written last: the display task will only read a complete
+  // response buffer, while this background task has kept animation running.
+  flightFetchFinished = true;
+  flightFetchInProgress = false;
+  vTaskDelete(nullptr);
+}
+
+void fetchAndDrawFirstFlight() {
+  if (strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(LED_PLANE_DEVICE_KEY) == 0 ||
+      WiFi.status() != WL_CONNECTED || flightFetchInProgress || flightFetchFinished) {
+    return;
+  }
+  flightFetchInProgress = true;
+  if (xTaskCreatePinnedToCore(fetchFlightsTask, "flight-fetch", 8192, nullptr, 1, nullptr, 0) != pdPASS) {
+    flightFetchStatus = -3;
+    flightFetchFinished = true;
+    flightFetchInProgress = false;
   }
 }
 
@@ -2455,13 +2773,10 @@ void handleBootButton() {
     showingPairingQr = !showingPairingQr;
     if (showingPairingQr) {
       Serial.println("Display mode: pairing QR");
-      if (!fetchAndDrawPairingQr()) {
-        matrix.fillScreen(matrix.color565(0, 0, 0));
-        drawMinecraftCentered("QR", 22, matrix.color565(255, 255, 255));
-        drawMinecraftCentered("OFFLINE", 37, matrix.color565(255, 255, 255));
-      }
+      fetchAndDrawPairingQr();
     } else {
       Serial.println("Display mode: flight route");
+      pairingQrRetryPending = false;
       if (routeCount > 0) {
         drawCurrentRoute();
       } else {
@@ -2648,7 +2963,7 @@ void setup() {
   // 5 V panel supply is verified.
   matrix.setBrightness8(255);
   lastDisplayMaintenanceWipeMillis = millis();
-  drawNoPlanes();
+  playBootAnimation();
   pinMode(kBootButtonPin, INPUT_PULLUP);
   loadDisplayPreferences();
   connectWifiAndEnableLocalUpdater();
@@ -2661,16 +2976,18 @@ void loop() {
   updateServer.handleClient();
   handleBootButton();
   updatePairingQrRequest();
+  processFetchedFlightResponse();
   const bool transitionWasActive = letterTransitionActive;
   // If the only card disappeared during its scene, honour the full scene
   // duration before falling back to the idle animation.
   if (!showingPairingQr && routeCount == 1 && routes[0].pendingRemoval &&
-      !letterTransitionActive && millis() >= nextFlightRotationMillis) {
-    routeCount = 0;
-    routeIndex = 0;
-    drawNoPlanes();
+      !letterTransitionActive && !routeToIdleTransitionActive && !idleToRouteTransitionActive &&
+      millis() >= nextFlightRotationMillis) {
+    routeToIdleTransitionActive = true;
+    routeToIdleTransitionStartMillis = millis();
   }
   if (!showingPairingQr && routeCount > 1 && !letterTransitionActive &&
+      !routeToIdleTransitionActive && !idleToRouteTransitionActive &&
       millis() >= nextFlightRotationMillis) {
     letterTransitionRouteIndex = (routeIndex + 1) % routeCount;
     letterTransitionStartMillis = millis();
@@ -2694,6 +3011,8 @@ void loop() {
     nextFlightRotationMillis = 0xFFFFFFFFUL;
   }
   if (letterTransitionActive) updateLetterTransition();
+  if (idleToRouteTransitionActive) updateIdleToRouteTransition();
+  if (routeToIdleTransitionActive) updateRouteToIdleTransition();
   if (millis() >= nextFlightPollMillis) {
     // Do not let a blocking network refresh erase the exit/enter frames. When
     // a refresh lands on a scene boundary, hold it until the new card has had
@@ -2707,11 +3026,13 @@ void loop() {
       nextFlightPollMillis = millis() + 60000;
     }
   }
-  if (!showingPairingQr && routeCount > 0 && !letterTransitionActive && millis() >= nextRouteAnimationMillis) {
+  if (!showingPairingQr && routeCount > 0 && !letterTransitionActive &&
+      !idleToRouteTransitionActive && !routeToIdleTransitionActive && millis() >= nextRouteAnimationMillis) {
     refreshActiveMarquees(routes[routeIndex]);
     nextRouteAnimationMillis = millis() + 75;
   }
-  if (!showingPairingQr && routeCount > 0 && millis() >= nextRotationIndicatorMillis) {
+  if (!showingPairingQr && routeCount > 0 && !idleToRouteTransitionActive &&
+      !routeToIdleTransitionActive && millis() >= nextRotationIndicatorMillis) {
     if (routeProgressAnimationActive) {
       const RouteProgressFrame progress = animatedRouteProgress();
       drawRouteProgress(progress.percent, progress.opacity);

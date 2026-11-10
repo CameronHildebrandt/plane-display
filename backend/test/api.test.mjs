@@ -66,6 +66,23 @@ test("registry identity is the default operator source when a callsign is absent
   assert.equal(flight.aircraftIdentitySource, "adsbdb");
 });
 
+test("live responses put richer aircraft first and alphabetize equal records", async () => {
+  const { store, key } = await setup();
+  const source = { fetch: async url => {
+    if (String(url).includes("/api/0/routeset")) return new Response(JSON.stringify([]));
+    if (String(url).includes("api.adsbdb.com")) return new Response(JSON.stringify({ response: [] }));
+    return new Response(JSON.stringify({ ac: [
+      { hex: "rich", flight: "ZZZ1", r: "C-RICH", t: "A320", alt_baro: 30000, baro_rate: 0, gs: 400, track: 200, lat: 53.6, lon: -113.6 },
+      { hex: "alpha", flight: "AAA1", r: "C-ALPHA", t: "A320", alt_baro: 30000, baro_rate: 0, gs: 400, track: 200, lat: 53.6, lon: -113.6 },
+      { hex: "sparse", flight: "MID1", lat: 53.6, lon: -113.6 }
+    ] }));
+  } };
+  const response = await handle(request("/flightdata", { headers: { "X-Device-Key": key } }), store, source);
+  const body = await response.json();
+  assert.deepEqual(body.flights.map(flight => flight.flightNumber), ["AAA1", "ZZZ1", "MID1"]);
+  assert.equal(body.flights[0].trackDeg, 200);
+});
+
 test("a debug pack returns a full stable brand-test roster without calling a provider", async () => {
   const { store, key } = await setup();
   await store.updateSettings("test", { name: "Test display", latitude: 53.5, longitude: -113.5, radiusKm: 100, includeGrounded: false, debugMode: "canadian-scheduled" });
@@ -104,6 +121,10 @@ test("an active special flight is added outside the local radius and marked for 
   assert.equal(flight.specialFlight, true);
   assert.equal(flight.trackedFlightTitle, "Family arrival");
   assert.equal(flight.distanceKm > 100, true);
+  assert.equal(body.flights[0].specialFlight, true);
+  // The backend remains a complete live-data feed. The firmware, rather than
+  // the API, decides to hide ordinary flights while this special one is live.
+  assert.equal(body.flights.some(item => item.flightNumber === "WJA410"), true);
 });
 
 test("an active special tail number uses the registration lookup and is marked for display priority", async () => {
