@@ -2602,6 +2602,7 @@ void mergeRefreshedRouteQueue(uint8_t refreshedCount) {
   bool consumed[kMaxRoutableFlights] = {};
   uint8_t mergedCount = 0;
   uint8_t activeMergedIndex = 0;
+  uint8_t departedCount = 0;
   for (uint8_t existingIndex = 0; existingIndex < routeCount; ++existingIndex) {
     int8_t refreshedIndex = -1;
     for (uint8_t candidate = 0; candidate < refreshedCount; ++candidate) {
@@ -2623,6 +2624,11 @@ void mergeRefreshedRouteQueue(uint8_t refreshedCount) {
       mergedRoutes[mergedCount].pendingRemoval = false;
       consumed[refreshedIndex] = true;
       ++mergedCount;
+    } else {
+      // This aircraft is no longer in the latest in-range response. Only the
+      // visible card is allowed to survive briefly; every other departed card
+      // leaves the rotation immediately.
+      ++departedCount;
     }
   }
   for (uint8_t refreshedIndex = 0; refreshedIndex < refreshedCount && mergedCount < kMaxRoutableFlights;
@@ -2634,14 +2640,27 @@ void mergeRefreshedRouteQueue(uint8_t refreshedCount) {
     }
   }
 
+  // Clear the unused tail as well as replacing the live queue. This matters
+  // on a long-running panel: an interrupted handoff must never be able to
+  // render an old Route object after the queue has compacted.
+  memset(routes, 0, sizeof(routes));
   memcpy(routes, mergedRoutes, sizeof(Route) * mergedCount);
   routeCount = mergedCount;
   routeIndex = activeMergedIndex;
-  Serial.printf("Queue refreshed: %u aircraft, active index %u\n", routeCount, routeIndex);
+  Serial.printf("Queue refreshed: %u aircraft, removed %u, active index %u\n",
+                routeCount, departedCount, routeIndex);
 }
 
 void processFetchedFlightResponse() {
   if (!flightFetchFinished) return;
+  // The exit and entrance share queue indices for two seconds. Applying a
+  // snapshot in that interval could compact the target out from beneath the
+  // animation, leaving an old aircraft in rotation (or reading a stale tail
+  // slot). Hold the completed response until the handoff has settled, then
+  // reconcile it in one atomic queue update.
+  if (letterTransitionActive || idleToRouteTransitionActive || routeToIdleTransitionActive) {
+    return;
+  }
   flightFetchFinished = false;
   if (flightFetchStatus != HTTP_CODE_OK) {
     Serial.printf("Flight request failed: HTTP %d\n", flightFetchStatus);
