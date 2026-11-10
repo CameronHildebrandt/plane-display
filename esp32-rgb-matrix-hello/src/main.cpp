@@ -1237,6 +1237,12 @@ uint8_t rotationIndicatorPipForRoute(uint8_t index) {
   return min<uint8_t>(index, kMaxRoutableFlights - 1);
 }
 
+int16_t rotationIndicatorPipOffset(uint8_t index) {
+  // Sixteen comfortably fit in 32px with a dark LED between every pair.
+  // Only a genuinely dense 17–20 aircraft queue gives up that breathing room.
+  return routeCount <= 16 ? index * 2 : index;
+}
+
 void drawRotationIndicator() {
   if (routeCount == 0 || showingPairingQr) return;
   constexpr int16_t x = 1;
@@ -1248,32 +1254,33 @@ void drawRotationIndicator() {
   const uint16_t dimPink = visibleColor(19, 3, 9);
   matrix.fillRect(x, y, kRotationIndicatorWidth, kRotationIndicatorHeight, black);
 
-  // One direct 1px pip for every queued aircraft, up to all 20 positions.
+  // Keep the original 1px gap through 16 aircraft. Above that, fit each of
+  // the remaining positions contiguously rather than hiding aircraft.
   const uint8_t pipCount = min<uint8_t>(routeCount, kMaxRoutableFlights);
   const uint8_t activePip = rotationIndicatorPipForRoute(routeIndex);
   for (uint8_t pip = 0; pip < pipCount; ++pip) {
     const bool stableActive = !rotationPipTransitionActive && pip == activePip;
-    matrix.drawPixel(x + pip, y + 1, stableActive ? brightPink : dimPink);
+    matrix.drawPixel(x + rotationIndicatorPipOffset(pip), y + 1, stableActive ? brightPink : dimPink);
   }
 
   if (rotationPipTransitionActive) {
     const unsigned long elapsed = millis() - rotationPipTransitionStartMillis;
-    int16_t bubbleX = x + rotationPipFrom;
+    int16_t bubbleX = x + rotationIndicatorPipOffset(rotationPipFrom);
     if (rotationPipTo > rotationPipFrom) {
-      // Adjacent pips have exactly one LED between them: that is the bubble's
-      // travel lane. After crossing it, the bubble settles into the new dot.
-      if (elapsed >= kRotationPipBubbleMillis / 3 && elapsed < 2 * kRotationPipBubbleMillis / 3) {
+      // In the spaced mode, the dark LED between pips is the bubble's travel
+      // lane. Dense mode settles directly into the adjacent position.
+      if (routeCount <= 16 && elapsed >= kRotationPipBubbleMillis / 3 && elapsed < 2 * kRotationPipBubbleMillis / 3) {
         bubbleX += 1;
       } else if (elapsed >= 2 * kRotationPipBubbleMillis / 3) {
-        bubbleX = x + rotationPipTo;
+        bubbleX = x + rotationIndicatorPipOffset(rotationPipTo);
       }
     } else if (rotationPipTo < rotationPipFrom) {
       // The last-to-first transition loops through the otherwise-unused outer
       // pixels, retaining the same little travelling-bubble feel.
       const uint8_t phase = min<uint8_t>(3, elapsed * 4 / kRotationPipBubbleMillis);
       static constexpr int8_t kWrapOffsets[] = {0, 1, 2, -1};
-      bubbleX = x + rotationPipFrom + kWrapOffsets[phase];
-      if (phase == 3) bubbleX = x + rotationPipTo;
+      bubbleX = x + rotationIndicatorPipOffset(rotationPipFrom) + kWrapOffsets[phase];
+      if (phase == 3) bubbleX = x + rotationIndicatorPipOffset(rotationPipTo);
     }
     matrix.drawPixel(bubbleX, y + 1, brightPink);
   }
