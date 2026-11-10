@@ -100,15 +100,10 @@ unsigned long nextFlightPollMillis = 0;
 String pairingUrl;
 unsigned long pairingUrlRefreshMillis = 0;
 bool showingPairingQr = false;
-volatile bool pairingQrRequestActive = false;
-volatile bool pairingQrRequestFinished = false;
-volatile bool pairingQrRequestSucceeded = false;
-volatile int pairingQrRequestStatus = 0;
+int pairingQrRequestStatus = 0;
 bool pairingQrRetryPending = false;
 unsigned long pairingQrRetryMillis = 0;
-char pairingQrRequestUrl[256] = {};
 unsigned long pairingQrSpinnerStartMillis = 0;
-TaskHandle_t pairingQrTaskHandle = nullptr;
 bool bootButtonWasPressed = false;
 unsigned long lastBootButtonPressMillis = 0;
 unsigned long nextFlightRotationMillis = 0;
@@ -2355,10 +2350,10 @@ void drawPairingQrLoading() {
   }
 }
 
-void pairingQrRequestTask(void*) {
+bool requestPairingQrNow() {
   bool success = false;
   int status = -1;
-  char url[sizeof(pairingQrRequestUrl)] = {};
+  char url[256] = {};
 
   WiFiClientSecure secureClient;
   HTTPClient request;
@@ -2381,12 +2376,11 @@ void pairingQrRequestTask(void*) {
     request.end();
   }
 
-  if (success) strlcpy(pairingQrRequestUrl, url, sizeof(pairingQrRequestUrl));
   pairingQrRequestStatus = status;
-  pairingQrRequestSucceeded = success;
-  pairingQrRequestFinished = true;
-  pairingQrTaskHandle = nullptr;
-  vTaskDelete(nullptr);
+  if (!success) return false;
+  pairingUrl = url;
+  pairingUrlRefreshMillis = millis() + 4UL * 60UL * 1000UL;
+  return true;
 }
 
 bool fetchAndDrawPairingQr() {
@@ -2401,47 +2395,29 @@ bool fetchAndDrawPairingQr() {
   // loading spinner stays visible through Wi-Fi/TLS delays and retries.
   pairingQrRetryPending = true;
   drawPairingQrLoading();
-  if (pairingQrRequestActive) return true;
   if (strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(LED_PLANE_DEVICE_KEY) == 0 ||
       WiFi.status() != WL_CONNECTED || flightFetchInProgress || millis() < pairingQrRetryMillis) {
     return true;
   }
+
+  // Pairing deliberately runs synchronously once it owns the network. Flight
+  // fetches run in the background, but a second concurrent TLS task can wedge
+  // the ESP32 client indefinitely. This restores the formerly reliable QR
+  // path while the DMA panel continues showing the spinner during the brief
+  // request.
   pairingQrSpinnerStartMillis = millis();
-  pairingQrRequestFinished = false;
-  pairingQrRequestSucceeded = false;
-  pairingQrRequestActive = xTaskCreatePinnedToCore(
-      pairingQrRequestTask, "pairing-qr", 8192, nullptr, 1, &pairingQrTaskHandle, 0) == pdPASS;
-  if (!pairingQrRequestActive) {
-    Serial.println("Could not start pairing QR request");
+  if (requestPairingQrNow()) {
+    pairingQrRetryPending = false;
+    if (showingPairingQr) drawPairingQr(pairingUrl);
+  } else {
+    Serial.printf("Pairing request will retry after status %d\n", pairingQrRequestStatus);
     pairingQrRetryMillis = millis() + 10000;
   }
   return true;
 }
 
 void updatePairingQrRequest() {
-  if (!pairingQrRequestActive) {
-    if (showingPairingQr && pairingQrRetryPending) fetchAndDrawPairingQr();
-    return;
-  }
-  if (!pairingQrRequestFinished) {
-    if (showingPairingQr) drawPairingQrLoading();
-    return;
-  }
-
-  pairingQrRequestActive = false;
-  if (pairingQrRequestSucceeded) {
-    pairingQrRetryPending = false;
-    pairingUrl = pairingQrRequestUrl;
-    pairingUrlRefreshMillis = millis() + 4UL * 60UL * 1000UL;
-    if (showingPairingQr) drawPairingQr(pairingUrl);
-  } else if (showingPairingQr) {
-    // A request may briefly lose a Wi-Fi packet or contend with a flight
-    // refresh. Remain in the spinner state and retry below the API rate limit.
-    Serial.printf("Pairing request will retry after status %d\n", pairingQrRequestStatus);
-    pairingQrRetryPending = true;
-    pairingQrRetryMillis = millis() + 10000;
-    drawPairingQrLoading();
-  }
+  if (showingPairingQr && pairingQrRetryPending) fetchAndDrawPairingQr();
 }
 
 bool routesHaveSameIdentity(const Route& first, const Route& second) {
