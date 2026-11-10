@@ -754,7 +754,10 @@ void drawAlbertaHealthLogo(int16_t x, int16_t y) {
       const uint8_t red = pgm_read_byte(&kAlbertaHealthLogoPalette[index][0]);
       const uint8_t green = pgm_read_byte(&kAlbertaHealthLogoPalette[index][1]);
       const uint8_t blue = pgm_read_byte(&kAlbertaHealthLogoPalette[index][2]);
-      matrix.drawPixel(x + column, y + row, matrix.color565(red, green, blue));
+      // The source palette is sRGB (#009D4D green, #005CB9 blue). Route it
+      // through the panel's physical red/blue channel correction just like
+      // every other calibrated operator logo.
+      matrix.drawPixel(x + column, y + row, visibleColor(red, green, blue));
     }
   }
 }
