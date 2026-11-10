@@ -2209,7 +2209,11 @@ int16_t drawAnimatedBoldLine(const char* text, int16_t x, int16_t y, int16_t lef
     }
     x += glyphWidth + 1;
   }
-  return x;
+  // Match drawMinecraftBoldCaps: callers position the next element from the
+  // final occupied column, not from this glyph's trailing spacing column.
+  // Without this adjustment, an animated unknown route (--- -> ---) gained a
+  // fourth dark pixel before the arrow and remained misaligned after settling.
+  return x - 1;
 }
 
 void drawAnimatedAirportRoute(const Route& route, unsigned long phase, bool entering) {
