@@ -59,6 +59,7 @@ constexpr unsigned long kIndicatorTransitionMillis = 2000;
 constexpr unsigned long kDisplayMaintenanceWipeMillis = 60UL * 60UL * 1000UL;
 constexpr unsigned long kNoPlanesAnimationStepMillis = 125;
 constexpr int16_t kNoPlanesSpriteWidth = 33;
+constexpr size_t kFlightResponseCapacity = 16384;
 constexpr int16_t kRotationIndicatorWidth = 12;
 constexpr int16_t kRotationIndicatorHeight = 4;
 constexpr unsigned long kRotationPipBubbleMillis = 600;
@@ -130,8 +131,21 @@ unsigned long nextNoPlanesAnimationMillis = 0;
 unsigned long lastDisplayMaintenanceWipeMillis = 0;
 int16_t noPlanesSpriteX = -kNoPlanesSpriteWidth;
 uint8_t noPlanesAircraftSprite = 0;
+int16_t nextNoPlanesSpriteX = -kNoPlanesSpriteWidth;
+uint8_t nextNoPlanesAircraftSprite = 0;
+bool nextNoPlanesSpriteActive = false;
 bool showingNoPlanes = false;
 bool hideUnknownRoutes = false;
+volatile bool flightFetchInProgress = false;
+volatile bool flightFetchFinished = false;
+volatile int flightFetchStatus = 0;
+size_t flightFetchLength = 0;
+char flightFetchResponse[kFlightResponseCapacity] = {};
+bool idleToRouteTransitionActive = false;
+bool routeToIdleTransitionActive = false;
+bool idleToRouteCardDrawn = false;
+unsigned long idleToRouteTransitionStartMillis = 0;
+unsigned long routeToIdleTransitionStartMillis = 0;
 
 struct Route {
   char identity[16];
@@ -1709,6 +1723,10 @@ void drawNoPlanesFrame() {
   const uint16_t dimWhite = matrix.color565(100, 100, 100);
   matrix.fillScreen(black);
   drawNoPlanesAircraftSprite(static_cast<AircraftSprite>(noPlanesAircraftSprite), noPlanesSpriteX, 12, white);
+  if (nextNoPlanesSpriteActive) {
+    drawNoPlanesAircraftSprite(static_cast<AircraftSprite>(nextNoPlanesAircraftSprite),
+                               nextNoPlanesSpriteX, 12, white);
+  }
   drawMinecraftCentered("no planes", 54, dimWhite);
 }
 
@@ -1716,6 +1734,9 @@ void drawNoPlanes() {
   showingNoPlanes = true;
   noPlanesSpriteX = -kNoPlanesSpriteWidth;
   noPlanesAircraftSprite = random(0, kAircraftSpriteCount);
+  nextNoPlanesSpriteX = -kNoPlanesSpriteWidth;
+  nextNoPlanesAircraftSprite = noPlanesAircraftSprite;
+  nextNoPlanesSpriteActive = false;
   nextNoPlanesAnimationMillis = millis() + kNoPlanesAnimationStepMillis;
   drawNoPlanesFrame();
 }
@@ -1725,27 +1746,39 @@ void advanceNoPlanesAnimation() {
   // then paint its next position, so the border and status label never blink.
   const uint16_t black = matrix.color565(0, 0, 0);
   matrix.fillRect(noPlanesSpriteX, 12, 33, 33, black);
+  if (nextNoPlanesSpriteActive) matrix.fillRect(nextNoPlanesSpriteX, 12, 33, 33, black);
 
   ++noPlanesSpriteX;
+  if (nextNoPlanesSpriteActive) ++nextNoPlanesSpriteX;
+  // Dispatch the next aircraft as soon as this one's nose reaches the right
+  // edge. The two silhouettes overlap briefly rather than leaving a dead gap.
+  if (!nextNoPlanesSpriteActive && noPlanesSpriteX + 32 >= static_cast<int16_t>(matrix.width() - 1)) {
+    const uint8_t spriteCount = kAircraftSpriteCount;
+    uint8_t sprite = random(0, spriteCount - 1);
+    if (sprite >= noPlanesAircraftSprite) ++sprite;
+    nextNoPlanesAircraftSprite = sprite;
+    nextNoPlanesSpriteX = -kNoPlanesSpriteWidth;
+    nextNoPlanesSpriteActive = true;
+  }
   // matrix.width() is unsigned; cast it so a negative off-screen x position
   // remains negative rather than turning into a very large positive number.
   if (noPlanesSpriteX > static_cast<int16_t>(matrix.width())) {
-    noPlanesSpriteX = -kNoPlanesSpriteWidth;
-    const uint8_t spriteCount = kAircraftSpriteCount;
-    // A pass always changes family, even if the random draw repeats the last one.
-    uint8_t nextSprite = random(0, spriteCount - 1);
-    if (nextSprite >= noPlanesAircraftSprite) ++nextSprite;
-    noPlanesAircraftSprite = nextSprite;
+    noPlanesSpriteX = nextNoPlanesSpriteX;
+    noPlanesAircraftSprite = nextNoPlanesAircraftSprite;
+    nextNoPlanesSpriteActive = false;
   }
   drawNoPlanesAircraftSprite(static_cast<AircraftSprite>(noPlanesAircraftSprite), noPlanesSpriteX, 12,
                               matrix.color565(255, 255, 255));
+  if (nextNoPlanesSpriteActive) {
+    drawNoPlanesAircraftSprite(static_cast<AircraftSprite>(nextNoPlanesAircraftSprite),
+                               nextNoPlanesSpriteX, 12, matrix.color565(255, 255, 255));
+  }
 }
 
 void showNoPlanesAfterDataFailure() {
-  // A transport failure used to paint a teal "data offline" card while the
-  // old route scheduler remained active. Its marquee/telemetry updates then
-  // wrote through that card. Treat unavailable data exactly like no aircraft:
-  // clear every route-owned animation state before drawing the clean idle scene.
+  // Never let a transient transport failure erase a visible card. A later
+  // successful refresh will decide whether the queue should gracefully leave.
+  if (routeCount > 0 || showingNoPlanes) return;
   routeCount = 0;
   routeIndex = 0;
   letterTransitionActive = false;
@@ -2200,6 +2233,49 @@ void updateLetterTransition() {
   }
 }
 
+constexpr unsigned long kIdleRouteTransitionMillis = 2000;
+constexpr unsigned long kIdleRouteCardRevealMillis = 650;
+
+void updateIdleToRouteTransition() {
+  if (!idleToRouteTransitionActive || routeCount == 0) return;
+  const unsigned long elapsed = millis() - idleToRouteTransitionStartMillis;
+  // Keep the current idle aircraft moving during the network-result handoff.
+  if (elapsed < kIdleRouteCardRevealMillis) return;
+
+  if (!idleToRouteCardDrawn) {
+    showingNoPlanes = false;
+    matrix.fillScreen(matrix.color565(0, 0, 0));
+    drawRouteChrome(routes[routeIndex]);
+    idleToRouteCardDrawn = true;
+  }
+  clearTransitionTextAreas();
+  drawAnimatedRouteText(routes[routeIndex], elapsed - kIdleRouteCardRevealMillis, true);
+  if (elapsed < kIdleRouteTransitionMillis) return;
+
+  idleToRouteTransitionActive = false;
+  routeSceneStartMillis = millis();
+  nextRouteAnimationMillis = routeSceneStartMillis + 2000;
+  nextRotationIndicatorMillis = routeSceneStartMillis;
+  drawRouteProgress(routes[routeIndex].flightProgressPercent);
+  drawRotationIndicator();
+}
+
+void updateRouteToIdleTransition() {
+  if (!routeToIdleTransitionActive || routeCount == 0) return;
+  const unsigned long elapsed = millis() - routeToIdleTransitionStartMillis;
+  clearTransitionTextAreas();
+  if (elapsed < kLetterExitMillis) {
+    drawAnimatedRouteText(routes[routeIndex], elapsed, false);
+    return;
+  }
+  if (elapsed < kIdleRouteCardRevealMillis + 400) return;
+
+  routeToIdleTransitionActive = false;
+  routeCount = 0;
+  routeIndex = 0;
+  drawNoPlanes();
+}
+
 bool beginBackendRequest(HTTPClient& request, WiFiClientSecure& secureClient,
                          const String& url) {
   if (url.startsWith("https://")) {
@@ -2354,6 +2430,7 @@ bool routesHaveSameIdentity(const Route& first, const Route& second) {
 // until it has finished its 20-second scene and its exit animation.
 void mergeRefreshedRouteQueue(uint8_t refreshedCount) {
   if (routeCount == 0) {
+    const bool enteringFromIdle = showingNoPlanes;
     memcpy(routes, refreshedRoutes, sizeof(Route) * refreshedCount);
     routeCount = refreshedCount;
     routeIndex = 0;
@@ -2362,7 +2439,15 @@ void mergeRefreshedRouteQueue(uint8_t refreshedCount) {
     rotationPipTransitionActive = false;
     routeProgressTo = routes[routeIndex].flightProgressPercent;
     nextFlightRotationMillis = millis() + kFlightRotationMillis;
-    drawCurrentRoute();
+    if (enteringFromIdle) {
+      // Let the idle plane continue while the request result is applied, then
+      // use the same staggered drop-in language as a route-to-route change.
+      idleToRouteTransitionActive = true;
+      idleToRouteCardDrawn = false;
+      idleToRouteTransitionStartMillis = millis();
+    } else {
+      drawCurrentRoute();
+    }
     return;
   }
 
@@ -2407,38 +2492,20 @@ void mergeRefreshedRouteQueue(uint8_t refreshedCount) {
   Serial.printf("Queue refreshed: %u aircraft, active index %u\n", routeCount, routeIndex);
 }
 
-void fetchAndDrawFirstFlight() {
-  if (strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(LED_PLANE_DEVICE_KEY) == 0 ||
-      WiFi.status() != WL_CONNECTED) {
+void processFetchedFlightResponse() {
+  if (!flightFetchFinished) return;
+  flightFetchFinished = false;
+  if (flightFetchStatus != HTTP_CODE_OK) {
+    Serial.printf("Flight request failed: HTTP %d\n", flightFetchStatus);
+    // A failed refresh must never erase a perfectly good on-screen card.
+    if (routeCount == 0 && !showingNoPlanes) showNoPlanesAfterDataFailure();
     return;
   }
-
-  WiFiClientSecure secureClient;
-  // Keep the TLS client alive until HTTPClient has finished destroying itself.
-  // Local variables are destroyed in reverse order.
-  HTTPClient request;
-  if (!beginBackendRequest(request, secureClient, LED_PLANE_BACKEND_URL)) {
-    showNoPlanesAfterDataFailure();
-    return;
-  }
-  // A fresh nearby-aircraft lookup can take several seconds before the backend
-  // has a cached snapshot. Give it time rather than leaving the greeting up.
-  request.setTimeout(60000);
-  request.addHeader("X-Device-Key", LED_PLANE_DEVICE_KEY);
-  const int status = request.GET();
-  if (status != HTTP_CODE_OK) {
-    Serial.printf("Flight request failed: HTTP %d\n", status);
-    request.end();
-    showNoPlanesAfterDataFailure();
-    return;
-  }
-
   JsonDocument payload;
-  const DeserializationError error = deserializeJson(payload, request.getStream());
-  request.end();
+  const DeserializationError error = deserializeJson(payload, flightFetchResponse, flightFetchLength);
   if (error) {
     Serial.printf("Flight JSON failed: %s\n", error.c_str());
-    showNoPlanesAfterDataFailure();
+    if (routeCount == 0 && !showingNoPlanes) showNoPlanesAfterDataFailure();
     return;
   }
 
@@ -2480,11 +2547,53 @@ void fetchAndDrawFirstFlight() {
   }
   if (newRouteCount == 0 && routeCount == 0) {
     routeCount = 0;
-    drawNoPlanes();
+    // Preserve the moving idle scene across empty refreshes.
+    if (!showingNoPlanes) drawNoPlanes();
     Serial.println("No routable flights in the current response.");
   } else {
     mergeRefreshedRouteQueue(newRouteCount);
     Serial.printf("Queued %u routable flights\n", routeCount);
+  }
+}
+
+void fetchFlightsTask(void*) {
+  int status = -1;
+  WiFiClientSecure secureClient;
+  HTTPClient request;
+  if (beginBackendRequest(request, secureClient, LED_PLANE_BACKEND_URL)) {
+    request.setTimeout(60000);
+    request.addHeader("X-Device-Key", LED_PLANE_DEVICE_KEY);
+    status = request.GET();
+    if (status == HTTP_CODE_OK) {
+      const String response = request.getString();
+      if (response.length() >= kFlightResponseCapacity) {
+        status = -2;
+      } else {
+        flightFetchLength = response.length();
+        memcpy(flightFetchResponse, response.c_str(), flightFetchLength);
+        flightFetchResponse[flightFetchLength] = '\0';
+      }
+    }
+    request.end();
+  }
+  flightFetchStatus = status;
+  // This flag is written last: the display task will only read a complete
+  // response buffer, while this background task has kept animation running.
+  flightFetchFinished = true;
+  flightFetchInProgress = false;
+  vTaskDelete(nullptr);
+}
+
+void fetchAndDrawFirstFlight() {
+  if (strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(LED_PLANE_DEVICE_KEY) == 0 ||
+      WiFi.status() != WL_CONNECTED || flightFetchInProgress || flightFetchFinished) {
+    return;
+  }
+  flightFetchInProgress = true;
+  if (xTaskCreatePinnedToCore(fetchFlightsTask, "flight-fetch", 8192, nullptr, 1, nullptr, 0) != pdPASS) {
+    flightFetchStatus = -3;
+    flightFetchFinished = true;
+    flightFetchInProgress = false;
   }
 }
 
@@ -2702,16 +2811,18 @@ void loop() {
   updateServer.handleClient();
   handleBootButton();
   updatePairingQrRequest();
+  processFetchedFlightResponse();
   const bool transitionWasActive = letterTransitionActive;
   // If the only card disappeared during its scene, honour the full scene
   // duration before falling back to the idle animation.
   if (!showingPairingQr && routeCount == 1 && routes[0].pendingRemoval &&
-      !letterTransitionActive && millis() >= nextFlightRotationMillis) {
-    routeCount = 0;
-    routeIndex = 0;
-    drawNoPlanes();
+      !letterTransitionActive && !routeToIdleTransitionActive && !idleToRouteTransitionActive &&
+      millis() >= nextFlightRotationMillis) {
+    routeToIdleTransitionActive = true;
+    routeToIdleTransitionStartMillis = millis();
   }
   if (!showingPairingQr && routeCount > 1 && !letterTransitionActive &&
+      !routeToIdleTransitionActive && !idleToRouteTransitionActive &&
       millis() >= nextFlightRotationMillis) {
     letterTransitionRouteIndex = (routeIndex + 1) % routeCount;
     letterTransitionStartMillis = millis();
@@ -2735,6 +2846,8 @@ void loop() {
     nextFlightRotationMillis = 0xFFFFFFFFUL;
   }
   if (letterTransitionActive) updateLetterTransition();
+  if (idleToRouteTransitionActive) updateIdleToRouteTransition();
+  if (routeToIdleTransitionActive) updateRouteToIdleTransition();
   if (millis() >= nextFlightPollMillis) {
     // Do not let a blocking network refresh erase the exit/enter frames. When
     // a refresh lands on a scene boundary, hold it until the new card has had
@@ -2748,11 +2861,13 @@ void loop() {
       nextFlightPollMillis = millis() + 60000;
     }
   }
-  if (!showingPairingQr && routeCount > 0 && !letterTransitionActive && millis() >= nextRouteAnimationMillis) {
+  if (!showingPairingQr && routeCount > 0 && !letterTransitionActive &&
+      !idleToRouteTransitionActive && !routeToIdleTransitionActive && millis() >= nextRouteAnimationMillis) {
     refreshActiveMarquees(routes[routeIndex]);
     nextRouteAnimationMillis = millis() + 75;
   }
-  if (!showingPairingQr && routeCount > 0 && millis() >= nextRotationIndicatorMillis) {
+  if (!showingPairingQr && routeCount > 0 && !idleToRouteTransitionActive &&
+      !routeToIdleTransitionActive && millis() >= nextRotationIndicatorMillis) {
     if (routeProgressAnimationActive) {
       const RouteProgressFrame progress = animatedRouteProgress();
       drawRouteProgress(progress.percent, progress.opacity);
