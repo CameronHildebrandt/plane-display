@@ -171,16 +171,15 @@ enum class TailOverrideLogo : uint8_t { None, AlbertaHealth };
 struct TailOverride {
   const char* registration;
   const char* operatorName;
-  const char* aircraftType;
   const uint8_t* brandColor;
   TailOverrideLogo logo;
 };
 
 constexpr TailOverride kTailOverrides[] = {
-    {"C-GLUD", "Alberta Health Services", "B350", kAlbertaHealthBrandColor, TailOverrideLogo::AlbertaHealth},
-    {"C-GLUL", "Alberta Health Services", "B250", kAlbertaHealthBrandColor, TailOverrideLogo::AlbertaHealth},
-    {"C-GLUN", "Alberta Health Services", "B250", kAlbertaHealthBrandColor, TailOverrideLogo::AlbertaHealth},
-    {"C-FSUG", "Alberta Health Services", "B200", kAlbertaHealthBrandColor, TailOverrideLogo::AlbertaHealth},
+    {"C-GLUD", "Alberta Health Services", kAlbertaHealthBrandColor, TailOverrideLogo::AlbertaHealth},
+    {"C-GLUL", "Alberta Health Services", kAlbertaHealthBrandColor, TailOverrideLogo::AlbertaHealth},
+    {"C-GLUN", "Alberta Health Services", kAlbertaHealthBrandColor, TailOverrideLogo::AlbertaHealth},
+    {"C-FSUG", "Alberta Health Services", kAlbertaHealthBrandColor, TailOverrideLogo::AlbertaHealth},
 };
 constexpr size_t kTailOverrideCount = sizeof(kTailOverrides) / sizeof(kTailOverrides[0]);
 
@@ -755,6 +754,23 @@ void drawAlbertaHealthLogo(int16_t x, int16_t y) {
   }
 }
 
+void drawRcafLogo(int16_t x, int16_t y) {
+  // Crisp RCAF roundel: navy outer band, white field, red core.
+  const uint16_t navy = visibleColor(0, 59, 113);
+  const uint16_t white = matrix.color565(255, 255, 255);
+  const uint16_t red = visibleColor(220, 20, 30);
+  for (int16_t row = 0; row < 32; ++row) {
+    for (int16_t column = 0; column < 32; ++column) {
+      const int16_t horizontal = column * 2 - 31;
+      const int16_t vertical = row * 2 - 31;
+      const int16_t radiusSquared = horizontal * horizontal + vertical * vertical;
+      if (radiusSquared <= 29 * 29) matrix.drawPixel(x + column, y + row, navy);
+      if (radiusSquared <= 21 * 21) matrix.drawPixel(x + column, y + row, white);
+      if (radiusSquared <= 10 * 10) matrix.drawPixel(x + column, y + row, red);
+    }
+  }
+}
+
 bool isAirCanadaFlight(const Route& route) {
   // Flight feeds use either the IATA prefix (AC) or the ICAO prefix (ACA).
   return strncmp(route.operatorCode, "ACA", 3) == 0 || strncmp(route.flightNumber, "AC", 2) == 0;
@@ -796,6 +812,12 @@ bool isFlairFlight(const Route& route) {
 
 bool isCargojetFlight(const Route& route) {
   return strncmp(route.operatorCode, "CJT", 3) == 0 || strncmp(route.flightNumber, "CJT", 3) == 0;
+}
+
+bool isRcafFlight(const Route& route) {
+  // CFC is the RCAF's standard ADS-B callsign prefix. The numeric military
+  // registration (such as 330004) is not used for carrier identification.
+  return strncmp(route.operatorCode, "CFC", 3) == 0 || strncmp(route.flightNumber, "CFC", 3) == 0;
 }
 
 bool isNorthCaribooAirFlight(const Route& route) {
@@ -863,6 +885,7 @@ const char* airlineName(const Route& route) {
   if (isAirCanadaFlight(route)) return "Air Canada";
   if (isFlairFlight(route)) return "Flair Airlines";
   if (isCargojetFlight(route)) return "Cargojet";
+  if (isRcafFlight(route)) return "Royal Canadian Air Force";
   if (isNorthCaribooAirFlight(route)) return "North Cariboo Air";
   if (isPorterFlight(route)) return "Porter";
   if (isCanWestFlight(route)) return "CanWest Air";
@@ -886,6 +909,8 @@ void operatorBrandRgb(const Route& route, uint8_t& red, uint8_t& green, uint8_t&
     red = kFlairBrandColor[0]; green = kFlairBrandColor[1]; blue = kFlairBrandColor[2];
   } else if (isCargojetFlight(route)) {
     red = 237; green = 27; blue = 45;  // Cargojet red, #ED1B2D.
+  } else if (isRcafFlight(route)) {
+    red = 0; green = 59; blue = 113;  // RCAF roundel navy, #003B71.
   } else if (isNorthCaribooAirFlight(route)) {
     red = kNorthCaribooAirBrandColor[0]; green = kNorthCaribooAirBrandColor[1]; blue = kNorthCaribooAirBrandColor[2];
   } else if (isCanWestFlight(route)) {
@@ -1113,6 +1138,7 @@ void drawOperatorLogo(const Route& route, int16_t x, int16_t y) {
   else if (isAirCanadaFlight(route)) drawAirCanadaLogo(x, y);
   else if (isFlairFlight(route)) drawFlairLogo(x, y);
   else if (isCargojetFlight(route)) drawCargojetLogo(x, y);
+  else if (isRcafFlight(route)) drawRcafLogo(x, y);
   else if (isCanWestFlight(route)) drawCanWestLogo(x, y);
   else if (isCentralMountainAirFlight(route)) drawCentralMountainAirLogo(x, y);
   else if (isCoywolfFlight(route)) drawCoywolfLogo(x, y);
@@ -2575,11 +2601,8 @@ void processFetchedFlightResponse() {
       route.verticalSpeedFpm = flight["verticalSpeedFpm"] | -100000;
       route.headingDeg = flight["headingDeg"] | -1;
       strlcpy(route.aircraftType, flight["aircraftType"] | "", sizeof(route.aircraftType));
-      // Tail-number overrides win over a missing or unreliable transponder
-      // type, as well as over a callsign-derived brand.
-      if (const TailOverride* override = tailOverrideFor(route)) {
-        strlcpy(route.aircraftType, override->aircraftType, sizeof(route.aircraftType));
-      }
+      // Tail-number overrides deliberately affect branding only. The live
+      // aircraft type remains authoritative for the type-specific silhouette.
       route.distanceKm = flight["distanceKm"] | -1.0f;
       route.flightProgressPercent = flight["flightProgressPercent"] | -1.0f;
       route.pendingRemoval = false;
