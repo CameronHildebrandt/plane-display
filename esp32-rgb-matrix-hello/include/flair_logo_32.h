@@ -1,7 +1,7 @@
 #pragma once
 
 // A deliberately simple 16px-diameter Flair badge, centered in the 32px slot.
-constexpr uint8_t kFlairBrandColor[3] = {140, 150, 50};  // #8C9632
+constexpr uint8_t kFlairBrandColor[3] = {173, 255, 153};  // #ADFF99, sampled from Flair artwork.
 constexpr uint32_t kFlairLogoMask[32] PROGMEM = {
     0x00000000UL, 0x00000000UL, 0x00000000UL, 0x00000000UL,
     0x00000000UL, 0x00000000UL, 0x00000000UL, 0x00000000UL,

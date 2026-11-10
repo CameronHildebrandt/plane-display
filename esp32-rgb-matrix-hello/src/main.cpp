@@ -16,6 +16,7 @@
 #include "aircraft_sprites.h"
 #include "air_canada_logo_32.h"
 #include "air_canada_jazz_logo_32.h"
+#include "alberta_health_logo_32.h"
 #include "flair_logo_32.h"
 #include "cargojet_logo_32.h"
 #include "canwest_air_logo_32.h"
@@ -738,14 +739,49 @@ void drawCargojetLogo(int16_t x, int16_t y) {
   }
 }
 
+void drawAlbertaHealthLogo(int16_t x, int16_t y) {
+  const uint16_t green = visibleColor(kAlbertaHealthBrandColor[0], kAlbertaHealthBrandColor[1],
+                                      kAlbertaHealthBrandColor[2]);
+  const uint16_t blue = visibleColor(kAlbertaHealthBlue[0], kAlbertaHealthBlue[1],
+                                     kAlbertaHealthBlue[2]);
+  for (uint8_t row = 0; row < 32; ++row) {
+    const uint32_t greenPixels = pgm_read_dword(&kAlbertaHealthLogoMask[row][0]);
+    const uint32_t bluePixels = pgm_read_dword(&kAlbertaHealthLogoMask[row][1]);
+    for (uint8_t column = 0; column < 32; ++column) {
+      const uint32_t bit = 1UL << (31 - column);
+      if (greenPixels & bit) matrix.drawPixel(x + column, y + row, green);
+      else if (bluePixels & bit) matrix.drawPixel(x + column, y + row, blue);
+    }
+  }
+}
+
 bool isAirCanadaFlight(const Route& route) {
   // Flight feeds use either the IATA prefix (AC) or the ICAO prefix (ACA).
   return strncmp(route.operatorCode, "ACA", 3) == 0 || strncmp(route.flightNumber, "AC", 2) == 0;
 }
 
+bool registrationsMatch(const char* first, const char* second) {
+  // Providers vary between C-GLUN and CGLUN. Compare the meaningful letters
+  // and digits only so a formatting difference never loses an override.
+  if (!first || !*first) return false;
+  while (*first || *second) {
+    while (*first && !isalnum(static_cast<unsigned char>(*first))) ++first;
+    while (*second && !isalnum(static_cast<unsigned char>(*second))) ++second;
+    if (toupper(static_cast<unsigned char>(*first)) != toupper(static_cast<unsigned char>(*second))) {
+      return false;
+    }
+    if (!*first) return true;
+    ++first;
+    ++second;
+  }
+  return true;
+}
+
 const TailOverride* tailOverrideFor(const Route& route) {
   for (size_t index = 0; index < kTailOverrideCount; ++index) {
-    if (strcasecmp(route.registration, kTailOverrides[index].registration) == 0) return &kTailOverrides[index];
+    if (registrationsMatch(route.registration, kTailOverrides[index].registration)) {
+      return &kTailOverrides[index];
+    }
   }
   return nullptr;
 }
@@ -2539,6 +2575,11 @@ void processFetchedFlightResponse() {
       route.verticalSpeedFpm = flight["verticalSpeedFpm"] | -100000;
       route.headingDeg = flight["headingDeg"] | -1;
       strlcpy(route.aircraftType, flight["aircraftType"] | "", sizeof(route.aircraftType));
+      // Tail-number overrides win over a missing or unreliable transponder
+      // type, as well as over a callsign-derived brand.
+      if (const TailOverride* override = tailOverrideFor(route)) {
+        strlcpy(route.aircraftType, override->aircraftType, sizeof(route.aircraftType));
+      }
       route.distanceKm = flight["distanceKm"] | -1.0f;
       route.flightProgressPercent = flight["flightProgressPercent"] | -1.0f;
       route.pendingRemoval = false;
