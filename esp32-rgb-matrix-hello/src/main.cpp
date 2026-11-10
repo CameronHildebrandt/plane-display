@@ -749,6 +749,11 @@ bool isAirSprintFlight(const Route& route) {
   return strncmp(route.operatorCode, "ASP", 3) == 0 || strncmp(route.flightNumber, "ASP", 3) == 0;
 }
 
+bool isRcafFlight(const Route& route) {
+  // ADSBDB's registered-owner flag for the Royal Canadian Air Force is CFC.
+  return strncmp(route.operatorCode, "CFC", 3) == 0 || strncmp(route.flightNumber, "CFC", 3) == 0;
+}
+
 bool isPorterFlight(const Route& route) {
   return strncmp(route.operatorCode, "POE", 3) == 0 || strncmp(route.flightNumber, "POE", 3) == 0;
 }
@@ -788,6 +793,7 @@ const char* airlineName(const Route& route) {
   if (isCentralMountainAirFlight(route)) return "Central Mountain Air";
   if (isCoywolfFlight(route)) return "Coywolf Aviation";
   if (isAirSprintFlight(route)) return "AirSprint";
+  if (isRcafFlight(route)) return "Royal Canadian Air Force";
   if (isSunwestFlight(route)) return "Sunwest Aviation";
   if (isStarsFlight(route)) return "Stars Air Ambulance";
   if (isKlmFlight(route)) return "KLM";
@@ -810,6 +816,8 @@ void operatorBrandRgb(const Route& route, uint8_t& red, uint8_t& green, uint8_t&
     red = kCoywolfBrandColor[0]; green = kCoywolfBrandColor[1]; blue = kCoywolfBrandColor[2];
   } else if (isAirSprintFlight(route)) {
     red = kAirSprintBrandColor[0]; green = kAirSprintBrandColor[1]; blue = kAirSprintBrandColor[2];
+  } else if (isRcafFlight(route)) {
+    red = 0; green = 59; blue = 113;  // RCAF roundel/navy blue.
   } else if (isPorterFlight(route)) {
     red = kPorterBrandColor[0]; green = kPorterBrandColor[1]; blue = kPorterBrandColor[2];
   } else if (isSunwestFlight(route)) {

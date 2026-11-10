@@ -50,6 +50,22 @@ test("registered aircraft identity overrides an incorrect live type without carr
   assert.equal(flight.aircraftIdentitySource, "adsbdb");
 });
 
+test("registry identity is the default operator source when a callsign is absent", async () => {
+  const { store, key } = await setup();
+  const source = { fetch: async url => {
+    if (String(url).includes("/api/0/routeset")) return new Response(JSON.stringify([]));
+    if (String(url).includes("api.adsbdb.com/v0/aircraft/c06c95")) return new Response(JSON.stringify({ response: { aircraft: { icao_type: "B350", type: "King Air B350", manufacturer: "Beech", registered_owner_operator_flag_code: "CFC", registered_owner: "Royal Canadian Air Force", registered_owner_country_name: "Canada" } } }));
+    if (String(url).includes("/v2/point/")) return new Response(JSON.stringify({ ac: [{ hex: "c06c95", flight: "CGPDC", r: "C-GPDC", t: "B350", alt_baro: 9775, gs: 267, track: 282, lat: 53.36, lon: -112.83 }] }));
+    throw new Error(`a callsign-airline lookup was not expected: ${url}`);
+  } };
+  const response = await handle(request("/flightdata", { headers: { "X-Device-Key": key } }), store, source);
+  const [flight] = (await response.json()).flights;
+  assert.equal(flight.airline, "CFC");
+  assert.equal(flight.airlineName, "Royal Canadian Air Force");
+  assert.equal(flight.aircraftType, "B350");
+  assert.equal(flight.aircraftIdentitySource, "adsbdb");
+});
+
 test("a debug pack returns a full stable brand-test roster without calling a provider", async () => {
   const { store, key } = await setup();
   await store.updateSettings("test", { name: "Test display", latitude: 53.5, longitude: -113.5, radiusKm: 100, includeGrounded: false, debugMode: "canadian-scheduled" });

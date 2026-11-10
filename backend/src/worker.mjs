@@ -202,7 +202,7 @@ async function activeTrackedFlights(device, store, env) {
   }));
   const flights = results.flat();
   const routed = applyRoutes(flights, await adsbLolRoutes(flights.map(flight => ({ flight: flight.flightNumber, lat: flight.latitude, lon: flight.longitude })), fetcher));
-  return enrichAircraftDetails(await enrichAirlineNames(routed, store, fetcher), store, fetcher);
+  return enrichAirlineNames(await enrichAircraftDetails(routed, store, fetcher), store, fetcher);
 }
 
 async function specialFlightStatus(entry, store, env) {
@@ -320,13 +320,19 @@ async function adsbLolFlights(device, store, env) {
     .sort((a, b) => a.distanceKm - b.distanceKm)
     .slice(0, 20);
   const routed = applyRoutes(flights, await adsbLolRoutes(rawAircraft, fetcher));
-  return enrichAircraftDetails(await enrichAirlineNames(routed, store, fetcher), store, fetcher);
+  return enrichAirlineNames(await enrichAircraftDetails(routed, store, fetcher), store, fetcher);
 }
 
 async function enrichAirlineNames(flights, store, fetcher) {
-  const codes = [...new Set(flights.map(f => f.airline).filter(Boolean))];
+  // Registry identity is already an actual saved operator record. Only ask
+  // the callsign lookup to fill gaps which the registry could not identify.
+  const codes = [...new Set(flights.filter(f => f.airline && !f.airlineName).map(f => f.airline))];
   const names = new Map(await Promise.all(codes.map(async code => [code, await airlineName(code, store, fetcher)])));
-  return flights.map(flight => ({ ...flight, airlineName: flight.airline ? names.get(flight.airline)?.name || null : null, airlineCountry: flight.airline ? names.get(flight.airline)?.country || null : null }));
+  return flights.map(flight => ({
+    ...flight,
+    airlineName: flight.airlineName || (flight.airline ? names.get(flight.airline)?.name || null : null),
+    airlineCountry: flight.airlineCountry || (flight.airline ? names.get(flight.airline)?.country || null : null)
+  }));
 }
 
 async function airlineName(code, store, fetcher) {
@@ -358,22 +364,33 @@ async function enrichAircraftDetails(flights, store, fetcher) {
     // registry metadata when it yields a safe ICAO designator. Never discard a
     // usable live value merely because a registry lookup was unavailable.
     const registryType = registryAircraftTypeCode(detail);
+    const registryOperator = registryOperatorCode(detail);
     return {
       ...flight,
       aircraftType: registryType || flight.aircraftType,
+      airline: registryOperator || flight.airline,
+      airlineName: detail?.ownerName || flight.airlineName || null,
+      airlineCountry: detail?.ownerCountry || flight.airlineCountry || null,
       aircraftTypeName: detail?.typeName || null,
       aircraftManufacturer: detail?.manufacturer || null,
       registeredOwner: detail?.ownerName || null,
       registeredOwnerCountry: detail?.ownerCountry || null,
-      aircraftIdentitySource: registryType ? "adsbdb" : "adsb.lol"
+      aircraftIdentitySource: registryType || registryOperator || detail?.ownerName ? "adsbdb" : "adsb.lol"
     };
   });
+}
+
+function registryOperatorCode(detail) {
+  const code = String(detail?.ownerCode || "").trim().toUpperCase();
+  return /^[A-Z0-9]{2,4}$/.test(code) ? code : null;
 }
 
 // ADSBDB deliberately returns a human-readable registered model, whereas the
 // matrix's sprite picker uses ICAO designators. This is a model normalizer, not
 // a carrier fleet list: it applies to every aircraft regardless of operator.
 function registryAircraftTypeCode(detail) {
+  const typeCode = String(detail?.typeCode || "").trim().toUpperCase();
+  if (/^[A-Z0-9]{2,5}$/.test(typeCode)) return typeCode;
   const type = String(detail?.typeName || "").trim().toUpperCase();
   const manufacturer = String(detail?.manufacturer || "").trim().toUpperCase();
   const identity = `${manufacturer} ${type}`;
@@ -391,6 +408,7 @@ function registryAircraftTypeCode(detail) {
   if (/\bAIRBUS\s*A?321\b|\bA321\b/.test(identity)) return "A321";
   if (/\bAIRBUS\s*A?220\b|\bA220\b/.test(identity)) return "A220";
   if (/\bDASH[ -]?8\b|\bQ400\b/.test(identity)) return "DH8D";
+  if (/\bKING AIR\s*B?350\b|\bB350\b/.test(identity)) return "B350";
   if (/\bCRJ[- ]?200\b/.test(identity)) return "CRJ2";
   if (/\bCRJ[- ]?700\b/.test(identity)) return "CRJ7";
   if (/\bCRJ[- ]?900\b|\bCRJ[- ]?1000\b/.test(identity)) return "CRJ9";
@@ -400,12 +418,21 @@ function registryAircraftTypeCode(detail) {
 async function aircraftDetails(icao24, store, fetcher) {
   const maxAgeSeconds = 30 * 24 * 60 * 60;
   const cached = await store.getAircraft(icao24);
-  if (cached && cached.fetchedAt + maxAgeSeconds > unix()) return cached;
+  if (cached && cached.identityVersion >= 2 && cached.fetchedAt + maxAgeSeconds > unix()) return cached;
   try {
     const response = await fetcher(`https://api.adsbdb.com/v0/aircraft/${encodeURIComponent(icao24)}`);
     if (!response.ok) throw new Error(`ADSBDB aircraft lookup returned ${response.status}`);
     const aircraft = (await response.json()).response?.aircraft;
-    const result = { typeName: aircraft?.type || null, manufacturer: aircraft?.manufacturer || null, ownerName: aircraft?.registered_owner || null, ownerCountry: aircraft?.registered_owner_country_name || null, fetchedAt: unix() };
+    const result = {
+      typeCode: aircraft?.icao_type || null,
+      typeName: aircraft?.type || null,
+      manufacturer: aircraft?.manufacturer || null,
+      ownerCode: aircraft?.registered_owner_operator_flag_code || null,
+      ownerName: aircraft?.registered_owner || null,
+      ownerCountry: aircraft?.registered_owner_country_name || null,
+      identityVersion: 2,
+      fetchedAt: unix()
+    };
     await store.putAircraft(icao24, result);
     return result;
   } catch (error) {
@@ -615,8 +642,8 @@ export class D1Store {
   async deleteSession(h) { await this.db.prepare("DELETE FROM sessions WHERE token_hash=?").bind(h).run(); }
   async getAirline(code) { const r = await this.db.prepare("SELECT name, country, fetched_at FROM airline_cache WHERE icao_code=?").bind(code).first(); return r && { name: r.name, country: r.country, fetchedAt: r.fetched_at }; }
   async putAirline(code, airline) { await this.db.prepare("INSERT INTO airline_cache (icao_code, name, country, fetched_at) VALUES (?, ?, ?, ?) ON CONFLICT(icao_code) DO UPDATE SET name=excluded.name, country=excluded.country, fetched_at=excluded.fetched_at").bind(code, airline.name, airline.country, airline.fetchedAt).run(); }
-  async getAircraft(icao24) { const r = await this.db.prepare("SELECT type_name, manufacturer, owner_name, owner_country, fetched_at FROM aircraft_cache WHERE icao24=?").bind(icao24).first(); return r && { typeName: r.type_name, manufacturer: r.manufacturer, ownerName: r.owner_name, ownerCountry: r.owner_country, fetchedAt: r.fetched_at }; }
-  async putAircraft(icao24, aircraft) { await this.db.prepare("INSERT INTO aircraft_cache (icao24, type_name, manufacturer, owner_name, owner_country, fetched_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(icao24) DO UPDATE SET type_name=excluded.type_name, manufacturer=excluded.manufacturer, owner_name=excluded.owner_name, owner_country=excluded.owner_country, fetched_at=excluded.fetched_at").bind(icao24, aircraft.typeName, aircraft.manufacturer, aircraft.ownerName, aircraft.ownerCountry, aircraft.fetchedAt).run(); }
+  async getAircraft(icao24) { const r = await this.db.prepare("SELECT type_code, type_name, manufacturer, owner_code, owner_name, owner_country, identity_version, fetched_at FROM aircraft_cache WHERE icao24=?").bind(icao24).first(); return r && { typeCode: r.type_code, typeName: r.type_name, manufacturer: r.manufacturer, ownerCode: r.owner_code, ownerName: r.owner_name, ownerCountry: r.owner_country, identityVersion: r.identity_version, fetchedAt: r.fetched_at }; }
+  async putAircraft(icao24, aircraft) { await this.db.prepare("INSERT INTO aircraft_cache (icao24, type_code, type_name, manufacturer, owner_code, owner_name, owner_country, identity_version, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(icao24) DO UPDATE SET type_code=excluded.type_code, type_name=excluded.type_name, manufacturer=excluded.manufacturer, owner_code=excluded.owner_code, owner_name=excluded.owner_name, owner_country=excluded.owner_country, identity_version=excluded.identity_version, fetched_at=excluded.fetched_at").bind(icao24, aircraft.typeCode, aircraft.typeName, aircraft.manufacturer, aircraft.ownerCode, aircraft.ownerName, aircraft.ownerCountry, aircraft.identityVersion, aircraft.fetchedAt).run(); }
   async getTrackedFlights(deviceId, flightDate) { const query = flightDate ? "SELECT * FROM tracked_flights WHERE device_id=? AND flight_date=? ORDER BY created_at DESC" : "SELECT * FROM tracked_flights WHERE device_id=? ORDER BY flight_date ASC, created_at DESC"; const { results } = await this.db.prepare(query).bind(...(flightDate ? [deviceId, flightDate] : [deviceId])).all(); return results.map(trackedFlightRow); }
   async addTrackedFlight(entry) { await this.db.prepare("INSERT INTO tracked_flights (id, device_id, flight_number, identifier_type, status_identifier, title, flight_date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(entry.id, entry.deviceId, entry.flightNumber, entry.identifierType, entry.statusIdentifier, entry.title, entry.flightDate, entry.createdAt).run(); }
   async deleteTrackedFlight(deviceId, id) { const result = await this.db.prepare("DELETE FROM tracked_flights WHERE id=? AND device_id=?").bind(id, deviceId).run(); return result.meta.changes > 0; }
