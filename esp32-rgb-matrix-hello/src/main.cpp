@@ -157,6 +157,8 @@ struct Route {
   char flightNumber[12];
   char operatorCode[8];
   char registration[12];
+  char specialFlightTitle[48];
+  bool specialFlight;
   int altFt;
   int speedKt;
   int verticalSpeedFpm;
@@ -1345,11 +1347,15 @@ void drawRouteMarquees(const Route& route) {
   matrix.fillRect(34, 16, 60, 7, black);
   matrix.fillRect(34, 28, 60, 7, black);
   matrix.fillRect(34, 40, 60, 7, black);
+  matrix.fillRect(34, 52, 60, 7, black);
   drawRegistrationMarquee(registration, 1, 37, 32, secondaryWhite);
   drawMinecraftMarquee(displayAircraftType(route), 1, 47, 32, secondaryWhite);
   drawCityMarquee(originCity, destinationCity, 34, 16, 60, secondaryWhite);
   drawMinecraftMarquee(route.flightNumber[0] ? route.flightNumber : "-----", 34, 28, 60, tertiaryWhite);
   drawMinecraftMarquee(airlineName(route), 34, 40, 60, tertiaryWhite);
+  if (route.specialFlightTitle[0]) {
+    drawMinecraftMarquee(route.specialFlightTitle, 34, 52, 60, secondaryWhite);
+  }
 }
 
 // The initial card render paints every label. Subsequent 75ms refreshes paint
@@ -1390,6 +1396,10 @@ void refreshActiveMarquees(const Route& route) {
   if (normalTextWidth(operatorName) > 60) {
     matrix.fillRect(34, 40, 60, 7, black);
     drawMinecraftMarquee(operatorName, 34, 40, 60, tertiaryWhite);
+  }
+  if (route.specialFlightTitle[0] && normalTextWidth(route.specialFlightTitle) > 60) {
+    matrix.fillRect(34, 52, 60, 7, black);
+    drawMinecraftMarquee(route.specialFlightTitle, 34, 52, 60, secondaryWhite);
   }
 
   // Telemetry normally stays completely still. Only the exceptional values
@@ -2227,6 +2237,7 @@ void clearTransitionTextAreas() {
   matrix.fillRect(34, 16, 60, 7, black);
   matrix.fillRect(34, 28, 60, 7, black);
   matrix.fillRect(34, 40, 60, 7, black);
+  matrix.fillRect(34, 52, 60, 7, black);
   matrix.fillRect(1, 37, 32, 7, black);
   matrix.fillRect(1, 47, 32, 7, black);
   matrix.fillRect(95, 4, 32, 7, black);
@@ -2259,6 +2270,9 @@ void drawAnimatedRouteText(const Route& route, unsigned long phase, bool enterin
   drawAnimatedNormalLine(route.flightNumber[0] ? route.flightNumber : "-----", 34, 28, 60,
                          tertiaryWhite, 2, phase, entering);
   drawAnimatedNormalLine(airlineName(route), 34, 40, 60, tertiaryWhite, 9, phase, entering);
+  if (route.specialFlightTitle[0]) {
+    drawAnimatedNormalLine(route.specialFlightTitle, 34, 52, 60, secondaryWhite, 11, phase, entering);
+  }
   drawAnimatedNormalLine(registration, 1, 37, 32, secondaryWhite, 3, phase, entering, true, 0, true);
   drawAnimatedNormalLine(displayAircraftType(route), 1, 47, 32,
                          secondaryWhite, 4, phase, entering);
@@ -2556,6 +2570,35 @@ void mergeRefreshedRouteQueue(uint8_t refreshedCount) {
     return;
   }
 
+  // A configured special flight owns the display while it is live. Replace an
+  // ordinary rotation immediately rather than letting its existing queue
+  // position defer the special card by several 20-second scenes. Once this
+  // handoff is complete the queue contains only special flights, so the normal
+  // stable merge below preserves their order as usual.
+  const bool hasSpecialUpdate = refreshedCount > 0 && refreshedRoutes[0].specialFlight;
+  bool queuedOrdinaryFlight = false;
+  for (uint8_t index = 0; index < routeCount; ++index) {
+    if (!routes[index].specialFlight) {
+      queuedOrdinaryFlight = true;
+      break;
+    }
+  }
+  if (hasSpecialUpdate && queuedOrdinaryFlight) {
+    memcpy(routes, refreshedRoutes, sizeof(Route) * refreshedCount);
+    routeCount = refreshedCount;
+    routeIndex = 0;
+    letterTransitionActive = false;
+    routeToIdleTransitionActive = false;
+    idleToRouteTransitionActive = false;
+    routeProgressAnimationActive = false;
+    rotationIndicatorResetActive = false;
+    rotationPipTransitionActive = false;
+    routeProgressTo = routes[0].flightProgressPercent;
+    nextFlightRotationMillis = millis() + kFlightRotationMillis;
+    drawCurrentRoute();
+    return;
+  }
+
   bool consumed[kMaxRoutableFlights] = {};
   uint8_t mergedCount = 0;
   uint8_t activeMergedIndex = 0;
@@ -2615,7 +2658,18 @@ void processFetchedFlightResponse() {
   }
 
   uint8_t newRouteCount = 0;
+  bool hasSpecialFlight = false;
   for (JsonObject flight : payload["flights"].as<JsonArray>()) {
+    if (flight["specialFlight"] | false) {
+      hasSpecialFlight = true;
+      break;
+    }
+  }
+  for (JsonObject flight : payload["flights"].as<JsonArray>()) {
+    // Special flights exclusively occupy the display rotation. Normal flights
+    // remain in the backend response for diagnostics, but cannot dilute the
+    // on-panel counter or delay a configured aircraft.
+    if (hasSpecialFlight && !(flight["specialFlight"] | false)) continue;
     const char* candidateOrigin = flight["origin"] | "";
     const char* candidateDestination = flight["destination"] | "";
     const char* candidateFlightNumber = flight["flightNumber"] | "";
@@ -2639,6 +2693,8 @@ void processFetchedFlightResponse() {
       strlcpy(route.flightNumber, candidateFlightNumber, sizeof(route.flightNumber));
       strlcpy(route.operatorCode, candidateOperator, sizeof(route.operatorCode));
       strlcpy(route.registration, candidateRegistration, sizeof(route.registration));
+      route.specialFlight = flight["specialFlight"] | false;
+      strlcpy(route.specialFlightTitle, flight["trackedFlightTitle"] | "", sizeof(route.specialFlightTitle));
       route.altFt = flight["altFt"] | -1;
       route.speedKt = flight["speedKt"] | -1;
       route.verticalSpeedFpm = flight["verticalSpeedFpm"] | -100000;

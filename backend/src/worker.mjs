@@ -324,6 +324,9 @@ function flightAlphabeticalKey(flight) {
 }
 function sortFlightsForDisplay(flights) {
   return [...flights].sort((a, b) =>
+    // A configured special flight is an explicit user request, so it must
+    // survive the top-20 trim and arrive ahead of ordinary nearby traffic.
+    Number(Boolean(b.specialFlight)) - Number(Boolean(a.specialFlight)) ||
     flightDataScore(b) - flightDataScore(a) || flightAlphabeticalKey(a).localeCompare(flightAlphabeticalKey(b)));
 }
 
