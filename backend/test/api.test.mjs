@@ -185,6 +185,23 @@ test("an active special tail number uses the registration lookup and is marked f
   assert.equal(flight.trackedFlightTitle, "RCMP aircraft");
 });
 
+test("special-flight merging never replaces speed or track with missing telemetry", async () => {
+  const { store, key } = await setup();
+  await store.addTrackedFlight({ id: crypto.randomUUID(), deviceId: "test", flightNumber: "C-MERGE", identifierType: "tailNumber", title: "WestJet visit", flightDate: new Date().toISOString().slice(0, 10), createdAt: Date.now() });
+  const source = { fetch: async url => {
+    if (String(url).includes("/api/0/routeset")) return new Response(JSON.stringify([]));
+    if (String(url).includes("api.adsbdb.com/v0/aircraft/c0merge")) return new Response(JSON.stringify({ response: { aircraft: {} } }));
+    if (String(url).includes("/v2/reg/C-MERGE")) return new Response(JSON.stringify({ ac: [{ hex: "c0merge", flight: "WJA1164", r: "C-MERGE", t: "B38M", alt_baro: 31000, gs: null, track: null, lat: 53.6, lon: -113.6 }] }));
+    if (String(url).includes("/v2/point/")) return new Response(JSON.stringify({ ac: [{ hex: "c0merge", flight: "WJA1164", r: "C-MERGE", t: "B38M", alt_baro: 31000, gs: 438, track: 117, lat: 53.6, lon: -113.6 }] }));
+    throw new Error(`unexpected lookup: ${url}`);
+  } };
+  const response = await handle(request("/flightdata", { headers: { "X-Device-Key": key } }), store, source);
+  const [flight] = (await response.json()).flights;
+  assert.equal(flight.specialFlight, true);
+  assert.equal(flight.speedKt, 438);
+  assert.equal(flight.trackDeg, 117);
+});
+
 test("confirmed carrier corrections override a stale third-party airline record", async () => {
   const { store, key } = await setup();
   let airlineLookupCalled = false;

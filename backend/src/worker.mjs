@@ -313,7 +313,24 @@ function mergeTrackedFlights(nearby, tracked) {
   for (const flight of tracked) {
     const key = flight.icao24 || flight.flightNumber;
     const existing = byIdentity.get(key);
-    byIdentity.set(key, existing ? { ...existing, isTrackedFlight: true, specialFlight: true, trackedFlightTitle: flight.trackedFlightTitle } : flight);
+    if (!existing) {
+      byIdentity.set(key, flight);
+      continue;
+    }
+    // A nearby snapshot and a registration/callsign lookup can arrive with
+    // different completeness. Telemetry must be additive: a missing value in
+    // either source must never erase a real ground speed or track from the
+    // other source. Prefer the focused tracked lookup when it has a number.
+    const valueOrFallback = (value, fallback) => Number.isFinite(value) ? value : fallback;
+    byIdentity.set(key, {
+      ...existing,
+      ...flight,
+      speedKt: valueOrFallback(flight.speedKt, existing.speedKt),
+      trackDeg: valueOrFallback(flight.trackDeg, existing.trackDeg),
+      isTrackedFlight: true,
+      specialFlight: true,
+      trackedFlightTitle: flight.trackedFlightTitle
+    });
   }
   return [...byIdentity.values()];
 }
