@@ -747,17 +747,14 @@ void drawCargojetLogo(int16_t x, int16_t y) {
 }
 
 void drawAlbertaHealthLogo(int16_t x, int16_t y) {
-  const uint16_t green = visibleColor(kAlbertaHealthBrandColor[0], kAlbertaHealthBrandColor[1],
-                                      kAlbertaHealthBrandColor[2]);
-  const uint16_t blue = visibleColor(kAlbertaHealthBlue[0], kAlbertaHealthBlue[1],
-                                     kAlbertaHealthBlue[2]);
   for (uint8_t row = 0; row < 32; ++row) {
-    const uint32_t greenPixels = pgm_read_dword(&kAlbertaHealthLogoMask[row][0]);
-    const uint32_t bluePixels = pgm_read_dword(&kAlbertaHealthLogoMask[row][1]);
     for (uint8_t column = 0; column < 32; ++column) {
-      const uint32_t bit = 1UL << (31 - column);
-      if (greenPixels & bit) matrix.drawPixel(x + column, y + row, green);
-      else if (bluePixels & bit) matrix.drawPixel(x + column, y + row, blue);
+      const uint8_t index = pgm_read_byte(&kAlbertaHealthLogoPixels[row][column]);
+      if (!index) continue;
+      const uint8_t red = pgm_read_byte(&kAlbertaHealthLogoPalette[index][0]);
+      const uint8_t green = pgm_read_byte(&kAlbertaHealthLogoPalette[index][1]);
+      const uint8_t blue = pgm_read_byte(&kAlbertaHealthLogoPalette[index][2]);
+      matrix.drawPixel(x + column, y + row, matrix.color565(red, green, blue));
     }
   }
 }
