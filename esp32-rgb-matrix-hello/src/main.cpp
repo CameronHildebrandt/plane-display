@@ -831,7 +831,9 @@ void operatorBrandRgb(const Route& route, uint8_t& red, uint8_t& green, uint8_t&
   } else if (isWestJetFlight(route)) {
     red = 0; green = 170; blue = 166;  // WestJet teal, #00AAA6.
   } else {
-    red = 255; green = 255; blue = 255;  // Unknown operator: neutral ticket.
+    // Keep the two-row ticket area reserved, but leave it unlit when we do
+    // not know the operator rather than implying a generic white brand.
+    red = 0; green = 0; blue = 0;
   }
 }
 
