@@ -174,11 +174,11 @@ async function liveFlights(device, store, env) {
   try {
     const nearby = await adsbLolFlights(device, store, env);
     const tracked = await activeTrackedFlights(device, store, env);
-    return { source: "adsb.lol", flights: mergeTrackedFlights(nearby, tracked) };
+    return { source: "adsb.lol", flights: sortFlightsForDisplay(mergeTrackedFlights(nearby, tracked)).slice(0, 20) };
   }
   catch (adsbError) {
     console.log("ADSB.lol request failed; trying OpenSky", adsbError instanceof Error ? adsbError.message : String(adsbError));
-    return { source: "opensky", flights: await openSkyFlights(device, env) };
+    return { source: "opensky", flights: sortFlightsForDisplay(await openSkyFlights(device, env)).slice(0, 20) };
   }
 }
 
@@ -287,7 +287,7 @@ function debugFlights(pack) {
       airline, airlineName, airlineCountry: null, flightNumber: `${airline}${index + 1}`,
       origin: origin[0], destination: destination[0], aircraftType, aircraftTypeName,
       registration: `T-${String(index + 1).padStart(3, "0")}`,
-      altFt: randomInteger(800, 43000), verticalSpeedFpm: randomInteger(-2800, 2800), speedKt: randomInteger(80, 590), headingDeg: randomInteger(0, 359),
+      altFt: randomInteger(800, 43000), verticalSpeedFpm: randomInteger(-2800, 2800), speedKt: randomInteger(80, 590), trackDeg: randomInteger(0, 359),
       distanceKm: randomInteger(1, 18000), flightProgressPercent: randomInteger(0, 100), flightProgressEstimated: true,
       latitude: null, longitude: null, source: "debug"
     };
@@ -303,7 +303,28 @@ function mergeTrackedFlights(nearby, tracked) {
     const existing = byIdentity.get(key);
     byIdentity.set(key, existing ? { ...existing, isTrackedFlight: true, specialFlight: true, trackedFlightTitle: flight.trackedFlightTitle } : flight);
   }
-  return [...byIdentity.values()].sort((a, b) => Number(Boolean(b.isTrackedFlight)) - Number(Boolean(a.isTrackedFlight)) || a.distanceKm - b.distanceKm).slice(0, 20);
+  return [...byIdentity.values()];
+}
+
+// A stable, useful response order matters to the display queue. Rich records
+// earn their place first; when two records are equally complete, their visible
+// identifier gives a deterministic alphabetical tie-breaker.
+function flightDataScore(flight) {
+  const fields = [
+    flight.airline, flight.airlineName, flight.flightNumber, flight.origin,
+    flight.destination, flight.aircraftType, flight.aircraftTypeName,
+    flight.registration, flight.altFt, flight.verticalSpeedFpm, flight.speedKt,
+    flight.trackDeg, flight.distanceKm, flight.flightProgressPercent,
+    flight.latitude, flight.longitude
+  ];
+  return fields.reduce((score, value) => score + (value !== null && value !== undefined && value !== "" && value !== "---" ? 1 : 0), 0);
+}
+function flightAlphabeticalKey(flight) {
+  return String(flight.flightNumber || flight.registration || flight.icao24 || "").toUpperCase();
+}
+function sortFlightsForDisplay(flights) {
+  return [...flights].sort((a, b) =>
+    flightDataScore(b) - flightDataScore(a) || flightAlphabeticalKey(a).localeCompare(flightAlphabeticalKey(b)));
 }
 
 async function adsbLolFlights(device, store, env) {
@@ -494,7 +515,7 @@ function normalizeOpenSkyState(s, device) {
   if (distanceKm > device.radiusKm) return null;
   const callsign = typeof s[1] === "string" ? s[1].trim() : null;
   const airline = callsign?.match(/^([A-Z]{3})/)?.[1] || null;
-  return { airline, flightNumber: callsign, origin: null, destination: null, aircraftType: null, altFt: convert(s[7], 3.28084), verticalSpeedFpm: convert(s[11], 196.850394), speedKt: convert(s[9], 1.943844), headingDeg: numberOrNull(s[10]), registration: null, flightProgressPercent: null, latitude, longitude, distanceKm: round(distanceKm, 1), icao24: s[0] || null, lastContact: s[4] ? new Date(s[4] * 1000).toISOString() : null, source: "opensky" };
+  return { airline, flightNumber: callsign, origin: null, destination: null, aircraftType: null, altFt: convert(s[7], 3.28084), verticalSpeedFpm: convert(s[11], 196.850394), speedKt: convert(s[9], 1.943844), trackDeg: numberOrNull(s[10]), registration: null, flightProgressPercent: null, latitude, longitude, distanceKm: round(distanceKm, 1), icao24: s[0] || null, lastContact: s[4] ? new Date(s[4] * 1000).toISOString() : null, source: "opensky" };
 }
 function normalizeAdsbLolState(a, device) {
   const latitude = numberOrNull(a.lat), longitude = numberOrNull(a.lon);
@@ -511,7 +532,7 @@ function normalizeAdsbLolState(a, device) {
   if (a.dbFlags & 2) dataFlags.push("interesting");
   if (a.dbFlags & 4) dataFlags.push("pia");
   if (a.dbFlags & 8) dataFlags.push("ladd");
-  return { airline: registrationCallsign ? null : callsign?.match(/^([A-Z]{3})/)?.[1] || null, airlineName: null, airlineCountry: null, flightNumber: callsign, origin: null, destination: null, aircraftType: a.t || null, aircraftTypeName: null, aircraftManufacturer: null, registeredOwner: null, registeredOwnerCountry: null, altFt: numberOrNull(a.alt_baro), altGeomFt: numberOrNull(a.alt_geom), verticalSpeedFpm: numberOrNull(a.baro_rate ?? a.geom_rate), speedKt: numberOrNull(a.gs), headingDeg: numberOrNull(a.track), selectedAltitudeFt: numberOrNull(a.nav_altitude_mcp), selectedHeadingDeg: numberOrNull(a.nav_heading), registration, squawk: a.squawk || null, dataFlags, positionAgeSeconds: numberOrNull(a.seen_pos), signalStrengthDbfs: numberOrNull(a.rssi), flightProgressPercent: null, latitude, longitude, distanceKm: round(distanceKm, 1), icao24: a.hex || null, lastContact: numberOrNull(a.seen) === null ? null : new Date(Date.now() - a.seen * 1000).toISOString(), source: "adsb.lol" };
+  return { airline: registrationCallsign ? null : callsign?.match(/^([A-Z]{3})/)?.[1] || null, airlineName: null, airlineCountry: null, flightNumber: callsign, origin: null, destination: null, aircraftType: a.t || null, aircraftTypeName: null, aircraftManufacturer: null, registeredOwner: null, registeredOwnerCountry: null, altFt: numberOrNull(a.alt_baro), altGeomFt: numberOrNull(a.alt_geom), verticalSpeedFpm: numberOrNull(a.baro_rate ?? a.geom_rate), speedKt: numberOrNull(a.gs), trackDeg: numberOrNull(a.track), selectedAltitudeFt: numberOrNull(a.nav_altitude_mcp), selectedHeadingDeg: numberOrNull(a.nav_heading), registration, squawk: a.squawk || null, dataFlags, positionAgeSeconds: numberOrNull(a.seen_pos), signalStrengthDbfs: numberOrNull(a.rssi), flightProgressPercent: null, latitude, longitude, distanceKm: round(distanceKm, 1), icao24: a.hex || null, lastContact: numberOrNull(a.seen) === null ? null : new Date(Date.now() - a.seen * 1000).toISOString(), source: "adsb.lol" };
 }
 function normalizeTrackedAdsbLolState(a, device, tracked) {
   const flight = normalizeAdsbLolState({ ...a, dst: undefined }, { ...device, radiusKm: Infinity });
@@ -543,10 +564,10 @@ function legScore(flight, leg) {
   const alongTrack = Math.atan2(Math.sin(d13) * Math.cos(bearingDifferenceRadians), Math.cos(d13));
   const beforeStart = alongTrack < 0, pastEnd = alongTrack > d12;
   const crossTrackKm = beforeStart ? haversineKm(flight.latitude, flight.longitude, start.latitude, start.longitude) : pastEnd ? haversineKm(flight.latitude, flight.longitude, end.latitude, end.longitude) : Math.abs(crossTrackRadians) * 6371;
-  const headingDifference = flight.headingDeg === null ? 0 : angularDifference(flight.headingDeg, bearingLeg);
-  // Heading resolves the ambiguity around a multi-stop airport without overpowering geographic fit.
+  const trackDifference = flight.trackDeg === null ? 0 : angularDifference(flight.trackDeg, bearingLeg);
+  // Track resolves the ambiguity around a multi-stop airport without overpowering geographic fit.
   const progressPercent = d12 > 0 ? round(Math.max(0, Math.min(1, alongTrack / d12)) * 100, 1) : null;
-  return { crossTrackKm, progressPercent, score: crossTrackKm + headingDifference / 180 * 50 };
+  return { crossTrackKm, progressPercent, score: crossTrackKm + trackDifference / 180 * 50 };
 }
 function airportCode(airport) { return airport.iata || airport.icao; }
 function angularDistance(a, b) { return haversineKm(a.latitude, a.longitude, b.latitude, b.longitude) / 6371; }

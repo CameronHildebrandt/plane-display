@@ -62,7 +62,7 @@ constexpr unsigned long kDisplayMaintenanceWipeMillis = 60UL * 60UL * 1000UL;
 constexpr unsigned long kNoPlanesAnimationStepMillis = 125;
 constexpr int16_t kNoPlanesSpriteWidth = 33;
 constexpr size_t kFlightResponseCapacity = 16384;
-constexpr int16_t kRotationIndicatorWidth = 12;
+constexpr int16_t kRotationIndicatorWidth = 32;
 constexpr int16_t kRotationIndicatorHeight = 4;
 constexpr unsigned long kRotationPipBubbleMillis = 600;
 constexpr char kDeviceHostname[] = "led-plane";
@@ -157,7 +157,7 @@ struct Route {
   int altFt;
   int speedKt;
   int verticalSpeedFpm;
-  int headingDeg;
+  int trackDeg;
   char aircraftType[12];
   float distanceKm;
   float flightProgressPercent;
@@ -627,7 +627,7 @@ void drawRegistrationMarquee(const char* text, int16_t left, int16_t y, int16_t 
                              uint16_t color) {
   int16_t textWidth = -1;
   for (const char* character = text; *character; ++character) {
-    textWidth += (*character == '-' ? 2 : 5) + 1;
+    textWidth += (*character == '-' ? 2 : (*character == '0' ? 4 : 5)) + 1;
   }
   int16_t offset = 0;
   if (textWidth > width) {
@@ -647,11 +647,13 @@ void drawRegistrationMarquee(const char* text, int16_t left, int16_t y, int16_t 
       ++character;
       continue;
     }
+    const bool compactZero = *character == '0';
     const bool uppercase = *character >= 'A' && *character <= 'Z';
     const uint8_t glyph = uppercase ? static_cast<uint8_t>(*character - 'A')
                                     : minecraftGlyphIndex(*character);
     for (uint8_t row = 0; row < 7; ++row) {
-      const uint8_t pixels = uppercase ? pgm_read_byte(&kMinecraftNormalCaps[glyph][row])
+      const uint8_t pixels = compactZero ? pgm_read_byte(&kMinecraftTelemetryZero[row])
+                                       : uppercase ? pgm_read_byte(&kMinecraftNormalCaps[glyph][row])
                                        : pgm_read_byte(&kMinecraftFont[glyph][row]);
       for (uint8_t column = 0; column < 5; ++column) {
         const int16_t pixelX = x + column;
@@ -660,7 +662,7 @@ void drawRegistrationMarquee(const char* text, int16_t left, int16_t y, int16_t 
         }
       }
     }
-    x += 6;
+    x += compactZero ? 5 : 6;
     ++character;
   }
 }
@@ -759,17 +761,22 @@ void drawRcafLogo(int16_t x, int16_t y) {
   const uint16_t navy = visibleColor(kRcafNavy[0], kRcafNavy[1], kRcafNavy[2]);
   const uint16_t white = matrix.color565(255, 255, 255);
   const uint16_t red = visibleColor(kRcafRed[0], kRcafRed[1], kRcafRed[2]);
-  for (uint8_t row = 0; row < 32; ++row) {
-    const uint32_t navyPixels = pgm_read_dword(&kRcafRoundelNavyMask[row]);
-    const uint32_t whitePixels = pgm_read_dword(&kRcafRoundelWhiteMask[row]);
-    const uint32_t redPixels = pgm_read_dword(&kRcafRoundelRedMask[row]);
-    for (uint8_t column = 0; column < 32; ++column) {
-      const uint32_t bit = 1UL << (31 - column);
+  for (uint8_t row = 0; row < 33; ++row) {
+    const uint8_t sourceRow = static_cast<uint8_t>((row * 31 + 16) / 32);
+    const uint32_t navyPixels = pgm_read_dword(&kRcafRoundelNavyMask[sourceRow]);
+    const uint32_t whitePixels = pgm_read_dword(&kRcafRoundelWhiteMask[sourceRow]);
+    const uint32_t redPixels = pgm_read_dword(&kRcafRoundelRedMask[sourceRow]);
+    for (uint8_t column = 0; column < 33; ++column) {
+      const uint8_t sourceColumn = static_cast<uint8_t>((column * 31 + 16) / 32);
+      const uint32_t bit = 1UL << (31 - sourceColumn);
       if (navyPixels & bit) matrix.drawPixel(x + column, y + row, navy);
       else if (whitePixels & bit) matrix.drawPixel(x + column, y + row, white);
       else if (redPixels & bit) matrix.drawPixel(x + column, y + row, red);
     }
   }
+  // The shared logo lane is 33px square. Finish the maple leaf's stem in the
+  // final row, rather than cropping it with the original 32px asset bounds.
+  matrix.drawPixel(x + 16, y + 32, red);
 }
 
 bool isAirCanadaFlight(const Route& route) {
@@ -1139,7 +1146,7 @@ void drawOperatorLogo(const Route& route, int16_t x, int16_t y) {
   else if (isAirCanadaFlight(route)) drawAirCanadaLogo(x, y);
   else if (isFlairFlight(route)) drawFlairLogo(x, y);
   else if (isCargojetFlight(route)) drawCargojetLogo(x, y);
-  else if (isRcafFlight(route)) drawRcafLogo(x, y);
+  else if (isRcafFlight(route)) drawRcafLogo(0, y);
   else if (isCanWestFlight(route)) drawCanWestLogo(x, y);
   else if (isCentralMountainAirFlight(route)) drawCentralMountainAirLogo(x, y);
   else if (isCoywolfFlight(route)) drawCoywolfLogo(x, y);
@@ -1227,8 +1234,7 @@ void drawRouteChrome(const Route& route, float progressOverride = -2.0f, float p
 }
 
 uint8_t rotationIndicatorPipForRoute(uint8_t index) {
-  const uint8_t pipCount = min<uint8_t>(routeCount, 5);
-  return routeCount <= 5 ? index : static_cast<uint8_t>(index * pipCount / routeCount);
+  return min<uint8_t>(index, kMaxRoutableFlights - 1);
 }
 
 void drawRotationIndicator() {
@@ -1242,34 +1248,32 @@ void drawRotationIndicator() {
   const uint16_t dimPink = visibleColor(19, 3, 9);
   matrix.fillRect(x, y, kRotationIndicatorWidth, kRotationIndicatorHeight, black);
 
-  // Five 1px pips at columns 1, 3, 5, 7, and 9 deliberately reproduce the
-  // compact 12px pattern. Most nearby-aircraft rotations fit directly; for a
-  // longer list the pips represent evenly spaced positions through the list.
-  const uint8_t pipCount = min<uint8_t>(routeCount, 5);
+  // One direct 1px pip for every queued aircraft, up to all 20 positions.
+  const uint8_t pipCount = min<uint8_t>(routeCount, kMaxRoutableFlights);
   const uint8_t activePip = rotationIndicatorPipForRoute(routeIndex);
   for (uint8_t pip = 0; pip < pipCount; ++pip) {
     const bool stableActive = !rotationPipTransitionActive && pip == activePip;
-    matrix.drawPixel(x + 1 + pip * 2, y + 1, stableActive ? brightPink : dimPink);
+    matrix.drawPixel(x + pip, y + 1, stableActive ? brightPink : dimPink);
   }
 
   if (rotationPipTransitionActive) {
     const unsigned long elapsed = millis() - rotationPipTransitionStartMillis;
-    int16_t bubbleX = x + 1 + rotationPipFrom * 2;
+    int16_t bubbleX = x + rotationPipFrom;
     if (rotationPipTo > rotationPipFrom) {
       // Adjacent pips have exactly one LED between them: that is the bubble's
       // travel lane. After crossing it, the bubble settles into the new dot.
       if (elapsed >= kRotationPipBubbleMillis / 3 && elapsed < 2 * kRotationPipBubbleMillis / 3) {
         bubbleX += 1;
       } else if (elapsed >= 2 * kRotationPipBubbleMillis / 3) {
-        bubbleX = x + 1 + rotationPipTo * 2;
+        bubbleX = x + rotationPipTo;
       }
     } else if (rotationPipTo < rotationPipFrom) {
       // The last-to-first transition loops through the otherwise-unused outer
       // pixels, retaining the same little travelling-bubble feel.
       const uint8_t phase = min<uint8_t>(3, elapsed * 4 / kRotationPipBubbleMillis);
       static constexpr int8_t kWrapOffsets[] = {0, 1, 2, -1};
-      bubbleX = x + 1 + rotationPipFrom * 2 + kWrapOffsets[phase];
-      if (phase == 3) bubbleX = x + 1 + rotationPipTo * 2;
+      bubbleX = x + rotationPipFrom + kWrapOffsets[phase];
+      if (phase == 3) bubbleX = x + rotationPipTo;
     }
     matrix.drawPixel(bubbleX, y + 1, brightPink);
   }
@@ -1328,7 +1332,7 @@ void drawAirportRoute(const Route& route, int16_t x, int16_t y, uint16_t color) 
 
 int16_t registrationTextWidth(const char* text) {
   int16_t width = -1;
-  for (const char* character = text; *character; ++character) width += *character == '-' ? 3 : 6;
+  for (const char* character = text; *character; ++character) width += *character == '-' ? 3 : (*character == '0' ? 5 : 6);
   return width;
 }
 
@@ -1394,12 +1398,12 @@ void refreshActiveMarquees(const Route& route) {
 
   // Telemetry normally stays completely still. Only the exceptional values
   // wider than their 32-pixel slot are re-rendered as a marquee.
-  char altitude[12], verticalSpeed[12], speed[12], heading[12], distance[12];
+  char altitude[12], verticalSpeed[12], speed[12], track[12], distance[12];
   if (route.altFt >= 0) snprintf(altitude, sizeof(altitude), "%d", route.altFt); else strlcpy(altitude, "--", sizeof(altitude));
   if (route.verticalSpeedFpm <= -99999) strlcpy(verticalSpeed, "--", sizeof(verticalSpeed));
   else snprintf(verticalSpeed, sizeof(verticalSpeed), "%d", route.verticalSpeedFpm < 0 ? -route.verticalSpeedFpm : route.verticalSpeedFpm);
   if (route.speedKt >= 0) snprintf(speed, sizeof(speed), "%d", route.speedKt); else strlcpy(speed, "--", sizeof(speed));
-  if (route.headingDeg >= 0) snprintf(heading, sizeof(heading), "%d", route.headingDeg); else strlcpy(heading, "--", sizeof(heading));
+  if (route.trackDeg >= 0) snprintf(track, sizeof(track), "%d", route.trackDeg); else strlcpy(track, "--", sizeof(track));
   if (route.distanceKm >= 0.0f) snprintf(distance, sizeof(distance), "%.1f", route.distanceKm); else strlcpy(distance, "--", sizeof(distance));
 
   const uint16_t telemetry = matrix.color565(85, 85, 85);
@@ -1407,7 +1411,7 @@ void refreshActiveMarquees(const Route& route) {
       {altitude, route.altFt >= 0 ? TelemetryUnit::Feet : TelemetryUnit::None, false, false, false, 4},
       {verticalSpeed, TelemetryUnit::None, route.verticalSpeedFpm > -99999, route.verticalSpeedFpm > 0, route.verticalSpeedFpm == 0, 16},
       {speed, route.speedKt >= 0 ? TelemetryUnit::Knots : TelemetryUnit::None, false, false, false, 28},
-      {heading, route.headingDeg >= 0 ? TelemetryUnit::Degrees : TelemetryUnit::None, false, false, false, 40},
+      {track, route.trackDeg >= 0 ? TelemetryUnit::Degrees : TelemetryUnit::None, false, false, false, 40},
       {distance, route.distanceKm >= 0.0f ? TelemetryUnit::Kilometres : TelemetryUnit::None, false, false, false, 52},
   };
   for (const auto& line : lines) {
@@ -1444,15 +1448,15 @@ void drawTelemetryValues(const Route& route) {
   matrix.fillRect(95, 40, 32, 7, black);
   matrix.fillRect(95, 52, 32, 7, black);
 
-  char altitude[12], verticalSpeed[12], speed[12], heading[12], distance[12];
+  char altitude[12], verticalSpeed[12], speed[12], track[12], distance[12];
   if (route.altFt >= 0) snprintf(altitude, sizeof(altitude), "%d", route.altFt);
   else strlcpy(altitude, "--", sizeof(altitude));
   if (route.verticalSpeedFpm <= -99999) strlcpy(verticalSpeed, "--", sizeof(verticalSpeed));
   else snprintf(verticalSpeed, sizeof(verticalSpeed), "%d", route.verticalSpeedFpm < 0 ? -route.verticalSpeedFpm : route.verticalSpeedFpm);
   if (route.speedKt >= 0) snprintf(speed, sizeof(speed), "%d", route.speedKt);
   else strlcpy(speed, "--", sizeof(speed));
-  if (route.headingDeg >= 0) snprintf(heading, sizeof(heading), "%d", route.headingDeg);
-  else strlcpy(heading, "--", sizeof(heading));
+  if (route.trackDeg >= 0) snprintf(track, sizeof(track), "%d", route.trackDeg);
+  else strlcpy(track, "--", sizeof(track));
   if (route.distanceKm >= 0.0f) snprintf(distance, sizeof(distance), "%.1f", route.distanceKm);
   else strlcpy(distance, "--", sizeof(distance));
 
@@ -1460,7 +1464,7 @@ void drawTelemetryValues(const Route& route) {
   drawTelemetryLine(verticalSpeed, TelemetryUnit::None,
                     route.verticalSpeedFpm > -99999, route.verticalSpeedFpm > 0, route.verticalSpeedFpm == 0, 16, text);
   drawTelemetryLine(speed, route.speedKt >= 0 ? TelemetryUnit::Knots : TelemetryUnit::None, false, false, false, 28, text);
-  drawTelemetryLine(heading, route.headingDeg >= 0 ? TelemetryUnit::Degrees : TelemetryUnit::None, false, false, false, 40, text);
+  drawTelemetryLine(track, route.trackDeg >= 0 ? TelemetryUnit::Degrees : TelemetryUnit::None, false, false, false, 40, text);
   drawTelemetryLine(distance, route.distanceKm >= 0.0f ? TelemetryUnit::Kilometres : TelemetryUnit::None, false, false, false, 52, text);
 }
 
@@ -1896,7 +1900,8 @@ int8_t letterDropOffset(unsigned long phase, uint8_t line, uint8_t character,
 
 void drawAnimatedNormalLine(const char* text, int16_t left, int16_t y, int16_t width,
                             uint16_t color, uint8_t line, unsigned long phase,
-                            bool entering, bool compactHyphen = false, uint8_t startIndex = 0) {
+                            bool entering, bool compactHyphen = false, uint8_t startIndex = 0,
+                            bool compactZero = false) {
   int16_t x = left;
   uint8_t characterIndex = 0;
   for (const char* character = text; *character; ++character, ++characterIndex) {
@@ -1914,7 +1919,8 @@ void drawAnimatedNormalLine(const char* text, int16_t left, int16_t y, int16_t w
     for (uint8_t row = 0; row < 7; ++row) {
       const int16_t pixelY = y + row + offset;
       if (pixelY < y || pixelY >= y + 7) continue;
-      const uint8_t pixels = uppercase ? pgm_read_byte(&kMinecraftNormalCaps[glyph][row])
+      const uint8_t pixels = compactZero && *character == '0' ? pgm_read_byte(&kMinecraftTelemetryZero[row])
+                                       : uppercase ? pgm_read_byte(&kMinecraftNormalCaps[glyph][row])
                                        : pgm_read_byte(&kMinecraftFont[glyph][row]);
       for (uint8_t column = 0; column < 5; ++column) {
         const int16_t pixelX = x + column;
@@ -1923,7 +1929,7 @@ void drawAnimatedNormalLine(const char* text, int16_t left, int16_t y, int16_t w
         }
       }
     }
-    x += 6;
+    x += compactZero && *character == '0' ? 5 : 6;
   }
 }
 
@@ -2203,14 +2209,14 @@ void drawAnimatedRouteText(const Route& route, unsigned long phase, bool enterin
   for (char* character = registration; *character; ++character) *character = toupper(*character);
   const char* originCity = airportCity(route.origin);
   const char* destinationCity = airportCity(route.destination);
-  char altitude[12], verticalSpeed[12], speed[12], heading[12], distance[12];
+  char altitude[12], verticalSpeed[12], speed[12], track[12], distance[12];
   if (route.altFt >= 0) snprintf(altitude, sizeof(altitude), "%d", route.altFt);
   else strlcpy(altitude, "--", sizeof(altitude));
   if (route.verticalSpeedFpm <= -99999) strlcpy(verticalSpeed, "--", sizeof(verticalSpeed));
   else snprintf(verticalSpeed, sizeof(verticalSpeed), "%d", route.verticalSpeedFpm < 0 ? -route.verticalSpeedFpm : route.verticalSpeedFpm);
   if (route.speedKt >= 0) snprintf(speed, sizeof(speed), "%d", route.speedKt);
   else strlcpy(speed, "--", sizeof(speed));
-  snprintf(heading, sizeof(heading), route.headingDeg >= 0 ? "%d" : "--", route.headingDeg);
+  snprintf(track, sizeof(track), route.trackDeg >= 0 ? "%d" : "--", route.trackDeg);
   if (route.distanceKm >= 0.0f) snprintf(distance, sizeof(distance), "%.1f", route.distanceKm);
   else strlcpy(distance, "--", sizeof(distance));
   drawAnimatedAirportRoute(route, phase, entering);
@@ -2218,13 +2224,13 @@ void drawAnimatedRouteText(const Route& route, unsigned long phase, bool enterin
   drawAnimatedNormalLine(route.flightNumber[0] ? route.flightNumber : "-----", 34, 28, 60,
                          tertiaryWhite, 2, phase, entering);
   drawAnimatedNormalLine(airlineName(route), 34, 40, 60, tertiaryWhite, 9, phase, entering);
-  drawAnimatedNormalLine(registration, 1, 37, 32, secondaryWhite, 3, phase, entering, true);
+  drawAnimatedNormalLine(registration, 1, 37, 32, secondaryWhite, 3, phase, entering, true, 0, true);
   drawAnimatedNormalLine(displayAircraftType(route), 1, 47, 32,
                          secondaryWhite, 4, phase, entering);
   drawAnimatedTelemetryNumber(altitude, 95, 4, 95, 127, tertiaryWhite, 5, phase, entering);
   drawAnimatedTelemetryNumber(verticalSpeed, 95, 16, 95, 127, tertiaryWhite, 6, phase, entering);
   drawAnimatedTelemetryNumber(speed, 95, 28, 95, 127, tertiaryWhite, 7, phase, entering);
-  drawAnimatedTelemetryNumber(heading, 95, 40, 95, 127, tertiaryWhite, 8, phase, entering);
+  drawAnimatedTelemetryNumber(track, 95, 40, 95, 127, tertiaryWhite, 8, phase, entering);
   drawAnimatedTelemetryNumber(distance, 95, 52, 95, 127, tertiaryWhite, 10, phase, entering);
   drawAnimatedTelemetryAdornment(altitude, route.altFt >= 0 ? TelemetryUnit::Feet : TelemetryUnit::None,
                                  false, false, false, 4, 5, phase, entering, tertiaryWhite);
@@ -2234,7 +2240,7 @@ void drawAnimatedRouteText(const Route& route, unsigned long phase, bool enterin
                                  16, 6, phase, entering, tertiaryWhite);
   drawAnimatedTelemetryAdornment(speed, route.speedKt >= 0 ? TelemetryUnit::Knots : TelemetryUnit::None,
                                  false, false, false, 28, 7, phase, entering, tertiaryWhite);
-  drawAnimatedTelemetryAdornment(heading, route.headingDeg >= 0 ? TelemetryUnit::Degrees : TelemetryUnit::None,
+  drawAnimatedTelemetryAdornment(track, route.trackDeg >= 0 ? TelemetryUnit::Degrees : TelemetryUnit::None,
                                  false, false, false, 40, 8, phase, entering, tertiaryWhite);
   drawAnimatedTelemetryAdornment(distance, route.distanceKm >= 0.0f ? TelemetryUnit::Kilometres : TelemetryUnit::None,
                                  false, false, false, 52, 10, phase, entering, tertiaryWhite);
@@ -2600,7 +2606,9 @@ void processFetchedFlightResponse() {
       route.altFt = flight["altFt"] | -1;
       route.speedKt = flight["speedKt"] | -1;
       route.verticalSpeedFpm = flight["verticalSpeedFpm"] | -100000;
-      route.headingDeg = flight["headingDeg"] | -1;
+      // Accept the former field for the brief lifetime of a cached response,
+      // while all fresh backend responses use trackDeg exclusively.
+      route.trackDeg = flight["trackDeg"] | (flight["headingDeg"] | -1);
       strlcpy(route.aircraftType, flight["aircraftType"] | "", sizeof(route.aircraftType));
       // Tail-number overrides deliberately affect branding only. The live
       // aircraft type remains authoritative for the type-specific silhouette.
