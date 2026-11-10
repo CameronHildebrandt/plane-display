@@ -856,11 +856,6 @@ bool isAirSprintFlight(const Route& route) {
   return strncmp(route.operatorCode, "ASP", 3) == 0 || strncmp(route.flightNumber, "ASP", 3) == 0;
 }
 
-bool isRcafFlight(const Route& route) {
-  // ADSBDB's registered-owner flag for the Royal Canadian Air Force is CFC.
-  return strncmp(route.operatorCode, "CFC", 3) == 0 || strncmp(route.flightNumber, "CFC", 3) == 0;
-}
-
 bool isPorterFlight(const Route& route) {
   return strncmp(route.operatorCode, "POE", 3) == 0 || strncmp(route.flightNumber, "POE", 3) == 0;
 }
@@ -1028,22 +1023,6 @@ void drawCoywolfLogo(int16_t x, int16_t y) {
       const uint32_t bit = 1UL << (31 - column);
       if (orangePixels & bit) matrix.drawPixel(x + column, y + row, orange);
       else if (greyPixels & bit) matrix.drawPixel(x + column, y + row, grey);
-    }
-  }
-}
-
-void drawAlbertaHealthLogo(int16_t x, int16_t y) {
-  const uint16_t green = visibleColor(kAlbertaHealthBrandColor[0], kAlbertaHealthBrandColor[1],
-                                      kAlbertaHealthBrandColor[2]);
-  const uint16_t blue = visibleColor(kAlbertaHealthBlue[0], kAlbertaHealthBlue[1],
-                                     kAlbertaHealthBlue[2]);
-  for (uint8_t row = 0; row < 32; ++row) {
-    const uint32_t greenPixels = pgm_read_dword(&kAlbertaHealthLogoMask[row][0]);
-    const uint32_t bluePixels = pgm_read_dword(&kAlbertaHealthLogoMask[row][1]);
-    for (uint8_t column = 0; column < 32; ++column) {
-      const uint32_t bit = 1UL << (31 - column);
-      if (greenPixels & bit) matrix.drawPixel(x + column, y + row, green);
-      else if (bluePixels & bit) matrix.drawPixel(x + column, y + row, blue);
     }
   }
 }
@@ -1318,8 +1297,7 @@ const char* airportCity(const char* code) {
 }
 
 const char* displayAircraftType(const Route& route) {
-  const TailOverride* override = tailOverrideFor(route);
-  const char* type = override ? override->aircraftType : route.aircraftType;
+  const char* type = route.aircraftType;
   // Some feeds use the literal word TAIL as a placeholder rather than an
   // ICAO type. Treat it exactly like missing data on the display.
   const bool tailPlaceholder = strlen(type) == 4 &&
