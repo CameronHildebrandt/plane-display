@@ -846,6 +846,7 @@ bool isNorthCaribooAirFlight(const Route& route) {
 
 bool isWestJetFlight(const Route& route) {
   return strncmp(route.operatorCode, "WJA", 3) == 0 || strncmp(route.operatorCode, "WEN", 3) == 0 ||
+         strncmp(route.flightNumber, "WJA", 3) == 0 || strncmp(route.flightNumber, "WEN", 3) == 0 ||
          strncmp(route.flightNumber, "WS", 2) == 0;
 }
 
@@ -1341,6 +1342,7 @@ void drawRouteMarquees(const Route& route) {
   const uint16_t black = matrix.color565(0, 0, 0);
   const uint16_t secondaryWhite = matrix.color565(145, 145, 145);
   const uint16_t tertiaryWhite = matrix.color565(85, 85, 85);
+  const uint16_t specialFlightOrange = visibleColor(255, 128, 0);
   char registration[sizeof(route.registration)];
   strlcpy(registration, route.registration[0] ? route.registration : "UNKNOWN", sizeof(registration));
   for (char* character = registration; *character; ++character) *character = toupper(*character);
@@ -1358,7 +1360,7 @@ void drawRouteMarquees(const Route& route) {
   drawMinecraftMarquee(route.flightNumber[0] ? route.flightNumber : "-----", 34, 28, 60, tertiaryWhite);
   drawMinecraftMarquee(airlineName(route), 34, 40, 60, tertiaryWhite);
   if (route.specialFlightTitle[0]) {
-    drawMinecraftMarquee(route.specialFlightTitle, 34, 52, 60, secondaryWhite);
+    drawMinecraftMarquee(route.specialFlightTitle, 34, 52, 60, specialFlightOrange);
   }
 }
 
@@ -1369,6 +1371,7 @@ void refreshActiveMarquees(const Route& route) {
   const uint16_t black = matrix.color565(0, 0, 0);
   const uint16_t secondaryWhite = matrix.color565(145, 145, 145);
   const uint16_t tertiaryWhite = matrix.color565(85, 85, 85);
+  const uint16_t specialFlightOrange = visibleColor(255, 128, 0);
   // Keep the unpainted badge/text gutter deterministic across all partial
   // marquee redraws, rather than relying on a future full-screen render.
   matrix.fillRect(33, 2, 1, matrix.height() - 3, black);
@@ -1403,7 +1406,7 @@ void refreshActiveMarquees(const Route& route) {
   }
   if (route.specialFlightTitle[0] && normalTextWidth(route.specialFlightTitle) > 60) {
     matrix.fillRect(34, 52, 60, 7, black);
-    drawMinecraftMarquee(route.specialFlightTitle, 34, 52, 60, secondaryWhite);
+    drawMinecraftMarquee(route.specialFlightTitle, 34, 52, 60, specialFlightOrange);
   }
 
   // Telemetry normally stays completely still. Only the exceptional values
@@ -2258,6 +2261,7 @@ void clearTransitionTextAreas() {
 void drawAnimatedRouteText(const Route& route, unsigned long phase, bool entering) {
   const uint16_t secondaryWhite = matrix.color565(145, 145, 145);
   const uint16_t tertiaryWhite = matrix.color565(85, 85, 85);
+  const uint16_t specialFlightOrange = visibleColor(255, 128, 0);
   char registration[sizeof(route.registration)];
   strlcpy(registration, route.registration[0] ? route.registration : "UNKNOWN", sizeof(registration));
   for (char* character = registration; *character; ++character) *character = toupper(*character);
@@ -2279,7 +2283,7 @@ void drawAnimatedRouteText(const Route& route, unsigned long phase, bool enterin
                          tertiaryWhite, 2, phase, entering);
   drawAnimatedNormalLine(airlineName(route), 34, 40, 60, tertiaryWhite, 9, phase, entering);
   if (route.specialFlightTitle[0]) {
-    drawAnimatedNormalLine(route.specialFlightTitle, 34, 52, 60, secondaryWhite, 11, phase, entering);
+    drawAnimatedNormalLine(route.specialFlightTitle, 34, 52, 60, specialFlightOrange, 11, phase, entering);
   }
   drawAnimatedNormalLine(registration, 1, 37, 32, secondaryWhite, 3, phase, entering, true, 0, true);
   drawAnimatedNormalLine(displayAircraftType(route), 1, 47, 32,

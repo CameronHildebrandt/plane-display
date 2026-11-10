@@ -10,6 +10,7 @@ let openSkyToken = null;
 // Check these before its 30-day cache so a previously cached bad record cannot win.
 const AIRLINE_OVERRIDES = Object.freeze({
   AKT: { name: "Canadian North", country: "Canada" },
+  WJA: { name: "WestJet", country: "Canada" },
 });
 
 export default { fetch: (request, env) => handle(request, new D1Store(env.DB), env) };
@@ -403,9 +404,13 @@ async function enrichAircraftDetails(flights, store, fetcher) {
     return {
       ...flight,
       aircraftType: registryType || flight.aircraftType,
-      airline: registryOperator || flight.airline,
-      airlineName: detail?.ownerName || flight.airlineName || null,
-      airlineCountry: detail?.ownerCountry || flight.airlineCountry || null,
+      // A live callsign identifies the operator of this particular movement;
+      // a registry's operator field identifies the owner and can legitimately
+      // differ for leased aircraft. Use the registry code only when ADS-B has
+      // no usable callsign, while retaining its owner data separately.
+      airline: flight.airline || registryOperator,
+      airlineName: flight.airlineName || (!flight.airline ? detail?.ownerName : null) || null,
+      airlineCountry: flight.airlineCountry || (!flight.airline ? detail?.ownerCountry : null) || null,
       aircraftTypeName: detail?.typeName || null,
       aircraftManufacturer: detail?.manufacturer || null,
       registeredOwner: detail?.ownerName || null,

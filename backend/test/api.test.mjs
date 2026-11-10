@@ -66,6 +66,31 @@ test("registry identity is the default operator source when a callsign is absent
   assert.equal(flight.aircraftIdentitySource, "adsbdb");
 });
 
+test("a live callsign wins over a different registry owner operator", async () => {
+  const { store, key } = await setup();
+  const source = { fetch: async url => {
+    if (String(url).includes("/api/0/routeset")) return new Response(JSON.stringify([]));
+    if (String(url).includes("api.adsbdb.com/v0/aircraft/c0west")) {
+      return new Response(JSON.stringify({ response: { aircraft: {
+        icao_type: "B38M", type: "737 MAX 8", manufacturer: "Boeing",
+        registered_owner_operator_flag_code: "SWG", registered_owner: "Sunwing Airlines"
+      } } }));
+    }
+    if (String(url).includes("api.adsbdb.com/v0/airline/WJA")) {
+      return new Response(JSON.stringify({ response: [{ name: "incorrect external name", icao: "WJA", country: "Canada" }] }));
+    }
+    if (String(url).includes("/v2/point/")) {
+      return new Response(JSON.stringify({ ac: [{ hex: "c0west", flight: "WJA1164", r: "C-WEST", t: "B38M", alt_baro: 32000, gs: 430, track: 90, lat: 53.6, lon: -113.6 }] }));
+    }
+    throw new Error(`unexpected lookup: ${url}`);
+  } };
+  const response = await handle(request("/flightdata", { headers: { "X-Device-Key": key } }), store, source);
+  const [flight] = (await response.json()).flights;
+  assert.equal(flight.airline, "WJA");
+  assert.equal(flight.airlineName, "WestJet");
+  assert.equal(flight.registeredOwner, "Sunwing Airlines");
+});
+
 test("live responses put richer aircraft first and alphabetize equal records", async () => {
   const { store, key } = await setup();
   const source = { fetch: async url => {
