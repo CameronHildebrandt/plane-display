@@ -122,6 +122,9 @@ test("an active special flight is added outside the local radius and marked for 
   assert.equal(flight.trackedFlightTitle, "Family arrival");
   assert.equal(flight.distanceKm > 100, true);
   assert.equal(body.flights[0].specialFlight, true);
+  // The backend remains a complete live-data feed. The firmware, rather than
+  // the API, decides to hide ordinary flights while this special one is live.
+  assert.equal(body.flights.some(item => item.flightNumber === "WJA410"), true);
 });
 
 test("an active special tail number uses the registration lookup and is marked for display priority", async () => {
