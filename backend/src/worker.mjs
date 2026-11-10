@@ -353,8 +353,48 @@ async function enrichAircraftDetails(flights, store, fetcher) {
   const details = new Map(await Promise.all(icao24s.map(async icao24 => [icao24, await aircraftDetails(icao24, store, fetcher)])));
   return flights.map(flight => {
     const detail = flight.icao24 ? details.get(flight.icao24) : null;
-    return { ...flight, aircraftTypeName: detail?.typeName || null, aircraftManufacturer: detail?.manufacturer || null, registeredOwner: detail?.ownerName || null, registeredOwnerCountry: detail?.ownerCountry || null };
+    // Position reports sometimes carry an incorrect or stale ICAO type. The
+    // transponder's ICAO24 address is stable, so prefer independently resolved
+    // registry metadata when it yields a safe ICAO designator. Never discard a
+    // usable live value merely because a registry lookup was unavailable.
+    const registryType = registryAircraftTypeCode(detail);
+    return {
+      ...flight,
+      aircraftType: registryType || flight.aircraftType,
+      aircraftTypeName: detail?.typeName || null,
+      aircraftManufacturer: detail?.manufacturer || null,
+      registeredOwner: detail?.ownerName || null,
+      registeredOwnerCountry: detail?.ownerCountry || null,
+      aircraftIdentitySource: registryType ? "adsbdb" : "adsb.lol"
+    };
   });
+}
+
+// ADSBDB deliberately returns a human-readable registered model, whereas the
+// matrix's sprite picker uses ICAO designators. This is a model normalizer, not
+// a carrier fleet list: it applies to every aircraft regardless of operator.
+function registryAircraftTypeCode(detail) {
+  const type = String(detail?.typeName || "").trim().toUpperCase();
+  const manufacturer = String(detail?.manufacturer || "").trim().toUpperCase();
+  const identity = `${manufacturer} ${type}`;
+  if (!type) return null;
+  if (/^[A-Z0-9]{2,5}$/.test(type)) return type;
+
+  // C208 is intentionally explicit: this turns "Cessna 208 Caravan" into
+  // the same display/sprite code as a provider which already sent C208.
+  if (/\b(CESSNA\s*)?208\b/.test(identity) || /\bCARAVAN\b/.test(identity)) return "C208";
+  if (/\bROBINSON\s*R?22\b|\bR22\b/.test(identity)) return "R22";
+  if (/\b737\s*MAX\s*8\b|\bMAX\s*8\b/.test(identity)) return "B38M";
+  if (/\b737[- ]?800\b/.test(identity)) return "B738";
+  if (/\b737[- ]?700\b/.test(identity)) return "B737";
+  if (/\bAIRBUS\s*A?320\b|\bA320\b/.test(identity)) return "A320";
+  if (/\bAIRBUS\s*A?321\b|\bA321\b/.test(identity)) return "A321";
+  if (/\bAIRBUS\s*A?220\b|\bA220\b/.test(identity)) return "A220";
+  if (/\bDASH[ -]?8\b|\bQ400\b/.test(identity)) return "DH8D";
+  if (/\bCRJ[- ]?200\b/.test(identity)) return "CRJ2";
+  if (/\bCRJ[- ]?700\b/.test(identity)) return "CRJ7";
+  if (/\bCRJ[- ]?900\b|\bCRJ[- ]?1000\b/.test(identity)) return "CRJ9";
+  return null;
 }
 
 async function aircraftDetails(icao24, store, fetcher) {
