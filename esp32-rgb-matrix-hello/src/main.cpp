@@ -106,6 +106,10 @@ int pairingQrRequestStatus = 0;
 bool pairingQrRetryPending = false;
 unsigned long pairingQrRetryMillis = 0;
 unsigned long pairingQrSpinnerStartMillis = 0;
+volatile bool pairingQrFetchInProgress = false;
+volatile bool pairingQrFetchFinished = false;
+volatile int pairingQrFetchStatus = 0;
+char pairingQrFetchedUrl[256] = {};
 bool bootButtonWasPressed = false;
 unsigned long lastBootButtonPressMillis = 0;
 unsigned long nextFlightRotationMillis = 0;
@@ -2468,8 +2472,7 @@ void drawPairingQrLoading() {
   }
 }
 
-bool requestPairingQrNow() {
-  bool success = false;
+void fetchPairingQrTask(void*) {
   int status = -1;
   char url[256] = {};
 
@@ -2486,7 +2489,6 @@ bool requestPairingQrNow() {
       const char* responseUrl = payload["pairUrl"] | "";
       if (!error && responseUrl[0]) {
         strlcpy(url, responseUrl, sizeof(url));
-        success = true;
       }
     } else {
       Serial.printf("Pairing request failed: HTTP %d\n", status);
@@ -2494,11 +2496,29 @@ bool requestPairingQrNow() {
     request.end();
   }
 
-  pairingQrRequestStatus = status;
-  if (!success) return false;
-  pairingUrl = url;
-  pairingUrlRefreshMillis = millis() + 4UL * 60UL * 1000UL;
-  return true;
+  // Publish the completed response last, after the URL buffer is complete.
+  // The draw loop is then free to keep the spinner moving throughout TLS and
+  // D1 latency instead of being held inside HTTPClient::POST().
+  strlcpy(pairingQrFetchedUrl, url, sizeof(pairingQrFetchedUrl));
+  pairingQrFetchStatus = status;
+  pairingQrFetchFinished = true;
+  pairingQrFetchInProgress = false;
+  vTaskDelete(nullptr);
+}
+
+void processPairingQrResponse() {
+  if (!pairingQrFetchFinished) return;
+  pairingQrFetchFinished = false;
+  pairingQrRequestStatus = pairingQrFetchStatus;
+  if (pairingQrRequestStatus == HTTP_CODE_OK && pairingQrFetchedUrl[0]) {
+    pairingUrl = pairingQrFetchedUrl;
+    pairingUrlRefreshMillis = millis() + 4UL * 60UL * 1000UL;
+    pairingQrRetryPending = false;
+    if (showingPairingQr) drawPairingQr(pairingUrl);
+    return;
+  }
+  Serial.printf("Pairing request will retry after status %d\n", pairingQrRequestStatus);
+  pairingQrRetryMillis = millis() + 10000;
 }
 
 bool fetchAndDrawPairingQr() {
@@ -2518,23 +2538,24 @@ bool fetchAndDrawPairingQr() {
     return true;
   }
 
-  // Pairing deliberately runs synchronously once it owns the network. Flight
-  // fetches run in the background, but a second concurrent TLS task can wedge
-  // the ESP32 client indefinitely. This restores the formerly reliable QR
-  // path while the DMA panel continues showing the spinner during the brief
-  // request.
-  pairingQrSpinnerStartMillis = millis();
-  if (requestPairingQrNow()) {
-    pairingQrRetryPending = false;
-    if (showingPairingQr) drawPairingQr(pairingUrl);
-  } else {
-    Serial.printf("Pairing request will retry after status %d\n", pairingQrRequestStatus);
-    pairingQrRetryMillis = millis() + 10000;
+  // Pairing waits for an in-flight flight request above, then owns the one
+  // TLS connection in its own task. Keeping HTTPClient off the draw loop
+  // lets the spinner remain fluid until the exact frame the QR is available.
+  if (!pairingQrFetchInProgress) {
+    pairingQrSpinnerStartMillis = millis();
+    pairingQrFetchedUrl[0] = '\0';
+    pairingQrFetchInProgress = true;
+    if (xTaskCreatePinnedToCore(fetchPairingQrTask, "pairing-qr", 8192, nullptr, 1, nullptr, 0) != pdPASS) {
+      pairingQrFetchInProgress = false;
+      pairingQrRequestStatus = -3;
+      pairingQrRetryMillis = millis() + 10000;
+    }
   }
   return true;
 }
 
 void updatePairingQrRequest() {
+  processPairingQrResponse();
   if (showingPairingQr && pairingQrRetryPending) fetchAndDrawPairingQr();
 }
 
