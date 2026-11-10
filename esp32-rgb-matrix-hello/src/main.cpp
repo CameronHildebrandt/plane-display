@@ -26,6 +26,7 @@
 #include "alberta_health_logo_32.h"
 #include "north_cariboo_air_logo_32.h"
 #include "porter_logo_32.h"
+#include "rcaf_roundel_32.h"
 #include "sunwest_logo_32.h"
 #include "stars_logo_32.h"
 #include "klm_logo_32.h"
@@ -755,18 +756,18 @@ void drawAlbertaHealthLogo(int16_t x, int16_t y) {
 }
 
 void drawRcafLogo(int16_t x, int16_t y) {
-  // Crisp RCAF roundel: navy outer band, white field, red core.
-  const uint16_t navy = visibleColor(0, 59, 113);
+  const uint16_t navy = visibleColor(kRcafNavy[0], kRcafNavy[1], kRcafNavy[2]);
   const uint16_t white = matrix.color565(255, 255, 255);
-  const uint16_t red = visibleColor(220, 20, 30);
-  for (int16_t row = 0; row < 32; ++row) {
-    for (int16_t column = 0; column < 32; ++column) {
-      const int16_t horizontal = column * 2 - 31;
-      const int16_t vertical = row * 2 - 31;
-      const int16_t radiusSquared = horizontal * horizontal + vertical * vertical;
-      if (radiusSquared <= 29 * 29) matrix.drawPixel(x + column, y + row, navy);
-      if (radiusSquared <= 21 * 21) matrix.drawPixel(x + column, y + row, white);
-      if (radiusSquared <= 10 * 10) matrix.drawPixel(x + column, y + row, red);
+  const uint16_t red = visibleColor(kRcafRed[0], kRcafRed[1], kRcafRed[2]);
+  for (uint8_t row = 0; row < 32; ++row) {
+    const uint32_t navyPixels = pgm_read_dword(&kRcafRoundelNavyMask[row]);
+    const uint32_t whitePixels = pgm_read_dword(&kRcafRoundelWhiteMask[row]);
+    const uint32_t redPixels = pgm_read_dword(&kRcafRoundelRedMask[row]);
+    for (uint8_t column = 0; column < 32; ++column) {
+      const uint32_t bit = 1UL << (31 - column);
+      if (navyPixels & bit) matrix.drawPixel(x + column, y + row, navy);
+      else if (whitePixels & bit) matrix.drawPixel(x + column, y + row, white);
+      else if (redPixels & bit) matrix.drawPixel(x + column, y + row, red);
     }
   }
 }
@@ -910,7 +911,7 @@ void operatorBrandRgb(const Route& route, uint8_t& red, uint8_t& green, uint8_t&
   } else if (isCargojetFlight(route)) {
     red = 237; green = 27; blue = 45;  // Cargojet red, #ED1B2D.
   } else if (isRcafFlight(route)) {
-    red = 0; green = 59; blue = 113;  // RCAF roundel navy, #003B71.
+    red = kRcafNavy[0]; green = kRcafNavy[1]; blue = kRcafNavy[2];  // #012169.
   } else if (isNorthCaribooAirFlight(route)) {
     red = kNorthCaribooAirBrandColor[0]; green = kNorthCaribooAirBrandColor[1]; blue = kNorthCaribooAirBrandColor[2];
   } else if (isCanWestFlight(route)) {
