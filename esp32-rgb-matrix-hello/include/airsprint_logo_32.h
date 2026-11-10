@@ -1,0 +1,15 @@
+#pragma once
+
+// Crisp 1-bit 32px raster of the supplied AirSprint wordmark. The white
+// source background is transparent; the top ticket uses AirSprint blue.
+constexpr uint8_t kAirSprintBrandColor[3] = {0, 103, 162};  // #0067A2
+constexpr uint32_t kAirSprintLogoMask[32] PROGMEM = {
+    0x00000000UL, 0x00000000UL, 0x00000000UL, 0x00000000UL,
+    0x00000000UL, 0x00000000UL, 0x00000000UL, 0x00000000UL,
+    0x00000000UL, 0x00000000UL, 0x001FE000UL, 0x00600C00UL,
+    0x110A0100UL, 0x10100002UL, 0x0B7DEF7EUL, 0x294F9D6EUL,
+    0x4D43994EUL, 0xC753AD6EUL, 0x00088000UL, 0x00018000UL,
+    0x00458000UL, 0x00000000UL, 0x00000000UL, 0x00000000UL,
+    0x00000000UL, 0x00000000UL, 0x00000000UL, 0x00000000UL,
+    0x00000000UL, 0x00000000UL, 0x00000000UL, 0x00000000UL,
+};
