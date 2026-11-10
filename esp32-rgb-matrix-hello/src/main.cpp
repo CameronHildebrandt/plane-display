@@ -103,6 +103,9 @@ bool showingPairingQr = false;
 volatile bool pairingQrRequestActive = false;
 volatile bool pairingQrRequestFinished = false;
 volatile bool pairingQrRequestSucceeded = false;
+volatile int pairingQrRequestStatus = 0;
+bool pairingQrRetryPending = false;
+unsigned long pairingQrRetryMillis = 0;
 char pairingQrRequestUrl[256] = {};
 unsigned long pairingQrSpinnerStartMillis = 0;
 TaskHandle_t pairingQrTaskHandle = nullptr;
@@ -2344,6 +2347,7 @@ void drawPairingQrLoading() {
 
 void pairingQrRequestTask(void*) {
   bool success = false;
+  int status = -1;
   char url[sizeof(pairingQrRequestUrl)] = {};
 
   WiFiClientSecure secureClient;
@@ -2352,7 +2356,7 @@ void pairingQrRequestTask(void*) {
   if (!endpoint.isEmpty() && beginBackendRequest(request, secureClient, endpoint)) {
     request.setTimeout(15000);
     request.addHeader("X-Device-Key", LED_PLANE_DEVICE_KEY);
-    const int status = request.POST("");
+    status = request.POST("");
     if (status == HTTP_CODE_OK) {
       JsonDocument payload;
       const DeserializationError error = deserializeJson(payload, request.getStream());
@@ -2368,6 +2372,7 @@ void pairingQrRequestTask(void*) {
   }
 
   if (success) strlcpy(pairingQrRequestUrl, url, sizeof(pairingQrRequestUrl));
+  pairingQrRequestStatus = status;
   pairingQrRequestSucceeded = success;
   pairingQrRequestFinished = true;
   pairingQrTaskHandle = nullptr;
@@ -2375,11 +2380,6 @@ void pairingQrRequestTask(void*) {
 }
 
 bool fetchAndDrawPairingQr() {
-  if (strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(LED_PLANE_DEVICE_KEY) == 0 ||
-      WiFi.status() != WL_CONNECTED) {
-    return false;
-  }
-
   // Pairing links are valid for five minutes. Reuse one for four minutes so a
   // temporarily unavailable flight feed does not fill the database with tokens.
   if (!pairingUrl.isEmpty() && millis() < pairingUrlRefreshMillis) {
@@ -2387,8 +2387,15 @@ bool fetchAndDrawPairingQr() {
     return true;
   }
 
-  if (pairingQrRequestActive) return true;
+  // QR mode is a persistent intent, not a one-shot network action. The
+  // loading spinner stays visible through Wi-Fi/TLS delays and retries.
+  pairingQrRetryPending = true;
   drawPairingQrLoading();
+  if (pairingQrRequestActive) return true;
+  if (strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(LED_PLANE_DEVICE_KEY) == 0 ||
+      WiFi.status() != WL_CONNECTED || flightFetchInProgress || millis() < pairingQrRetryMillis) {
+    return true;
+  }
   pairingQrSpinnerStartMillis = millis();
   pairingQrRequestFinished = false;
   pairingQrRequestSucceeded = false;
@@ -2396,13 +2403,16 @@ bool fetchAndDrawPairingQr() {
       pairingQrRequestTask, "pairing-qr", 8192, nullptr, 1, &pairingQrTaskHandle, 0) == pdPASS;
   if (!pairingQrRequestActive) {
     Serial.println("Could not start pairing QR request");
-    return false;
+    pairingQrRetryMillis = millis() + 10000;
   }
   return true;
 }
 
 void updatePairingQrRequest() {
-  if (!pairingQrRequestActive) return;
+  if (!pairingQrRequestActive) {
+    if (showingPairingQr && pairingQrRetryPending) fetchAndDrawPairingQr();
+    return;
+  }
   if (!pairingQrRequestFinished) {
     if (showingPairingQr) drawPairingQrLoading();
     return;
@@ -2410,13 +2420,17 @@ void updatePairingQrRequest() {
 
   pairingQrRequestActive = false;
   if (pairingQrRequestSucceeded) {
+    pairingQrRetryPending = false;
     pairingUrl = pairingQrRequestUrl;
     pairingUrlRefreshMillis = millis() + 4UL * 60UL * 1000UL;
     if (showingPairingQr) drawPairingQr(pairingUrl);
   } else if (showingPairingQr) {
-    matrix.fillScreen(matrix.color565(0, 0, 0));
-    drawMinecraftCentered("QR", 22, matrix.color565(255, 255, 255));
-    drawMinecraftCentered("OFFLINE", 37, matrix.color565(255, 255, 255));
+    // A request may briefly lose a Wi-Fi packet or contend with a flight
+    // refresh. Remain in the spinner state and retry below the API rate limit.
+    Serial.printf("Pairing request will retry after status %d\n", pairingQrRequestStatus);
+    pairingQrRetryPending = true;
+    pairingQrRetryMillis = millis() + 10000;
+    drawPairingQrLoading();
   }
 }
 
@@ -2605,13 +2619,10 @@ void handleBootButton() {
     showingPairingQr = !showingPairingQr;
     if (showingPairingQr) {
       Serial.println("Display mode: pairing QR");
-      if (!fetchAndDrawPairingQr()) {
-        matrix.fillScreen(matrix.color565(0, 0, 0));
-        drawMinecraftCentered("QR", 22, matrix.color565(255, 255, 255));
-        drawMinecraftCentered("OFFLINE", 37, matrix.color565(255, 255, 255));
-      }
+      fetchAndDrawPairingQr();
     } else {
       Serial.println("Display mode: flight route");
+      pairingQrRetryPending = false;
       if (routeCount > 0) {
         drawCurrentRoute();
       } else {
