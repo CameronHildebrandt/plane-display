@@ -1152,6 +1152,7 @@ void drawUsMilitaryLogo(int16_t x, int16_t y) {
 void drawPlaneSprite(int16_t x, int16_t y, uint16_t color);
 void drawPlaneSpritePointingUp(int16_t x, int16_t y, uint16_t color);
 void drawAircraftFallbackSprite(const char* aircraftType, int16_t x, int16_t y, uint16_t color);
+void drawAircraftPanelSprite(const char* aircraftType, int16_t x, int16_t y, uint16_t color);
 
 void drawOperatorLogo(const Route& route, int16_t x, int16_t y) {
   if (const TailOverride* override = tailOverrideFor(route)) {
@@ -1253,6 +1254,10 @@ void drawRouteChrome(const Route& route, float progressOverride = -2.0f, float p
   matrix.drawPixel(0, 0, visibleColor(red / 10, green / 10, blue / 10));
   matrix.drawPixel(matrix.width() - 1, 0, visibleColor(red / 10, green / 10, blue / 10));
   matrix.fillRect(0, 3, 33, 33, matrix.color565(0, 0, 0));
+  // The aircraft silhouette has its own 32x32 panel at the upper right. The
+  // explicit clear is important during incremental redraws, where a smaller
+  // planform could otherwise leave pixels from the preceding aircraft behind.
+  matrix.fillRect(95, 3, 32, 32, matrix.color565(0, 0, 0));
   // x=33 is the deliberately-off spacer between the 32px badge and the
   // centre text. It is not otherwise painted, so explicitly clear it to
   // prevent an old incremental frame leaving a bright sleeping pixel there.
@@ -1261,7 +1266,9 @@ void drawRouteChrome(const Route& route, float progressOverride = -2.0f, float p
   // telemetry column. Clear it on every card paint so incremental drawing
   // can never leave a coloured pixel between those two regions.
   matrix.fillRect(94, 2, 1, matrix.height() - 3, matrix.color565(0, 0, 0));
+  matrix.fillRect(127, 2, 1, matrix.height() - 3, matrix.color565(0, 0, 0));
   drawOperatorLogo(route, 1, 3);
+  drawAircraftPanelSprite(route.aircraftType, 95, 3, matrix.color565(64, 64, 64));
   drawRouteProgressForRoute(route, progressOverride > -1.5f ? progressOverride : route.flightProgressPercent,
                            progressOpacity);
 }
@@ -1422,14 +1429,14 @@ void drawRouteMarquees(const Route& route) {
   for (char* character = registration; *character; ++character) *character = toupper(*character);
   const char* originCity = airportCity(route.origin);
   const char* destinationCity = airportCity(route.destination);
-  matrix.fillRect(1, 37, 32, 7, black);
-  matrix.fillRect(1, 47, 32, 7, black);
+  matrix.fillRect(95, 37, 32, 7, black);
+  matrix.fillRect(95, 47, 32, 7, black);
   matrix.fillRect(34, 16, 60, 7, black);
   matrix.fillRect(34, 28, 60, 7, black);
   matrix.fillRect(34, 40, 60, 7, black);
   matrix.fillRect(34, 52, 60, 7, black);
-  drawRegistrationMarquee(registration, 1, 37, 32, secondaryWhite);
-  drawMinecraftMarquee(displayAircraftType(route), 1, 47, 32, secondaryWhite);
+  drawRegistrationMarquee(registration, 95, 37, 32, secondaryWhite);
+  drawMinecraftMarquee(displayAircraftType(route), 95, 47, 32, secondaryWhite);
   drawCityMarquee(originCity, destinationCity, 34, 16, 60, secondaryWhite);
   drawMinecraftMarquee(route.flightNumber[0] ? route.flightNumber : "-----", 34, 28, 60, tertiaryWhite);
   drawMinecraftMarquee(airlineName(route), 34, 40, 60, tertiaryWhite);
@@ -1447,6 +1454,7 @@ void refreshActiveMarquees(const Route& route) {
   // marquee redraws, rather than relying on a future full-screen render.
   matrix.fillRect(33, 2, 1, matrix.height() - 3, black);
   matrix.fillRect(94, 2, 1, matrix.height() - 3, black);
+  matrix.fillRect(127, 2, 1, matrix.height() - 3, black);
   char registration[sizeof(route.registration)];
   strlcpy(registration, route.registration[0] ? route.registration : "UNKNOWN", sizeof(registration));
   for (char* character = registration; *character; ++character) *character = toupper(*character);
@@ -1456,12 +1464,12 @@ void refreshActiveMarquees(const Route& route) {
   const char* flightNumber = route.flightNumber[0] ? route.flightNumber : "-----";
   const char* operatorName = airlineName(route);
   if (registrationTextWidth(registration) > 32) {
-    matrix.fillRect(1, 37, 32, 7, black);
-    drawRegistrationMarquee(registration, 1, 37, 32, secondaryWhite);
+    matrix.fillRect(95, 37, 32, 7, black);
+    drawRegistrationMarquee(registration, 95, 37, 32, secondaryWhite);
   }
   if (normalTextWidth(aircraftType) > 32) {
-    matrix.fillRect(1, 47, 32, 7, black);
-    drawMinecraftMarquee(aircraftType, 1, 47, 32, secondaryWhite);
+    matrix.fillRect(95, 47, 32, 7, black);
+    drawMinecraftMarquee(aircraftType, 95, 47, 32, secondaryWhite);
   }
   if (cityTextWidth(originCity) + 3 + 6 + 3 + cityTextWidth(destinationCity) > 60) {
     matrix.fillRect(34, 16, 60, 7, black);
@@ -1477,38 +1485,33 @@ void refreshActiveMarquees(const Route& route) {
   }
   // Telemetry normally stays completely still. Only the exceptional values
   // wider than their 32-pixel slot are re-rendered as a marquee.
-  char altitude[12], verticalSpeed[12], speed[12], track[12], eta[12];
+  char altitude[12], verticalSpeed[12];
   if (route.altFt >= 0) snprintf(altitude, sizeof(altitude), "%d", route.altFt); else strlcpy(altitude, "--", sizeof(altitude));
   if (route.verticalSpeedFpm <= -99999) strlcpy(verticalSpeed, "--", sizeof(verticalSpeed));
   else snprintf(verticalSpeed, sizeof(verticalSpeed), "%d", route.verticalSpeedFpm < 0 ? -route.verticalSpeedFpm : route.verticalSpeedFpm);
-  if (route.speedKt >= 0) snprintf(speed, sizeof(speed), "%d", route.speedKt); else strlcpy(speed, "--", sizeof(speed));
-  if (route.trackDeg >= 0) snprintf(track, sizeof(track), "%d", route.trackDeg); else strlcpy(track, "--", sizeof(track));
-  strlcpy(eta, route.etaDisplay[0] ? route.etaDisplay : "--", sizeof(eta));
 
   const uint16_t telemetry = matrix.color565(85, 85, 85);
   const struct { const char* value; TelemetryUnit unit; bool arrow; bool climbing; bool level; int16_t y; } lines[] = {
-      {altitude, route.altFt >= 0 ? TelemetryUnit::Feet : TelemetryUnit::None, false, false, false, 4},
-      {verticalSpeed, TelemetryUnit::None, route.verticalSpeedFpm > -99999, route.verticalSpeedFpm > 0, route.verticalSpeedFpm == 0, 16},
-      {speed, route.speedKt >= 0 ? TelemetryUnit::Knots : TelemetryUnit::None, false, false, false, 28},
-      {track, route.trackDeg >= 0 ? TelemetryUnit::Degrees : TelemetryUnit::None, false, false, false, 40},
-      {eta, TelemetryUnit::None, false, false, false, 52},
+      {altitude, route.altFt >= 0 ? TelemetryUnit::Feet : TelemetryUnit::None, false, false, false, 37},
+      {verticalSpeed, TelemetryUnit::None, route.verticalSpeedFpm > -99999, route.verticalSpeedFpm > 0, route.verticalSpeedFpm == 0, 47},
   };
   for (const auto& line : lines) {
     if (telemetryLineWidth(line.value, line.unit, line.arrow) > 32) {
-      matrix.fillRect(95, line.y, 32, 7, black);
+      matrix.fillRect(1, line.y, 32, 7, black);
       const int16_t offset = telemetryMarqueeOffset(telemetryLineWidth(line.value, line.unit, line.arrow), 32);
-      const int16_t end = drawTelemetryValue(line.value, line.unit, 95 - offset, line.y, telemetry, 95, 127);
+      const int16_t end = drawTelemetryValue(line.value, line.unit, 1 - offset, line.y, telemetry, 1, 33);
       if (line.arrow) {
-        if (line.level) drawCityArrow(end + 1, line.y, 95, 127, telemetry);
-        else drawVerticalRouteArrow(end + 1, line.y, line.climbing, telemetry, 95, 127);
+        if (line.level) drawCityArrow(end + 1, line.y, 1, 33, telemetry);
+        else drawVerticalRouteArrow(end + 1, line.y, line.climbing, telemetry, 1, 33);
       }
     }
   }
 }
 
 int16_t drawTelemetryLine(const char* value, TelemetryUnit unit, bool directionArrow,
-                          bool climbing, bool level, int16_t y, uint16_t color) {
-  constexpr int16_t left = 95, right = 127, width = right - left;
+                          bool climbing, bool level, int16_t left, int16_t right,
+                          int16_t y, uint16_t color) {
+  const int16_t width = right - left;
   const int16_t offset = telemetryMarqueeOffset(telemetryLineWidth(value, unit, directionArrow), width);
   const int16_t end = drawTelemetryValue(value, unit, left - offset, y, color, left, right);
   if (directionArrow) {
@@ -1521,29 +1524,23 @@ int16_t drawTelemetryLine(const char* value, TelemetryUnit unit, bool directionA
 void drawTelemetryValues(const Route& route) {
   const uint16_t black = matrix.color565(0, 0, 0);
   const uint16_t text = matrix.color565(85, 85, 85);
-  matrix.fillRect(95, 4, 32, 7, black);
-  matrix.fillRect(95, 16, 32, 7, black);
-  matrix.fillRect(95, 28, 32, 7, black);
-  matrix.fillRect(95, 40, 32, 7, black);
-  matrix.fillRect(95, 52, 32, 7, black);
+  matrix.fillRect(1, 37, 32, 7, black);
+  matrix.fillRect(1, 47, 32, 7, black);
+  // The former right-column telemetry rows are now occupied by the aircraft
+  // panel and its two captions. Clear the remaining lower area on every card
+  // paint so a prior speed, track, or ETA can never survive the layout swap.
+  matrix.fillRect(95, 35, 32, 25, black);
 
-  char altitude[12], verticalSpeed[12], speed[12], track[12], eta[12];
+  char altitude[12], verticalSpeed[12];
   if (route.altFt >= 0) snprintf(altitude, sizeof(altitude), "%d", route.altFt);
   else strlcpy(altitude, "--", sizeof(altitude));
   if (route.verticalSpeedFpm <= -99999) strlcpy(verticalSpeed, "--", sizeof(verticalSpeed));
   else snprintf(verticalSpeed, sizeof(verticalSpeed), "%d", route.verticalSpeedFpm < 0 ? -route.verticalSpeedFpm : route.verticalSpeedFpm);
-  if (route.speedKt >= 0) snprintf(speed, sizeof(speed), "%d", route.speedKt);
-  else strlcpy(speed, "--", sizeof(speed));
-  if (route.trackDeg >= 0) snprintf(track, sizeof(track), "%d", route.trackDeg);
-  else strlcpy(track, "--", sizeof(track));
-  strlcpy(eta, route.etaDisplay[0] ? route.etaDisplay : "--", sizeof(eta));
-
-  drawTelemetryLine(altitude, route.altFt >= 0 ? TelemetryUnit::Feet : TelemetryUnit::None, false, false, false, 4, text);
+  drawTelemetryLine(altitude, route.altFt >= 0 ? TelemetryUnit::Feet : TelemetryUnit::None,
+                    false, false, false, 1, 33, 37, text);
   drawTelemetryLine(verticalSpeed, TelemetryUnit::None,
-                    route.verticalSpeedFpm > -99999, route.verticalSpeedFpm > 0, route.verticalSpeedFpm == 0, 16, text);
-  drawTelemetryLine(speed, route.speedKt >= 0 ? TelemetryUnit::Knots : TelemetryUnit::None, false, false, false, 28, text);
-  drawTelemetryLine(track, route.trackDeg >= 0 ? TelemetryUnit::Degrees : TelemetryUnit::None, false, false, false, 40, text);
-  drawTelemetryLine(eta, TelemetryUnit::None, false, false, false, 52, text);
+                    route.verticalSpeedFpm > -99999, route.verticalSpeedFpm > 0,
+                    route.verticalSpeedFpm == 0, 1, 33, 47, text);
 }
 
 void drawRoute(const Route& route, uint8_t position, uint8_t total) {
@@ -1756,6 +1753,25 @@ void drawPlaneSpritePointingUp(int16_t x, int16_t y, uint16_t color) {
 
 void drawAircraftFallbackSprite(const char* aircraftType, int16_t x, int16_t y, uint16_t color) {
   drawAircraftSprite(aircraftSpriteForType(aircraftType), x, y, color);
+}
+
+// Aircraft source sprites are deliberately 33x33, with their nose and tail on
+// the centreline. The fixed display panel is 32x32 so it can keep a dark LED
+// on both horizontal sides. Sample the source canvas while preserving both
+// outer endpoints; this retains the sharp nose and tail instead of simply
+// cropping one of them away.
+void drawAircraftPanelSprite(const char* aircraftType, int16_t x, int16_t y, uint16_t color) {
+  const uint8_t spriteIndex = static_cast<uint8_t>(aircraftSpriteForType(aircraftType));
+  for (uint8_t panelRow = 0; panelRow < 32; ++panelRow) {
+    const uint8_t sourceRow = static_cast<uint8_t>((panelRow * 32 + 15) / 31);
+    const uint64_t pixels = kAircraftSpriteMasks[spriteIndex][sourceRow];
+    for (uint8_t panelColumn = 0; panelColumn < 32; ++panelColumn) {
+      const uint8_t sourceColumn = static_cast<uint8_t>((panelColumn * 32 + 15) / 31);
+      if (pixels & (1ULL << (32 - sourceColumn))) {
+        matrix.drawPixel(x + panelColumn, y + panelRow, color);
+      }
+    }
+  }
 }
 
 // Fallback badges deliberately stay top-down. The no-planes animation is
@@ -2135,9 +2151,9 @@ void drawAnimatedKnotsUnit(int16_t x, int16_t y, int16_t left, int16_t right,
 // sequence as their number. This keeps the settled animation frame identical
 // to the static card, rather than adding those pixels in a separate flash.
 void drawAnimatedTelemetryAdornment(const char* value, TelemetryUnit unit, bool directionArrow,
-                                    bool climbing, bool level, int16_t y, uint8_t line,
+                                    bool climbing, bool level, int16_t left, int16_t right,
+                                    int16_t y, uint8_t line,
                                     unsigned long phase, bool entering, uint16_t color) {
-  constexpr int16_t left = 95, right = 127;
   const int8_t offset = letterDropOffset(phase, line, strlen(value), entering);
   int16_t x = left + telemetryTextAdvance(value);
   if (unit == TelemetryUnit::Degrees) {
@@ -2341,11 +2357,9 @@ void clearTransitionTextAreas() {
   matrix.fillRect(34, 52, 60, 7, black);
   matrix.fillRect(1, 37, 32, 7, black);
   matrix.fillRect(1, 47, 32, 7, black);
-  matrix.fillRect(95, 4, 32, 7, black);
-  matrix.fillRect(95, 16, 32, 7, black);
-  matrix.fillRect(95, 28, 32, 7, black);
-  matrix.fillRect(95, 40, 32, 7, black);
-  matrix.fillRect(95, 52, 32, 7, black);
+  matrix.fillRect(95, 37, 32, 7, black);
+  matrix.fillRect(95, 47, 32, 7, black);
+  matrix.fillRect(127, 2, 1, matrix.height() - 3, black);
 }
 
 void drawAnimatedRouteText(const Route& route, unsigned long phase, bool entering) {
@@ -2358,15 +2372,11 @@ void drawAnimatedRouteText(const Route& route, unsigned long phase, bool enterin
   for (char* character = registration; *character; ++character) *character = toupper(*character);
   const char* originCity = airportCity(route.origin);
   const char* destinationCity = airportCity(route.destination);
-  char altitude[12], verticalSpeed[12], speed[12], track[12], eta[12];
+  char altitude[12], verticalSpeed[12];
   if (route.altFt >= 0) snprintf(altitude, sizeof(altitude), "%d", route.altFt);
   else strlcpy(altitude, "--", sizeof(altitude));
   if (route.verticalSpeedFpm <= -99999) strlcpy(verticalSpeed, "--", sizeof(verticalSpeed));
   else snprintf(verticalSpeed, sizeof(verticalSpeed), "%d", route.verticalSpeedFpm < 0 ? -route.verticalSpeedFpm : route.verticalSpeedFpm);
-  if (route.speedKt >= 0) snprintf(speed, sizeof(speed), "%d", route.speedKt);
-  else strlcpy(speed, "--", sizeof(speed));
-  snprintf(track, sizeof(track), route.trackDeg >= 0 ? "%d" : "--", route.trackDeg);
-  strlcpy(eta, route.etaDisplay[0] ? route.etaDisplay : "--", sizeof(eta));
   drawAnimatedAirportRoute(route, phase, entering);
   drawAnimatedCityLine(originCity, destinationCity, phase, entering, secondaryWhite);
   drawAnimatedNormalLine(route.flightNumber[0] ? route.flightNumber : "-----", 34, 28, 60,
@@ -2378,26 +2388,17 @@ void drawAnimatedRouteText(const Route& route, unsigned long phase, bool enterin
   refreshCountdownSeconds(refreshCountdown);
   drawAnimatedNormalLine(refreshTime, 34, 52, 29, specialFlightOrange, 11, phase, entering);
   drawAnimatedNormalLine(refreshCountdown, 66, 52, 12, refreshCountdownRed, 11, phase, entering, false, 5);
-  drawAnimatedNormalLine(registration, 1, 37, 32, secondaryWhite, 3, phase, entering, true, 0, true);
-  drawAnimatedNormalLine(displayAircraftType(route), 1, 47, 32,
+  drawAnimatedNormalLine(registration, 95, 37, 32, secondaryWhite, 3, phase, entering, true, 0, true);
+  drawAnimatedNormalLine(displayAircraftType(route), 95, 47, 32,
                          secondaryWhite, 4, phase, entering);
-  drawAnimatedTelemetryNumber(altitude, 95, 4, 95, 127, tertiaryWhite, 5, phase, entering);
-  drawAnimatedTelemetryNumber(verticalSpeed, 95, 16, 95, 127, tertiaryWhite, 6, phase, entering);
-  drawAnimatedTelemetryNumber(speed, 95, 28, 95, 127, tertiaryWhite, 7, phase, entering);
-  drawAnimatedTelemetryNumber(track, 95, 40, 95, 127, tertiaryWhite, 8, phase, entering);
-  drawAnimatedTelemetryNumber(eta, 95, 52, 95, 127, tertiaryWhite, 10, phase, entering);
+  drawAnimatedTelemetryNumber(altitude, 1, 37, 1, 33, tertiaryWhite, 5, phase, entering);
+  drawAnimatedTelemetryNumber(verticalSpeed, 1, 47, 1, 33, tertiaryWhite, 6, phase, entering);
   drawAnimatedTelemetryAdornment(altitude, route.altFt >= 0 ? TelemetryUnit::Feet : TelemetryUnit::None,
-                                 false, false, false, 4, 5, phase, entering, tertiaryWhite);
+                                 false, false, false, 1, 33, 37, 5, phase, entering, tertiaryWhite);
   drawAnimatedTelemetryAdornment(verticalSpeed,
                                  TelemetryUnit::None,
                                  route.verticalSpeedFpm > -99999, route.verticalSpeedFpm > 0, route.verticalSpeedFpm == 0,
-                                 16, 6, phase, entering, tertiaryWhite);
-  drawAnimatedTelemetryAdornment(speed, route.speedKt >= 0 ? TelemetryUnit::Knots : TelemetryUnit::None,
-                                 false, false, false, 28, 7, phase, entering, tertiaryWhite);
-  drawAnimatedTelemetryAdornment(track, route.trackDeg >= 0 ? TelemetryUnit::Degrees : TelemetryUnit::None,
-                                 false, false, false, 40, 8, phase, entering, tertiaryWhite);
-  drawAnimatedTelemetryAdornment(eta, TelemetryUnit::None,
-                                 false, false, false, 52, 10, phase, entering, tertiaryWhite);
+                                 1, 33, 47, 6, phase, entering, tertiaryWhite);
 }
 
 void updateLetterTransition() {
