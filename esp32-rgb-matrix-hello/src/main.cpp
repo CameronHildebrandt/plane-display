@@ -99,6 +99,7 @@ MatrixPanel_I2S_DMA matrix(matrixConfig);
 WebServer updateServer(80);
 bool shouldRestart = false;
 unsigned long nextFlightPollMillis = 0;
+unsigned long nextRefreshDebugRedrawMillis = 0;
 String pairingUrl;
 unsigned long pairingUrlRefreshMillis = 0;
 bool showingPairingQr = false;
@@ -1368,11 +1369,48 @@ int16_t registrationTextWidth(const char* text) {
   return width;
 }
 
+void refreshClockMinutesSeconds(char output[6]) {
+  if (strlen(lastFlightRefreshTime) == 8) {
+    output[0] = lastFlightRefreshTime[3];
+    output[1] = lastFlightRefreshTime[4];
+    output[2] = ':';
+    output[3] = lastFlightRefreshTime[6];
+    output[4] = lastFlightRefreshTime[7];
+    output[5] = '\0';
+  } else {
+    strlcpy(output, "--:--", 6);
+  }
+}
+
+void refreshCountdownSeconds(char output[3]) {
+  const int32_t remainingMillis = static_cast<int32_t>(nextFlightPollMillis - millis());
+  const uint8_t remainingSeconds = remainingMillis > 0
+      ? min<int32_t>(99, (remainingMillis + 999) / 1000) : 0;
+  output[0] = '0' + remainingSeconds / 10;
+  output[1] = '0' + remainingSeconds % 10;
+  output[2] = '\0';
+}
+
+// This temporary line makes a stopped fetch distinguishable from an empty
+// successful response: orange is the last accepted UTC minute:second, red is
+// the seconds until the scheduler's next attempt.
+void drawRefreshDebugLine() {
+  const uint16_t black = matrix.color565(0, 0, 0);
+  const uint16_t orange = visibleColor(255, 128, 0);
+  const uint16_t red = visibleColor(235, 40, 40);
+  char refreshTime[6];
+  char countdown[3];
+  refreshClockMinutesSeconds(refreshTime);
+  refreshCountdownSeconds(countdown);
+  matrix.fillRect(34, 52, 60, 7, black);
+  drawMinecraftMarquee(refreshTime, 34, 52, 29, orange);
+  drawMinecraftMarquee(countdown, 66, 52, 12, red);
+}
+
 void drawRouteMarquees(const Route& route) {
   const uint16_t black = matrix.color565(0, 0, 0);
   const uint16_t secondaryWhite = matrix.color565(145, 145, 145);
   const uint16_t tertiaryWhite = matrix.color565(85, 85, 85);
-  const uint16_t specialFlightOrange = visibleColor(255, 128, 0);
   char registration[sizeof(route.registration)];
   strlcpy(registration, route.registration[0] ? route.registration : "UNKNOWN", sizeof(registration));
   for (char* character = registration; *character; ++character) *character = toupper(*character);
@@ -1389,9 +1427,7 @@ void drawRouteMarquees(const Route& route) {
   drawCityMarquee(originCity, destinationCity, 34, 16, 60, secondaryWhite);
   drawMinecraftMarquee(route.flightNumber[0] ? route.flightNumber : "-----", 34, 28, 60, tertiaryWhite);
   drawMinecraftMarquee(airlineName(route), 34, 40, 60, tertiaryWhite);
-  // Temporarily dedicate the orange special-flight line to a simple proof
-  // that fresh data is making it all the way from the Worker to this panel.
-  drawMinecraftMarquee(lastFlightRefreshTime, 34, 52, 60, specialFlightOrange);
+  drawRefreshDebugLine();
 }
 
 // The initial card render paints every label. Subsequent 75ms refreshes paint
@@ -2310,6 +2346,7 @@ void drawAnimatedRouteText(const Route& route, unsigned long phase, bool enterin
   const uint16_t secondaryWhite = matrix.color565(145, 145, 145);
   const uint16_t tertiaryWhite = matrix.color565(85, 85, 85);
   const uint16_t specialFlightOrange = visibleColor(255, 128, 0);
+  const uint16_t refreshCountdownRed = visibleColor(235, 40, 40);
   char registration[sizeof(route.registration)];
   strlcpy(registration, route.registration[0] ? route.registration : "UNKNOWN", sizeof(registration));
   for (char* character = registration; *character; ++character) *character = toupper(*character);
@@ -2329,7 +2366,12 @@ void drawAnimatedRouteText(const Route& route, unsigned long phase, bool enterin
   drawAnimatedNormalLine(route.flightNumber[0] ? route.flightNumber : "-----", 34, 28, 60,
                          tertiaryWhite, 2, phase, entering);
   drawAnimatedNormalLine(airlineName(route), 34, 40, 60, tertiaryWhite, 9, phase, entering);
-  drawAnimatedNormalLine(lastFlightRefreshTime, 34, 52, 60, specialFlightOrange, 11, phase, entering);
+  char refreshTime[6];
+  char refreshCountdown[3];
+  refreshClockMinutesSeconds(refreshTime);
+  refreshCountdownSeconds(refreshCountdown);
+  drawAnimatedNormalLine(refreshTime, 34, 52, 29, specialFlightOrange, 11, phase, entering);
+  drawAnimatedNormalLine(refreshCountdown, 66, 52, 12, refreshCountdownRed, 11, phase, entering, false, 5);
   drawAnimatedNormalLine(registration, 1, 37, 32, secondaryWhite, 3, phase, entering, true, 0, true);
   drawAnimatedNormalLine(displayAircraftType(route), 1, 47, 32,
                          secondaryWhite, 4, phase, entering);
@@ -2845,6 +2887,10 @@ void processFetchedFlightResponse() {
     mergeRefreshedRouteQueue(newRouteCount);
     Serial.printf("Queued %u routable flights\n", routeCount);
   }
+  // A valid response can legitimately contain no in-range aircraft. Keep the
+  // diagnostic honest in that case too, even while the current card finishes
+  // its scene before gracefully leaving the queue.
+  if (routeCount > 0 && !showingPairingQr) drawRefreshDebugLine();
 }
 
 void fetchFlightsTask(void*) {
@@ -3157,6 +3203,12 @@ void loop() {
       const bool started = showingPairingQr ? fetchAndDrawPairingQr() : fetchAndDrawFirstFlight();
       nextFlightPollMillis = millis() + (started ? 60000 : 1000);
     }
+  }
+  if (!showingPairingQr && routeCount > 0 && !letterTransitionActive &&
+      !idleToRouteTransitionActive && !routeToIdleTransitionActive &&
+      millis() >= nextRefreshDebugRedrawMillis) {
+    drawRefreshDebugLine();
+    nextRefreshDebugRedrawMillis = millis() + 1000;
   }
   if (!showingPairingQr && routeCount > 0 && !letterTransitionActive &&
       !idleToRouteTransitionActive && !routeToIdleTransitionActive && millis() >= nextRouteAnimationMillis) {
