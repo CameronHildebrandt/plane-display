@@ -155,9 +155,9 @@ the grid; the grid is the authoritative version.
 
 ## Pixel-perfect PNG round trip
 
-The two scripts in `tools/` make one exact 91×14px black-and-white image for
-each alphabet face (13 glyph cells per row × 2 rows). Each cell is 7×7px:
-six editable pixel columns and a required black separator at the right.
+The two scripts in `tools/` make one exact 182×7px black-and-white image for
+each alphabet face (26 glyph cells on one row). Each cell is 7×7px: six
+editable pixel columns and a required black separator at the right.
 
 ```bash
 python3 tools/font_to_png.py FONT_REFERENCE.md "Bold capitals" bold-capitals.png

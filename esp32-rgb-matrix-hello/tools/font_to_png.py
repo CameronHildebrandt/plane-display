@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-"""Render one face from FONT_REFERENCE.md as an exact 1-bit PNG glyph sheet.
+"""Render one face from FONT_REFERENCE.md as an exact 1-bit horizontal PNG.
 
-The sheet uses 13 glyph cells per row. Each cell is exactly 7×7 pixels:
+All 26 glyph cells sit on one 7px-tall row. Each cell is exactly 7×7 pixels:
 six editable glyph columns (enough for the 6px bold Y) plus one permanently
 black separator column. PNG pixels are literal display pixels: black = off,
 white = on. No scaling or anti-aliasing occurs.
 """
 
 import argparse
-import math
 import re
 from pathlib import Path
 from typing import Dict, List
@@ -18,7 +17,7 @@ from PIL import Image
 ALPHABET = "abcdefghijklmnopqrstuvwxyz"
 CELL_WIDTH = 7  # six glyph pixels + one guaranteed-black separator
 CELL_HEIGHT = 7
-COLUMNS = 13
+COLUMNS = len(ALPHABET)
 
 
 def read_face(markdown: Path, face: str) -> Dict[str, List[str]]:
@@ -61,12 +60,11 @@ def main() -> None:
     args = parser.parse_args()
 
     glyphs = read_face(args.markdown, args.face)
-    height = math.ceil(len(ALPHABET) / COLUMNS) * CELL_HEIGHT
-    image = Image.new("1", (COLUMNS * CELL_WIDTH, height), 0)
+    image = Image.new("1", (COLUMNS * CELL_WIDTH, CELL_HEIGHT), 0)
     pixels = image.load()
     for index, glyph in enumerate(ALPHABET):
-        cell_x = (index % COLUMNS) * CELL_WIDTH
-        cell_y = (index // COLUMNS) * CELL_HEIGHT
+        cell_x = index * CELL_WIDTH
+        cell_y = 0
         for row_index, row in enumerate(glyphs[glyph]):
             for column_index, value in enumerate(row):
                 if value == "x":

@@ -248,7 +248,25 @@ async function specialFlightStatus(entry, store, env) {
 
 function normalizeFlightStatus(status) {
   const number = value => typeof value === "number" && Number.isFinite(value) ? value : null;
-  return { provider: "airlabs", status: typeof status.status === "string" ? status.status : null, scheduledDeparture: status.dep_time || null, estimatedDeparture: status.dep_estimated || null, actualDeparture: status.dep_actual || null, scheduledArrival: status.arr_time || null, estimatedArrival: status.arr_estimated || null, actualArrival: status.arr_actual || null, departureDelayMinutes: number(status.dep_delayed), arrivalDelayMinutes: number(status.arr_delayed), origin: status.dep_iata || null, destination: status.arr_iata || null };
+  const timestamp = value => {
+    if (typeof value !== "string" || !value) return null;
+    const parsed = Date.parse(value.includes("T") ? value : `${value.replace(" ", "T")}Z`);
+    return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null;
+  };
+  const scheduledDepartureEpoch = timestamp(status.dep_time);
+  const scheduledArrivalEpoch = timestamp(status.arr_time);
+  const estimatedArrivalEpoch = timestamp(status.arr_estimated || status.arr_time);
+  const arrivalDelayMinutes = number(status.arr_delayed);
+  const scheduledDurationMinutes = scheduledDepartureEpoch && scheduledArrivalEpoch && scheduledArrivalEpoch > scheduledDepartureEpoch
+    ? (scheduledArrivalEpoch - scheduledDepartureEpoch) / 60 : null;
+  const arrivalDelayPercent = arrivalDelayMinutes !== null && scheduledDurationMinutes
+    ? Math.min(100, arrivalDelayMinutes / scheduledDurationMinutes * 100) : null;
+  // Keep the label timezone-neutral: AirLabs supplies the airline's published
+  // local arrival clock time, which is what a passenger expects as an ETA.
+  const etaSource = status.arr_estimated || status.arr_time || "";
+  const etaMatch = String(etaSource).match(/[T ](\d{2}):(\d{2})/);
+  const etaDisplay = etaMatch ? `${Number(etaMatch[1])}:${etaMatch[2]}` : null;
+  return { provider: "airlabs", status: typeof status.status === "string" ? status.status : null, scheduledDeparture: status.dep_time || null, estimatedDeparture: status.dep_estimated || null, actualDeparture: status.dep_actual || null, scheduledArrival: status.arr_time || null, estimatedArrival: status.arr_estimated || null, actualArrival: status.arr_actual || null, estimatedArrivalEpoch, etaDisplay, departureDelayMinutes: number(status.dep_delayed), arrivalDelayMinutes, arrivalDelayPercent, origin: status.dep_iata || null, destination: status.arr_iata || null };
 }
 
 const DEBUG_AIRPORTS = Object.freeze([

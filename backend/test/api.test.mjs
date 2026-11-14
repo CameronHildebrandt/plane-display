@@ -291,7 +291,7 @@ test("a live special flight carries cached optional AirLabs ETA data without aff
     if (String(url).includes("airlabs.co/api/v9/flight")) {
       airLabsCalls++;
       assert.match(String(url), /flight_iata=WS1098/);
-      return new Response(JSON.stringify({ response: { status: "en-route", arr_time: "2026-11-01 10:00", arr_estimated: "2026-11-01 10:30", arr_delayed: 30 } }));
+      return new Response(JSON.stringify({ response: { status: "en-route", dep_time: "2026-11-01 09:00", arr_time: "2026-11-01 10:00", arr_estimated: "2026-11-01 10:30", arr_delayed: 30 } }));
     }
     if (String(url).includes("/v2/callsign/WJA1098")) return new Response(JSON.stringify({ ac: [{ hex: "c0status", flight: "WJA1098", r: "C-ETA", t: "B38M", alt_baro: 34000, gs: 440, track: 180, lat: 44, lon: -112 }] }));
     if (String(url).includes("/api/0/routeset")) return new Response(JSON.stringify([]));
@@ -302,6 +302,8 @@ test("a live special flight carries cached optional AirLabs ETA data without aff
   const [flight] = (await response.json()).flights;
   assert.equal(flight.flightStatus.estimatedArrival, "2026-11-01 10:30");
   assert.equal(flight.flightStatus.arrivalDelayMinutes, 30);
+  assert.equal(flight.flightStatus.etaDisplay, "10:30");
+  assert.equal(flight.flightStatus.arrivalDelayPercent, 50);
   assert.equal(airLabsCalls, 1);
 });
 
