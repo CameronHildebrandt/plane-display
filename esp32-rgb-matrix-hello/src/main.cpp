@@ -208,7 +208,7 @@ uint8_t routeIndex = 0;
 
 // A deliberately blocky 5x7 face: every glyph is exactly seven LEDs high.
 // It keeps airport codes legible while giving the display a Minecraft-like look.
-constexpr char kMinecraftGlyphs[] = "abcdefghijklmnopqrstuvwxyz0123456789/- ";
+constexpr char kMinecraftGlyphs[] = "abcdefghijklmnopqrstuvwxyz0123456789/- :";
 constexpr uint8_t kMinecraftFont[][7] PROGMEM = {
     {0x00,0x00,0x0E,0x01,0x0F,0x11,0x0F}, {0x10,0x10,0x1E,0x11,0x11,0x11,0x1E},
     {0x00,0x00,0x0E,0x10,0x10,0x11,0x0E}, {0x01,0x01,0x0F,0x11,0x11,0x11,0x0F},
@@ -230,6 +230,8 @@ constexpr uint8_t kMinecraftFont[][7] PROGMEM = {
     {0x0E,0x11,0x11,0x0E,0x11,0x11,0x0E}, {0x0E,0x11,0x11,0x0F,0x01,0x01,0x0E},
     {0x01,0x02,0x04,0x08,0x10,0x00,0x00}, {0x00,0x00,0x1F,0x00,0x00,0x00,0x00},
     {0x00,0x00,0x00,0x00,0x00,0x00,0x00},
+    // : — intentionally two centred pixels so debug timestamps stay compact.
+    {0x00,0x00,0x04,0x00,0x00,0x04,0x00},
 };
 
 // The full face uses a standard five-wide zero. Only dense telemetry on the
@@ -3021,7 +3023,7 @@ void saveWifiCredentials() {
 void synchronizeClock() {
   // TLS rejects even a valid certificate when the ESP32 still believes it is
   // 1970. Set UTC from public NTP before contacting the HTTPS Worker.
-  configTzTime("MST7MDT,M3.2.0,M11.1.0", "time.cloudflare.com", "pool.ntp.org");
+  configTime(0, 0, "time.cloudflare.com", "pool.ntp.org");
   time_t now = 0;
   const unsigned long deadline = millis() + 15000;
   while (now < 1700000000 && millis() < deadline) {
