@@ -62,6 +62,7 @@ constexpr unsigned long kDisplayMaintenanceWipeMillis = 60UL * 60UL * 1000UL;
 constexpr unsigned long kNoPlanesAnimationStepMillis = 125;
 constexpr int16_t kNoPlanesSpriteWidth = 33;
 constexpr size_t kFlightResponseCapacity = 16384;
+constexpr unsigned long kFlightFetchWatchdogMillis = 30000;
 constexpr int16_t kRotationIndicatorWidth = 32;
 constexpr int16_t kRotationIndicatorHeight = 4;
 constexpr unsigned long kRotationPipBubbleMillis = 600;
@@ -147,12 +148,17 @@ bool hideUnknownRoutes = false;
 volatile bool flightFetchInProgress = false;
 volatile bool flightFetchFinished = false;
 volatile int flightFetchStatus = 0;
+volatile unsigned long flightFetchStartedMillis = 0;
+volatile uint32_t flightFetchAttempts = 0;
+volatile uint32_t flightFetchCompletions = 0;
+uint8_t consecutiveFlightFetchFailures = 0;
 size_t flightFetchLength = 0;
 char flightFetchResponse[kFlightResponseCapacity] = {};
 // A deliberately visible diagnostic while we track down stale-card reports.
 // It records when the display last accepted a complete backend snapshot, not
 // when a request merely began.
 char lastFlightRefreshTime[9] = "--:--:--";
+uint32_t appliedFlightRefreshes = 0;
 bool idleToRouteTransitionActive = false;
 bool routeToIdleTransitionActive = false;
 bool idleToRouteCardDrawn = false;
@@ -2505,6 +2511,10 @@ bool beginBackendRequest(HTTPClient& request, WiFiClientSecure& secureClient,
     // The ESP32 Arduino build contains a current public root-certificate bundle.
     // This validates the Worker certificate instead of accepting any HTTPS server.
     secureClient.useBuiltinCACertBundle();
+    // HTTPClient's regular timeout only covers read/write once a connection
+    // exists. Bound the TLS handshake separately so an intermittent network
+    // cannot strand the refresh task forever after its first successful poll.
+    secureClient.setHandshakeTimeout(8);
     return request.begin(secureClient, url);
   }
   return request.begin(url);
@@ -2571,24 +2581,26 @@ void fetchPairingQrTask(void*) {
   int status = -1;
   char url[256] = {};
 
-  WiFiClientSecure secureClient;
-  HTTPClient request;
-  const String endpoint = pairingEndpoint();
-  if (!endpoint.isEmpty() && beginBackendRequest(request, secureClient, endpoint)) {
-    request.setTimeout(15000);
-    request.addHeader("X-Device-Key", LED_PLANE_DEVICE_KEY);
-    status = request.POST("");
-    if (status == HTTP_CODE_OK) {
-      JsonDocument payload;
-      const DeserializationError error = deserializeJson(payload, request.getStream());
-      const char* responseUrl = payload["pairUrl"] | "";
-      if (!error && responseUrl[0]) {
-        strlcpy(url, responseUrl, sizeof(url));
+  {
+    WiFiClientSecure secureClient;
+    HTTPClient request;
+    const String endpoint = pairingEndpoint();
+    if (!endpoint.isEmpty() && beginBackendRequest(request, secureClient, endpoint)) {
+      request.setTimeout(15000);
+      request.addHeader("X-Device-Key", LED_PLANE_DEVICE_KEY);
+      status = request.POST("");
+      if (status == HTTP_CODE_OK) {
+        JsonDocument payload;
+        const DeserializationError error = deserializeJson(payload, request.getStream());
+        const char* responseUrl = payload["pairUrl"] | "";
+        if (!error && responseUrl[0]) {
+          strlcpy(url, responseUrl, sizeof(url));
+        }
+      } else {
+        Serial.printf("Pairing request failed: HTTP %d\n", status);
       }
-    } else {
-      Serial.printf("Pairing request failed: HTTP %d\n", status);
+      request.end();
     }
-    request.end();
   }
 
   // Publish the completed response last, after the URL buffer is complete.
@@ -2803,6 +2815,16 @@ void processFetchedFlightResponse() {
   flightFetchFinished = false;
   if (flightFetchStatus != HTTP_CODE_OK) {
     Serial.printf("Flight request failed: HTTP %d\n", flightFetchStatus);
+    ++consecutiveFlightFetchFailures;
+    // A transport failure must not make the display wait out the whole normal
+    // minute. Reconnect the station after repeated connection-level errors,
+    // then retry soon; ordinary successful polls remain one minute apart.
+    if (flightFetchStatus < 0 && consecutiveFlightFetchFailures >= 2) {
+      Serial.println("Refreshing Wi-Fi after repeated flight transport failures.");
+      WiFi.disconnect(false, false);
+      WiFi.reconnect();
+    }
+    nextFlightPollMillis = millis() + 5000;
     // A failed refresh must never erase a perfectly good on-screen card.
     if (routeCount == 0 && !showingNoPlanes) showNoPlanesAfterDataFailure();
     return;
@@ -2819,6 +2841,8 @@ void processFetchedFlightResponse() {
   // to the display. Record it before reconciling the queue so the orange
   // debug line is updated along with the same snapshot.
   recordSuccessfulFlightRefresh();
+  consecutiveFlightFetchFailures = 0;
+  ++appliedFlightRefreshes;
   memset(refreshedRoutes, 0, sizeof(refreshedRoutes));
 
   uint8_t newRouteCount = 0;
@@ -2895,32 +2919,38 @@ void processFetchedFlightResponse() {
 
 void fetchFlightsTask(void*) {
   int status = -1;
-  WiFiClientSecure secureClient;
-  HTTPClient request;
-  if (beginBackendRequest(request, secureClient, LED_PLANE_BACKEND_URL)) {
-    // A pairing request and a flight request must not overlap: two TLS clients
-    // can stall the ESP32 Wi-Fi stack. Keep a flight refresh bounded so QR mode
-    // waits briefly at most, then receives the network to itself.
-    request.setTimeout(15000);
-    request.addHeader("X-Device-Key", LED_PLANE_DEVICE_KEY);
-    status = request.GET();
-    if (status == HTTP_CODE_OK) {
-      const String response = request.getString();
-      if (response.length() >= kFlightResponseCapacity) {
-        status = -2;
-      } else {
-        flightFetchLength = response.length();
-        memcpy(flightFetchResponse, response.c_str(), flightFetchLength);
-        flightFetchResponse[flightFetchLength] = '\0';
+
+  {
+    WiFiClientSecure secureClient;
+    HTTPClient request;
+    if (beginBackendRequest(request, secureClient, LED_PLANE_BACKEND_URL)) {
+      // A pairing request and a flight request must not overlap: two TLS clients
+      // can stall the ESP32 Wi-Fi stack. Keep a flight refresh bounded so QR mode
+      // waits briefly at most, then receives the network to itself.
+      request.setConnectTimeout(8000);
+      request.setTimeout(12000);
+      request.addHeader("X-Device-Key", LED_PLANE_DEVICE_KEY);
+      status = request.GET();
+      if (status == HTTP_CODE_OK) {
+        const String response = request.getString();
+        if (response.length() >= kFlightResponseCapacity) {
+          status = -2;
+        } else {
+          flightFetchLength = response.length();
+          memcpy(flightFetchResponse, response.c_str(), flightFetchLength);
+          flightFetchResponse[flightFetchLength] = '\0';
+        }
       }
+      request.end();
     }
-    request.end();
   }
   flightFetchStatus = status;
   // This flag is written last: the display task will only read a complete
   // response buffer, while this background task has kept animation running.
   flightFetchFinished = true;
   flightFetchInProgress = false;
+  flightFetchStartedMillis = 0;
+  flightFetchCompletions = flightFetchCompletions + 1;
   vTaskDelete(nullptr);
 }
 
@@ -2930,10 +2960,13 @@ bool fetchAndDrawFirstFlight() {
     return false;
   }
   flightFetchInProgress = true;
+  flightFetchStartedMillis = millis();
+  flightFetchAttempts = flightFetchAttempts + 1;
   if (xTaskCreatePinnedToCore(fetchFlightsTask, "flight-fetch", 8192, nullptr, 1, nullptr, 0) != pdPASS) {
     flightFetchStatus = -3;
     flightFetchFinished = true;
     flightFetchInProgress = false;
+    flightFetchStartedMillis = 0;
     return false;
   }
   Serial.println("Flight refresh started.");
@@ -3012,6 +3045,30 @@ void enableLocalUpdater() {
     fetchAndDrawFirstFlight();
     updateServer.sendHeader("Location", "/");
     updateServer.send(303);
+  });
+
+  // Kept behind the same local updater password. This is intentionally tiny:
+  // enough to distinguish a stale source response, an in-flight HTTPS call,
+  // and a genuinely wedged request without ever exposing device credentials.
+  updateServer.on("/diagnostics", HTTP_GET, []() {
+    if (!updateRequestIsAuthorized()) {
+      return updateServer.requestAuthentication();
+    }
+    char countdown[3];
+    refreshCountdownSeconds(countdown);
+    char payload[256];
+    snprintf(payload, sizeof(payload),
+             "{\"fetchInProgress\":%s,\"fetchFinished\":%s,\"lastHttpStatus\":%d,"
+             "\"attempts\":%lu,\"completions\":%lu,\"appliedRefreshes\":%lu,"
+             "\"consecutiveFailures\":%u,\"wifiStatus\":%d,\"freeHeap\":%lu,"
+             "\"lastRefreshUtc\":\"%s\",\"nextPollSeconds\":\"%s\"}",
+             flightFetchInProgress ? "true" : "false", flightFetchFinished ? "true" : "false",
+             flightFetchStatus, static_cast<unsigned long>(flightFetchAttempts),
+             static_cast<unsigned long>(flightFetchCompletions),
+             static_cast<unsigned long>(appliedFlightRefreshes), consecutiveFlightFetchFailures,
+             static_cast<int>(WiFi.status()), static_cast<unsigned long>(ESP.getFreeHeap()),
+             lastFlightRefreshTime, countdown);
+    updateServer.send(200, "application/json", payload);
   });
 
   updateServer.on(
@@ -3151,6 +3208,14 @@ void loop() {
   updateServer.handleClient();
   handleBootButton();
   updatePairingQrRequest();
+  if (flightFetchInProgress && flightFetchStartedMillis != 0 &&
+      millis() - flightFetchStartedMillis > kFlightFetchWatchdogMillis) {
+    // Restarting is safer than force-deleting a task while mbedTLS owns its
+    // socket. It also guarantees one bad connection cannot freeze all later
+    // telemetry updates for the lifetime of the display.
+    Serial.println("Flight fetch watchdog fired; restarting network stack.");
+    shouldRestart = true;
+  }
   processFetchedFlightResponse();
   const bool transitionWasActive = letterTransitionActive;
   // If the only card disappeared during its scene, honour the full scene
