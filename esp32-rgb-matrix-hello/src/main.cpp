@@ -148,6 +148,10 @@ volatile bool flightFetchFinished = false;
 volatile int flightFetchStatus = 0;
 size_t flightFetchLength = 0;
 char flightFetchResponse[kFlightResponseCapacity] = {};
+// A deliberately visible diagnostic while we track down stale-card reports.
+// It records when the display last accepted a complete backend snapshot, not
+// when a request merely began.
+char lastFlightRefreshTime[9] = "--:--:--";
 bool idleToRouteTransitionActive = false;
 bool routeToIdleTransitionActive = false;
 bool idleToRouteCardDrawn = false;
@@ -1383,9 +1387,9 @@ void drawRouteMarquees(const Route& route) {
   drawCityMarquee(originCity, destinationCity, 34, 16, 60, secondaryWhite);
   drawMinecraftMarquee(route.flightNumber[0] ? route.flightNumber : "-----", 34, 28, 60, tertiaryWhite);
   drawMinecraftMarquee(airlineName(route), 34, 40, 60, tertiaryWhite);
-  if (route.specialFlightTitle[0]) {
-    drawMinecraftMarquee(route.specialFlightTitle, 34, 52, 60, specialFlightOrange);
-  }
+  // Temporarily dedicate the orange special-flight line to a simple proof
+  // that fresh data is making it all the way from the Worker to this panel.
+  drawMinecraftMarquee(lastFlightRefreshTime, 34, 52, 60, specialFlightOrange);
 }
 
 // The initial card render paints every label. Subsequent 75ms refreshes paint
@@ -1395,7 +1399,6 @@ void refreshActiveMarquees(const Route& route) {
   const uint16_t black = matrix.color565(0, 0, 0);
   const uint16_t secondaryWhite = matrix.color565(145, 145, 145);
   const uint16_t tertiaryWhite = matrix.color565(85, 85, 85);
-  const uint16_t specialFlightOrange = visibleColor(255, 128, 0);
   // Keep the unpainted badge/text gutter deterministic across all partial
   // marquee redraws, rather than relying on a future full-screen render.
   matrix.fillRect(33, 2, 1, matrix.height() - 3, black);
@@ -1428,11 +1431,6 @@ void refreshActiveMarquees(const Route& route) {
     matrix.fillRect(34, 40, 60, 7, black);
     drawMinecraftMarquee(operatorName, 34, 40, 60, tertiaryWhite);
   }
-  if (route.specialFlightTitle[0] && normalTextWidth(route.specialFlightTitle) > 60) {
-    matrix.fillRect(34, 52, 60, 7, black);
-    drawMinecraftMarquee(route.specialFlightTitle, 34, 52, 60, specialFlightOrange);
-  }
-
   // Telemetry normally stays completely still. Only the exceptional values
   // wider than their 32-pixel slot are re-rendered as a marquee.
   char altitude[12], verticalSpeed[12], speed[12], track[12], eta[12];
@@ -1943,6 +1941,23 @@ void drawCurrentRoute() {
   drawRoute(routes[routeIndex], routeIndex + 1, routeCount);
 }
 
+// Apply a fresh snapshot to the card already on screen without restarting its
+// 20-second scene or its progress/rotation animations. This is especially
+// important for a one-aircraft queue: previously that card was intentionally
+// kept as an immutable snapshot forever.
+void redrawActiveRouteData() {
+  if (routeCount == 0 || showingPairingQr) return;
+  const uint16_t black = matrix.color565(0, 0, 0);
+  const uint16_t primaryWhite = matrix.color565(255, 255, 255);
+  const Route& route = routes[routeIndex];
+  matrix.fillRect(34, 4, 60, 7, black);
+  drawRouteChrome(route);
+  drawAirportRoute(route, 34, 4, primaryWhite);
+  drawTelemetryValues(route);
+  drawRouteMarquees(route);
+  drawRotationIndicator();
+}
+
 // Each data line is clipped to its own seven-pixel baseline. During a page
 // change, old letters fall down out of that window one at a time; after a
 // brief empty beat, new letters fall in from above. The logo and header are
@@ -2312,9 +2327,7 @@ void drawAnimatedRouteText(const Route& route, unsigned long phase, bool enterin
   drawAnimatedNormalLine(route.flightNumber[0] ? route.flightNumber : "-----", 34, 28, 60,
                          tertiaryWhite, 2, phase, entering);
   drawAnimatedNormalLine(airlineName(route), 34, 40, 60, tertiaryWhite, 9, phase, entering);
-  if (route.specialFlightTitle[0]) {
-    drawAnimatedNormalLine(route.specialFlightTitle, 34, 52, 60, specialFlightOrange, 11, phase, entering);
-  }
+  drawAnimatedNormalLine(lastFlightRefreshTime, 34, 52, 60, specialFlightOrange, 11, phase, entering);
   drawAnimatedNormalLine(registration, 1, 37, 32, secondaryWhite, 3, phase, entering, true, 0, true);
   drawAnimatedNormalLine(displayAircraftType(route), 1, 47, 32,
                          secondaryWhite, 4, phase, entering);
@@ -2662,6 +2675,7 @@ void mergeRefreshedRouteQueue(uint8_t refreshedCount) {
   uint8_t mergedCount = 0;
   uint8_t activeMergedIndex = 0;
   uint8_t departedCount = 0;
+  bool activeRouteRefreshed = false;
   for (uint8_t existingIndex = 0; existingIndex < routeCount; ++existingIndex) {
     int8_t refreshedIndex = -1;
     for (uint8_t candidate = 0; candidate < refreshedCount; ++candidate) {
@@ -2672,10 +2686,19 @@ void mergeRefreshedRouteQueue(uint8_t refreshedCount) {
     }
 
     if (existingIndex == routeIndex) {
-      // Keep the exact current snapshot while it is visible. If it disappeared
-      // from the feed, mark it for removal at the end of its transition.
-      mergedRoutes[mergedCount] = routes[existingIndex];
-      mergedRoutes[mergedCount].pendingRemoval = refreshedIndex < 0;
+      // Keep the current card in its queue position and scene, but do not
+      // freeze its live data. With only one aircraft in range, preserving the
+      // old snapshot here meant altitude, speed, track, and every other field
+      // could remain unchanged indefinitely.
+      if (refreshedIndex >= 0) {
+        mergedRoutes[mergedCount] = refreshedRoutes[refreshedIndex];
+        mergedRoutes[mergedCount].pendingRemoval = false;
+        activeRouteRefreshed = true;
+      } else {
+        // A departed active card stays only until this scene transitions.
+        mergedRoutes[mergedCount] = routes[existingIndex];
+        mergedRoutes[mergedCount].pendingRemoval = true;
+      }
       activeMergedIndex = mergedCount++;
       if (refreshedIndex >= 0) consumed[refreshedIndex] = true;
     } else if (refreshedIndex >= 0) {
@@ -2708,6 +2731,19 @@ void mergeRefreshedRouteQueue(uint8_t refreshedCount) {
   routeIndex = activeMergedIndex;
   Serial.printf("Queue refreshed: %u aircraft, removed %u, active index %u\n",
                 routeCount, departedCount, routeIndex);
+  if (activeRouteRefreshed) redrawActiveRouteData();
+}
+
+void recordSuccessfulFlightRefresh() {
+  time_t now = 0;
+  time(&now);
+  struct tm localTime = {};
+  if (now >= 1700000000 && localtime_r(&now, &localTime)) {
+    snprintf(lastFlightRefreshTime, sizeof(lastFlightRefreshTime), "%02d:%02d:%02d",
+             localTime.tm_hour, localTime.tm_min, localTime.tm_sec);
+  } else {
+    strlcpy(lastFlightRefreshTime, "--:--:--", sizeof(lastFlightRefreshTime));
+  }
 }
 
 void processFetchedFlightResponse() {
@@ -2734,6 +2770,12 @@ void processFetchedFlightResponse() {
     if (routeCount == 0 && !showingNoPlanes) showNoPlanesAfterDataFailure();
     return;
   }
+
+  // HTTP success plus valid JSON is the moment a refresh becomes observable
+  // to the display. Record it before reconciling the queue so the orange
+  // debug line is updated along with the same snapshot.
+  recordSuccessfulFlightRefresh();
+  memset(refreshedRoutes, 0, sizeof(refreshedRoutes));
 
   uint8_t newRouteCount = 0;
   bool hasSpecialFlight = false;
@@ -2834,17 +2876,20 @@ void fetchFlightsTask(void*) {
   vTaskDelete(nullptr);
 }
 
-void fetchAndDrawFirstFlight() {
+bool fetchAndDrawFirstFlight() {
   if (strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(LED_PLANE_DEVICE_KEY) == 0 ||
       WiFi.status() != WL_CONNECTED || flightFetchInProgress || flightFetchFinished) {
-    return;
+    return false;
   }
   flightFetchInProgress = true;
   if (xTaskCreatePinnedToCore(fetchFlightsTask, "flight-fetch", 8192, nullptr, 1, nullptr, 0) != pdPASS) {
     flightFetchStatus = -3;
     flightFetchFinished = true;
     flightFetchInProgress = false;
+    return false;
   }
+  Serial.println("Flight refresh started.");
+  return true;
 }
 
 void handleBootButton() {
@@ -2976,7 +3021,7 @@ void saveWifiCredentials() {
 void synchronizeClock() {
   // TLS rejects even a valid certificate when the ESP32 still believes it is
   // 1970. Set UTC from public NTP before contacting the HTTPS Worker.
-  configTime(0, 0, "time.cloudflare.com", "pool.ntp.org");
+  configTzTime("MST7MDT,M3.2.0,M11.1.0", "time.cloudflare.com", "pool.ntp.org");
   time_t now = 0;
   const unsigned long deadline = millis() + 15000;
   while (now < 1700000000 && millis() < deadline) {
@@ -3103,9 +3148,12 @@ void loop() {
       if (letterTransitionActive) flightRefreshDeferred = true;
       else nextFlightPollMillis = millis() + 2000;
     } else {
-      if (showingPairingQr) fetchAndDrawPairingQr();
-      else fetchAndDrawFirstFlight();
-      nextFlightPollMillis = millis() + 60000;
+      // Never turn a temporarily unavailable fetch slot into a lost minute.
+      // A completed response is normally held for the end of an animation;
+      // retrying in one second means it is processed and the next request can
+      // begin promptly instead of the panel appearing frozen.
+      const bool started = showingPairingQr ? fetchAndDrawPairingQr() : fetchAndDrawFirstFlight();
+      nextFlightPollMillis = millis() + (started ? 60000 : 1000);
     }
   }
   if (!showingPairingQr && routeCount > 0 && !letterTransitionActive &&
