@@ -318,6 +318,17 @@ int16_t telemetryMarqueeOffset(int16_t contentWidth, int16_t slotWidth) {
   return travel - (phase - 4000UL - oneWay) / 75UL;
 }
 
+// The card refresh cadence is intentionally faster than a pixel of marquee
+// travel. Repainting during either two-second endpoint hold clears and redraws
+// identical LEDs over and over, which reads as a distracting flash on the
+// physical matrix. Only redraw a marquee while its offset can actually change.
+bool marqueeIsMoving(int16_t contentWidth, int16_t slotWidth) {
+  if (contentWidth <= slotWidth) return false;
+  const unsigned long oneWay = (contentWidth - slotWidth) * 75UL;
+  const unsigned long phase = (millis() - routeSceneStartMillis) % (4000UL + oneWay * 2UL);
+  return (phase >= 2000UL && phase < 2000UL + oneWay) || phase >= 4000UL + oneWay;
+}
+
 void drawTelemetryPixel(int16_t x, int16_t y, uint16_t color, int16_t left, int16_t right) {
   if (x >= left && x < right) matrix.drawPixel(x, y, color);
 }
@@ -1476,23 +1487,24 @@ void refreshActiveMarquees(const Route& route) {
   const char* aircraftType = displayAircraftType(route);
   const char* flightNumber = route.flightNumber[0] ? route.flightNumber : "-----";
   const char* operatorName = airlineName(route);
-  if (registrationTextWidth(registration) > 32) {
+  if (registrationTextWidth(registration) > 32 && marqueeIsMoving(registrationTextWidth(registration), 32)) {
     matrix.fillRect(95, 37, 32, 7, black);
     drawRegistrationMarquee(registration, 95, 37, 32, secondaryWhite);
   }
-  if (normalTextWidth(aircraftType) > 32) {
+  if (normalTextWidth(aircraftType) > 32 && marqueeIsMoving(normalTextWidth(aircraftType), 32)) {
     matrix.fillRect(95, 47, 32, 7, black);
     drawMinecraftMarquee(aircraftType, 95, 47, 32, secondaryWhite);
   }
-  if (cityTextWidth(originCity) + 3 + 6 + 3 + cityTextWidth(destinationCity) > 60) {
+  const int16_t cityWidth = cityTextWidth(originCity) + 3 + 6 + 3 + cityTextWidth(destinationCity);
+  if (cityWidth > 60 && marqueeIsMoving(cityWidth, 60)) {
     matrix.fillRect(34, 16, 60, 7, black);
     drawCityMarquee(originCity, destinationCity, 34, 16, 60, secondaryWhite);
   }
-  if (normalTextWidth(flightNumber) > 60) {
+  if (normalTextWidth(flightNumber) > 60 && marqueeIsMoving(normalTextWidth(flightNumber), 60)) {
     matrix.fillRect(34, 28, 60, 7, black);
     drawMinecraftMarquee(flightNumber, 34, 28, 60, tertiaryWhite);
   }
-  if (normalTextWidth(operatorName) > 60) {
+  if (normalTextWidth(operatorName) > 60 && marqueeIsMoving(normalTextWidth(operatorName), 60)) {
     matrix.fillRect(34, 40, 60, 7, black);
     drawMinecraftMarquee(operatorName, 34, 40, 60, tertiaryWhite);
   }
@@ -1509,9 +1521,10 @@ void refreshActiveMarquees(const Route& route) {
       {verticalSpeed, TelemetryUnit::None, route.verticalSpeedFpm > -99999, route.verticalSpeedFpm > 0, route.verticalSpeedFpm == 0, 47},
   };
   for (const auto& line : lines) {
-    if (telemetryLineWidth(line.value, line.unit, line.arrow) > 32) {
+    const int16_t lineWidth = telemetryLineWidth(line.value, line.unit, line.arrow);
+    if (lineWidth > 32 && marqueeIsMoving(lineWidth, 32)) {
       matrix.fillRect(1, line.y, 32, 7, black);
-      const int16_t offset = telemetryMarqueeOffset(telemetryLineWidth(line.value, line.unit, line.arrow), 32);
+      const int16_t offset = telemetryMarqueeOffset(lineWidth, 32);
       const int16_t end = drawTelemetryValue(line.value, line.unit, 1 - offset, line.y, telemetry, 1, 33);
       if (line.arrow) {
         if (line.level) drawCityArrow(end + 1, line.y, 1, 33, telemetry);
