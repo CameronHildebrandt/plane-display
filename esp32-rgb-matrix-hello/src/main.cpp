@@ -1269,6 +1269,9 @@ bool brandChanges(const Route& outgoing, const Route& incoming) {
 }
 
 void drawBrandRadarRay(float angle, uint16_t color) {
+  // Drawing an "invisible" ray as black erases the artwork underneath it.
+  // Treat black as transparent so every radar ray is a true overlay.
+  if (color == matrix.color565(0, 0, 0)) return;
   constexpr int16_t centerX = 16;
   constexpr int16_t centerY = 19;
   for (uint8_t radius = 0; radius <= 23; ++radius) {
@@ -1284,26 +1287,45 @@ void drawBrandRadarRay(float angle, uint16_t color) {
 void drawBrandRadarSweep(const Route& outgoing, const Route& incoming, unsigned long elapsed) {
   if (!brandChanges(outgoing, incoming)) return;
   const float progress = constrain(static_cast<float>(elapsed) / 2000.0f, 0.0f, 1.0f);
+  // Travel one and a half turns in the same two seconds: a quarter-turn fade
+  // in before the top-centre start, one full reveal turn, then a quarter-turn
+  // fade out after completion. The two bookends never change logo ownership.
+  const float turns = -0.25f + progress * 1.5f;
   matrix.fillRect(0, 3, 33, 33, matrix.color565(0, 0, 0));
-  brandSweepProgress = progress;
-  brandSweepLayer = BrandSweepLayer::Outgoing;
-  drawOperatorLogo(outgoing, 1, 3);
-  brandSweepLayer = BrandSweepLayer::Incoming;
-  drawOperatorLogo(incoming, 1, 3);
+  float rayOpacity = 1.0f;
+  const bool revealing = turns >= 0.0f && turns <= 1.0f;
+  if (revealing) {
+    brandSweepProgress = turns;
+    brandSweepLayer = BrandSweepLayer::Outgoing;
+    drawOperatorLogo(outgoing, 1, 3);
+    brandSweepLayer = BrandSweepLayer::Incoming;
+    drawOperatorLogo(incoming, 1, 3);
+  } else if (turns < 0.0f) {
+    // Fade in over the preceding quarter-turn while leaving the outgoing logo
+    // completely intact beneath the radar line.
+    brandSweepLayer = BrandSweepLayer::None;
+    drawOperatorLogo(outgoing, 1, 3);
+    rayOpacity = easeInOut((turns + 0.25f) / 0.25f);
+  } else {
+    // The outgoing logo has fully handed off. Keep the incoming one intact
+    // through the exit quarter-turn, then fade the overlay away.
+    brandSweepLayer = BrandSweepLayer::None;
+    drawOperatorLogo(incoming, 1, 3);
+    rayOpacity = 1.0f - easeInOut((turns - 1.0f) / 0.25f);
+  }
   brandSweepLayer = BrandSweepLayer::None;
 
-  const float angle = progress * 2.0f * PI;
-  const float fadeIn = easeInOut(min(1.0f, progress / 0.12f));
-  const float fadeOut = easeInOut(min(1.0f, (1.0f - progress) / 0.10f));
-  const float brightness = min(fadeIn, fadeOut);
-  for (uint8_t trail = 7; trail > 0; --trail) {
-    const float trailStrength = brightness * (8 - trail) / 16.0f;
-    drawBrandRadarRay(angle - trail * 0.075f,
-                      visibleColor(0, static_cast<uint8_t>(64 * trailStrength),
-                                   static_cast<uint8_t>(16 * trailStrength)));
+  const float angle = turns * 2.0f * PI;
+  if (revealing) {
+    for (uint8_t trail = 7; trail > 0; --trail) {
+      const float trailStrength = (8 - trail) / 16.0f;
+      drawBrandRadarRay(angle - trail * 0.075f,
+                        visibleColor(0, static_cast<uint8_t>(64 * trailStrength),
+                                     static_cast<uint8_t>(16 * trailStrength)));
+    }
   }
-  drawBrandRadarRay(angle, visibleColor(0, static_cast<uint8_t>(145 * brightness),
-                                        static_cast<uint8_t>(36 * brightness)));
+  drawBrandRadarRay(angle, visibleColor(0, static_cast<uint8_t>(145 * rayOpacity),
+                                        static_cast<uint8_t>(36 * rayOpacity)));
 }
 
 float easeInOut(float progress) {
@@ -2538,6 +2560,12 @@ void updateLetterTransition() {
       }
     }
     routeIndex = letterTransitionRouteIndex;
+    // The final radar frame is an overlay, not part of the logo itself. Paint
+    // the settled incoming badge once as the transition hands off so no dim
+    // ray (or a skipped final frame) can remain stuck on the display.
+    matrix.fillRect(0, 3, 33, 33, matrix.color565(0, 0, 0));
+    brandSweepLayer = BrandSweepLayer::None;
+    drawOperatorLogo(routes[routeIndex], 1, 3);
     routeProgressAnimationActive = false;
     rotationIndicatorResetActive = false;
     rotationPipTransitionActive = false;
