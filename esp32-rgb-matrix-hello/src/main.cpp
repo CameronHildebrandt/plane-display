@@ -779,6 +779,29 @@ uint16_t visibleColor(uint8_t red, uint8_t green, uint8_t blue) {
   return matrix.color565(blue, green, red);
 }
 
+float easeInOut(float progress);
+
+// A two-layer compositor used only during a changing-brand transition. Logo
+// renderers continue to be simple pixel artists; this tiny gate reveals the
+// incoming layer only behind the clockwise radar arm.
+enum class BrandSweepLayer : uint8_t { None, Outgoing, Incoming };
+BrandSweepLayer brandSweepLayer = BrandSweepLayer::None;
+float brandSweepProgress = 0.0f;
+
+bool brandSweepPaintsPixel(int16_t x, int16_t y) {
+  if (brandSweepLayer == BrandSweepLayer::None) return true;
+  const float dx = static_cast<float>(x - 16);
+  const float dy = static_cast<float>(y - 19);
+  float angle = atan2f(dx, -dy);  // 0 = top; positive turns clockwise.
+  if (angle < 0.0f) angle += 2.0f * PI;
+  const bool swept = angle <= brandSweepProgress * 2.0f * PI;
+  return brandSweepLayer == BrandSweepLayer::Incoming ? swept : !swept;
+}
+
+void drawOperatorLogoPixel(int16_t x, int16_t y, uint16_t color) {
+  if (brandSweepPaintsPixel(x, y)) matrix.drawPixel(x, y, color);
+}
+
 void drawWestJetLogo(int16_t x, int16_t y) {
   for (uint8_t row = 0; row < 32; ++row) for (uint8_t column = 0; column < 32; ++column) {
     const uint8_t index = pgm_read_byte(&kWestJetLogoPixels[row][column]) - '0';
@@ -786,7 +809,7 @@ void drawWestJetLogo(int16_t x, int16_t y) {
     const uint8_t red = pgm_read_byte(&kWestJetLogoPalette[index][0]);
     const uint8_t green = pgm_read_byte(&kWestJetLogoPalette[index][1]);
     const uint8_t blue = pgm_read_byte(&kWestJetLogoPalette[index][2]);
-    matrix.drawPixel(x + column, y + row, matrix.color565(red, green, blue));
+    drawOperatorLogoPixel(x + column, y + row, matrix.color565(red, green, blue));
   }
 }
 
@@ -797,7 +820,7 @@ void drawCargojetLogo(int16_t x, int16_t y) {
     const uint8_t red = pgm_read_byte(&kCargojetLogoPalette[index][0]);
     const uint8_t green = pgm_read_byte(&kCargojetLogoPalette[index][1]);
     const uint8_t blue = pgm_read_byte(&kCargojetLogoPalette[index][2]);
-    matrix.drawPixel(x + column, y + row, matrix.color565(red, green, blue));
+    drawOperatorLogoPixel(x + column, y + row, matrix.color565(red, green, blue));
   }
 }
 
@@ -812,7 +835,7 @@ void drawAlbertaHealthLogo(int16_t x, int16_t y) {
       // The source palette is sRGB (#009D4D green, #005CB9 blue). Route it
       // through the panel's physical red/blue channel correction just like
       // every other calibrated operator logo.
-      matrix.drawPixel(x + column, y + row, visibleColor(red, green, blue));
+      drawOperatorLogoPixel(x + column, y + row, visibleColor(red, green, blue));
     }
   }
 }
@@ -835,9 +858,9 @@ void drawRcafLogo(int16_t x, int16_t y) {
     const uint64_t redPixels = readRcafMask(kRcafRoundelRedMask, row);
     for (uint8_t column = 0; column < 33; ++column) {
       const uint64_t bit = 1ULL << (32 - column);
-      if (navyPixels & bit) matrix.drawPixel(x + column, y + row, navy);
-      else if (whitePixels & bit) matrix.drawPixel(x + column, y + row, white);
-      else if (redPixels & bit) matrix.drawPixel(x + column, y + row, red);
+      if (navyPixels & bit) drawOperatorLogoPixel(x + column, y + row, navy);
+      else if (whitePixels & bit) drawOperatorLogoPixel(x + column, y + row, white);
+      else if (redPixels & bit) drawOperatorLogoPixel(x + column, y + row, red);
     }
   }
 }
@@ -1017,7 +1040,7 @@ void drawAirCanadaLogo(int16_t x, int16_t y) {
   for (uint8_t row = 0; row < 32; ++row) {
     const uint32_t pixels = pgm_read_dword(&kAirCanadaLogoMask[row]);
     for (uint8_t column = 0; column < 32; ++column) {
-      if (pixels & (1UL << (31 - column))) matrix.drawPixel(x + column, y + row, red);
+      if (pixels & (1UL << (31 - column))) drawOperatorLogoPixel(x + column, y + row, red);
     }
   }
 }
@@ -1028,7 +1051,7 @@ void drawAirCanadaJazzLogo(int16_t x, int16_t y) {
   for (uint8_t row = 0; row < 32; ++row) {
     const uint32_t pixels = pgm_read_dword(&kAirCanadaJazzLogoMask[row]);
     for (uint8_t column = 0; column < 32; ++column) {
-      if (pixels & (1UL << (31 - column))) matrix.drawPixel(x + column, y + row, red);
+      if (pixels & (1UL << (31 - column))) drawOperatorLogoPixel(x + column, y + row, red);
     }
   }
 }
@@ -1039,7 +1062,7 @@ void drawFlairLogo(int16_t x, int16_t y) {
     const uint32_t pixels = pgm_read_dword(&kFlairLogoMask[row]);
     for (uint8_t column = 0; column < 32; ++column) {
       const uint32_t bit = 1UL << (31 - column);
-      if (pixels & bit) matrix.drawPixel(x + column, y + row, green);
+      if (pixels & bit) drawOperatorLogoPixel(x + column, y + row, green);
     }
   }
 }
@@ -1054,8 +1077,8 @@ void drawCanWestLogo(int16_t x, int16_t y) {
     const uint32_t bluePixels = pgm_read_dword(&kCanWestLogoMask[row][1]);
     for (uint8_t column = 0; column < 32; ++column) {
       const uint32_t bit = 1UL << (31 - column);
-      if (orangePixels & bit) matrix.drawPixel(x + column, y + row, orange);
-      else if (bluePixels & bit) matrix.drawPixel(x + column, y + row, blue);
+      if (orangePixels & bit) drawOperatorLogoPixel(x + column, y + row, orange);
+      else if (bluePixels & bit) drawOperatorLogoPixel(x + column, y + row, blue);
     }
   }
 }
@@ -1067,7 +1090,7 @@ void drawCentralMountainAirLogo(int16_t x, int16_t y) {
   for (uint8_t row = 0; row < 32; ++row) {
     const uint32_t pixels = pgm_read_dword(&kCentralMountainAirLogoMask[row]);
     for (uint8_t column = 0; column < 32; ++column) {
-      if (pixels & (1UL << (31 - column))) matrix.drawPixel(x + column, y + row, red);
+      if (pixels & (1UL << (31 - column))) drawOperatorLogoPixel(x + column, y + row, red);
     }
   }
 }
@@ -1082,8 +1105,8 @@ void drawCoywolfLogo(int16_t x, int16_t y) {
     const uint32_t greyPixels = pgm_read_dword(&kCoywolfLogoMask[row][1]);
     for (uint8_t column = 0; column < 32; ++column) {
       const uint32_t bit = 1UL << (31 - column);
-      if (orangePixels & bit) matrix.drawPixel(x + column, y + row, orange);
-      else if (greyPixels & bit) matrix.drawPixel(x + column, y + row, grey);
+      if (orangePixels & bit) drawOperatorLogoPixel(x + column, y + row, orange);
+      else if (greyPixels & bit) drawOperatorLogoPixel(x + column, y + row, grey);
     }
   }
 }
@@ -1094,7 +1117,7 @@ void drawAirSprintLogo(int16_t x, int16_t y) {
   for (uint8_t row = 0; row < 32; ++row) {
     const uint32_t pixels = pgm_read_dword(&kAirSprintLogoMask[row]);
     for (uint8_t column = 0; column < 32; ++column) {
-      if (pixels & (1UL << (31 - column))) matrix.drawPixel(x + column, y + row, blue);
+      if (pixels & (1UL << (31 - column))) drawOperatorLogoPixel(x + column, y + row, blue);
     }
   }
 }
@@ -1106,7 +1129,7 @@ void drawNorthCaribooAirLogo(int16_t x, int16_t y) {
   for (uint8_t row = 0; row < 32; ++row) {
     const uint32_t pixels = pgm_read_dword(&kNorthCaribooAirLogoMask[row]);
     for (uint8_t column = 0; column < 32; ++column) {
-      if (pixels & (1UL << (31 - column))) matrix.drawPixel(x + column, y + row, gold);
+      if (pixels & (1UL << (31 - column))) drawOperatorLogoPixel(x + column, y + row, gold);
     }
   }
 }
@@ -1124,8 +1147,8 @@ void drawPorterLogo(int16_t x, int16_t y) {
       const uint32_t bit = 1UL << (31 - column);
       const uint16_t color = whitePixels & bit ? white : bluePixels & bit ? blue : 0;
       if (color) {
-        matrix.drawPixel(x + column, y + row, color);
-        matrix.drawPixel(x + 31 - column, y + row, color);
+        drawOperatorLogoPixel(x + column, y + row, color);
+        drawOperatorLogoPixel(x + 31 - column, y + row, color);
       }
     }
   }
@@ -1141,8 +1164,8 @@ void drawSunwestLogo(int16_t x, int16_t y) {
     const uint32_t navyPixels = pgm_read_dword(&kSunwestLogoMask[row][1]);
     for (uint8_t column = 0; column < 32; ++column) {
       const uint32_t bit = 1UL << (31 - column);
-      if (redPixels & bit) matrix.drawPixel(x + column, y + row, red);
-      else if (navyPixels & bit) matrix.drawPixel(x + column, y + row, navy);
+      if (redPixels & bit) drawOperatorLogoPixel(x + column, y + row, red);
+      else if (navyPixels & bit) drawOperatorLogoPixel(x + column, y + row, navy);
     }
   }
 }
@@ -1153,7 +1176,7 @@ void drawStarsLogo(int16_t x, int16_t y) {
   for (uint8_t row = 0; row < 32; ++row) {
     const uint32_t pixels = pgm_read_dword(&kStarsLogoMask[row]);
     for (uint8_t column = 0; column < 32; ++column) {
-      if (pixels & (1UL << (31 - column))) matrix.drawPixel(x + column, y + row, red);
+      if (pixels & (1UL << (31 - column))) drawOperatorLogoPixel(x + column, y + row, red);
     }
   }
 }
@@ -1163,7 +1186,7 @@ void drawKlmLogo(int16_t x, int16_t y) {
   for (uint8_t row = 0; row < 32; ++row) {
     const uint32_t pixels = pgm_read_dword(&kKlmLogoMask[row]);
     for (uint8_t column = 0; column < 32; ++column) {
-      if (pixels & (1UL << (31 - column))) matrix.drawPixel(x + column, y + row, blue);
+      if (pixels & (1UL << (31 - column))) drawOperatorLogoPixel(x + column, y + row, blue);
     }
   }
 }
@@ -1173,7 +1196,7 @@ void drawUsMilitaryLogo(int16_t x, int16_t y) {
   for (uint8_t row = 0; row < 32; ++row) for (uint8_t column = 0; column < 32; ++column) {
     const uint32_t bit = 1UL << (31 - column);
     for (uint8_t color = 0; color < 3; ++color) {
-      if (pgm_read_dword(&kUsMilitaryRoundelMask[row][color]) & bit) { matrix.drawPixel(x + column, y + row, colors[color]); break; }
+      if (pgm_read_dword(&kUsMilitaryRoundelMask[row][color]) & bit) { drawOperatorLogoPixel(x + column, y + row, colors[color]); break; }
     }
   }
 }
@@ -1192,7 +1215,7 @@ void drawUnknownBrandGlobe(int16_t x, int16_t y) {
   for (uint8_t row = 0; row < 32; ++row) {
     for (uint8_t column = 0; column < 32; ++column) {
       if (pgm_read_byte(&kUnknownBrandGlobePixels[row][column])) {
-        matrix.drawPixel(x + column, y + row, grey);
+        drawOperatorLogoPixel(x + column, y + row, grey);
       }
     }
   }
@@ -1218,6 +1241,69 @@ void drawOperatorLogo(const Route& route, int16_t x, int16_t y) {
   else if (isUsMilitaryFlight(route)) drawUsMilitaryLogo(x, y);
   else if (isWestJetFlight(route)) drawWestJetLogo(x, y);
   else drawUnknownBrandGlobe(x, y);
+}
+
+const char* brandIdentity(const Route& route) {
+  if (tailOverrideFor(route)) return "alberta-health";
+  if (isAirCanadaJazzFlight(route)) return "air-canada-jazz";
+  if (isAirCanadaFlight(route)) return "air-canada";
+  if (isFlairFlight(route)) return "flair";
+  if (isCargojetFlight(route)) return "cargojet";
+  if (isRcafFlight(route)) return "rcaf";
+  if (isCanWestFlight(route)) return "canwest";
+  if (isCentralMountainAirFlight(route)) return "central-mountain";
+  if (isCoywolfFlight(route)) return "coywolf";
+  if (isAirSprintFlight(route)) return "airsprint";
+  if (isNorthCaribooAirFlight(route)) return "north-cariboo";
+  if (isPorterFlight(route)) return "porter";
+  if (isSunwestFlight(route)) return "sunwest";
+  if (isStarsFlight(route)) return "stars";
+  if (isKlmFlight(route)) return "klm";
+  if (isUsMilitaryFlight(route)) return "us-military";
+  if (isWestJetFlight(route)) return "westjet";
+  return "unknown";
+}
+
+bool brandChanges(const Route& outgoing, const Route& incoming) {
+  return strcmp(brandIdentity(outgoing), brandIdentity(incoming)) != 0;
+}
+
+void drawBrandRadarRay(float angle, uint16_t color) {
+  constexpr int16_t centerX = 16;
+  constexpr int16_t centerY = 19;
+  for (uint8_t radius = 0; radius <= 23; ++radius) {
+    const int16_t x = centerX + static_cast<int16_t>(roundf(sinf(angle) * radius));
+    const int16_t y = centerY - static_cast<int16_t>(roundf(cosf(angle) * radius));
+    if (x >= 0 && x < 33 && y >= 3 && y < 36) matrix.drawPixel(x, y, color);
+  }
+}
+
+// The panel has no alpha compositor, so the green afterglow is quantized into
+// a few dim rays. It is intentionally painted over either logo, like a real
+// radar phosphor trail, while the incoming badge is revealed behind the arm.
+void drawBrandRadarSweep(const Route& outgoing, const Route& incoming, unsigned long elapsed) {
+  if (!brandChanges(outgoing, incoming)) return;
+  const float progress = constrain(static_cast<float>(elapsed) / 2000.0f, 0.0f, 1.0f);
+  matrix.fillRect(0, 3, 33, 33, matrix.color565(0, 0, 0));
+  brandSweepProgress = progress;
+  brandSweepLayer = BrandSweepLayer::Outgoing;
+  drawOperatorLogo(outgoing, 1, 3);
+  brandSweepLayer = BrandSweepLayer::Incoming;
+  drawOperatorLogo(incoming, 1, 3);
+  brandSweepLayer = BrandSweepLayer::None;
+
+  const float angle = progress * 2.0f * PI;
+  const float fadeIn = easeInOut(min(1.0f, progress / 0.12f));
+  const float fadeOut = easeInOut(min(1.0f, (1.0f - progress) / 0.10f));
+  const float brightness = min(fadeIn, fadeOut);
+  for (uint8_t trail = 7; trail > 0; --trail) {
+    const float trailStrength = brightness * (8 - trail) / 16.0f;
+    drawBrandRadarRay(angle - trail * 0.075f,
+                      visibleColor(0, static_cast<uint8_t>(64 * trailStrength),
+                                   static_cast<uint8_t>(16 * trailStrength)));
+  }
+  drawBrandRadarRay(angle, visibleColor(0, static_cast<uint8_t>(145 * brightness),
+                                        static_cast<uint8_t>(36 * brightness)));
 }
 
 float easeInOut(float progress) {
@@ -2486,6 +2572,7 @@ void updateLetterTransition() {
     letterTransitionChromeSwapped = true;
   }
   clearTransitionTextAreas();
+  drawBrandRadarSweep(routes[routeIndex], routes[letterTransitionRouteIndex], elapsed);
   if (elapsed < kLetterExitMillis) {
     drawAnimatedRouteText(routes[routeIndex], elapsed, false);
   } else if (elapsed >= kLetterEnterStartMillis) {
