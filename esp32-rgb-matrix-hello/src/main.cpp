@@ -1154,6 +1154,34 @@ void drawPlaneSpritePointingUp(int16_t x, int16_t y, uint16_t color);
 void drawAircraftFallbackSprite(const char* aircraftType, int16_t x, int16_t y, uint16_t color);
 void drawAircraftPanelSprite(const char* aircraftType, int16_t x, int16_t y, uint16_t color);
 
+// A neutral, deliberately quiet identity mark for aircraft whose operator is
+// unknown. It is a one-pixel globe outline rather than another aircraft: the
+// aircraft's actual type silhouette now has the dedicated panel at upper
+// right. The 50% white keeps the fallback visually subordinate to real logos.
+void drawUnknownBrandGlobe(int16_t x, int16_t y) {
+  const uint16_t grey = visibleColor(128, 128, 128);
+  constexpr int16_t center = 31;   // Doubled coordinates: centre at 15.5.
+  constexpr int16_t radius = 27;   // 13.5px radius, retaining a dark frame.
+  for (int16_t row = 1; row < 31; ++row) {
+    for (int16_t column = 1; column < 31; ++column) {
+      const int16_t dx = column * 2 - center;
+      const int16_t dy = row * 2 - center;
+      const int16_t distanceSquared = dx * dx + dy * dy;
+      // The small tolerance turns the integer circle into a continuous
+      // single-LED outline rather than a visibly dotted one.
+      if (distanceSquared >= radius * radius - 42 && distanceSquared <= radius * radius + 42) {
+        matrix.drawPixel(x + column, y + row, grey);
+      }
+    }
+  }
+  // Minimal latitude/longitude lines make the small circle read as a globe
+  // without turning the calm fallback into a dense logo.
+  matrix.drawLine(x + 3, y + 15, x + 28, y + 15, grey);
+  matrix.drawLine(x + 15, y + 3, x + 15, y + 28, grey);
+  matrix.drawLine(x + 6, y + 9, x + 25, y + 9, grey);
+  matrix.drawLine(x + 6, y + 22, x + 25, y + 22, grey);
+}
+
 void drawOperatorLogo(const Route& route, int16_t x, int16_t y) {
   if (const TailOverride* override = tailOverrideFor(route)) {
     if (override->logo == TailOverrideLogo::AlbertaHealth) drawAlbertaHealthLogo(x, y);
@@ -1173,10 +1201,7 @@ void drawOperatorLogo(const Route& route, int16_t x, int16_t y) {
   else if (isKlmFlight(route)) drawKlmLogo(x, y);
   else if (isUsMilitaryFlight(route)) drawUsMilitaryLogo(x, y);
   else if (isWestJetFlight(route)) drawWestJetLogo(x, y);
-  // The unknown-airline badge deliberately uses the left and bottom one-pixel
-  // gutters: 33px at x=0..32 and y=3..35. It is a quiet 25% white aircraft
-  // silhouette selected from the incoming ICAO aircraft type.
-  else drawAircraftFallbackSprite(route.aircraftType, x - 1, y, matrix.color565(64, 64, 64));
+  else drawUnknownBrandGlobe(x, y);
 }
 
 float easeInOut(float progress) {
