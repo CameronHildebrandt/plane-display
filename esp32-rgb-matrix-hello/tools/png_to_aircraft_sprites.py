@@ -13,9 +13,11 @@ from PIL import Image
 
 SIZE = 33
 CATEGORIES = [
-    "widebody_four_engine", "widebody_twin_jet", "narrowbody_jet",
-    "regional_jet", "turboprop", "light_prop", "business_jet",
-    "helicopter", "generic_747", "fighter_jet", "superheavy",
+    "single_engine_prop", "twin_engine_prop", "four_engine_prop",
+    "twin_engine_jet", "tri_engine_jet", "quad_engine_jet",
+    "single_rotor_helicopter", "dual_rotor_helicopter", "stratofortress",
+    "osprey", "glider", "b2_dorito", "fighter_jet", "generic_plane",
+    "balloon",
 ]
 
 

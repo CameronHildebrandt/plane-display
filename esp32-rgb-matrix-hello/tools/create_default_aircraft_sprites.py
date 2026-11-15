@@ -12,9 +12,11 @@ from PIL import Image
 
 SIZE = 33
 CATEGORIES = [
-    "widebody_four_engine", "widebody_twin_jet", "narrowbody_jet",
-    "regional_jet", "turboprop", "light_prop", "business_jet",
-    "helicopter", "generic_747", "fighter_jet", "superheavy",
+    "single_engine_prop", "twin_engine_prop", "four_engine_prop",
+    "twin_engine_jet", "tri_engine_jet", "quad_engine_jet",
+    "single_rotor_helicopter", "dual_rotor_helicopter", "stratofortress",
+    "osprey", "glider", "b2_dorito", "fighter_jet", "generic_plane",
+    "balloon",
 ]
 
 
@@ -120,44 +122,126 @@ def superheavy(canvas):
     canvas.rect(11, 30, 11, 2)
 
 
+def prop(canvas, engines):
+    canvas.fuselage(3, 30, 1 if engines == 1 else 2)
+    for row in range(12, 18):
+        span = (5 if engines == 1 else 8) + (row - 12) * 2
+        canvas.rect(16 - min(15, span), row, min(31, span * 2 + 1), 1)
+    propellers = {1: (16,), 2: (4, 28), 4: (3, 10, 22, 29)}[engines]
+    for x in propellers:
+        canvas.rect(x, 8, 1, 11)
+    canvas.rect(10, 27, 13, 2)
+
+
+def jet(canvas, engines):
+    canvas.fuselage(1, 31, 3 if engines == 4 else 2)
+    for row in range(10, 19):
+        span = min(15, 7 + (row - 10) * 2)
+        canvas.rect(16 - span, row, span * 2 + 1, 1)
+    positions = {2: ((7, 18), (23, 18)),
+                 3: ((7, 18), (23, 18), (15, 24)),
+                 4: ((4, 18), (10, 19), (20, 19), (26, 18))}[engines]
+    for x, y in positions:
+        canvas.rect(x, y, 3, 4)
+    canvas.rect(8 if engines == 4 else 10, 28, 17 if engines == 4 else 13, 2)
+
+
+def single_rotor_helicopter(canvas):
+    canvas.fuselage(7, 25, 2)
+    canvas.rect(2, 10, 29, 1)
+    canvas.rect(15, 7, 3, 19)
+    canvas.rect(15, 25, 3, 6)
+    canvas.rect(11, 30, 11, 1)
+    canvas.pixel(16, 31)
+
+
+def dual_rotor_helicopter(canvas):
+    canvas.fuselage(5, 29, 3)
+    for rotor_y in (8, 21):
+        canvas.rect(2, rotor_y, 29, 1)
+        canvas.rect(15, rotor_y - 3, 3, 7)
+    canvas.rect(10, 28, 13, 2)
+
+
+def stratofortress(canvas):
+    canvas.fuselage(2, 31, 1)
+    for row in range(11, 19):
+        span = min(16, 4 + (row - 11) * 2)
+        canvas.rect(16 - span, row, span * 2 + 1, 1)
+    for x in (2, 6, 11, 14, 18, 21, 26, 30):
+        canvas.rect(x, 18, 1, 3)
+    canvas.rect(7, 28, 19, 1)
+    canvas.rect(15, 29, 3, 3)
+
+
+def osprey(canvas):
+    canvas.fuselage(7, 28, 2)
+    canvas.rect(2, 14, 29, 2)
+    for x in (3, 29):
+        canvas.rect(x, 8, 1, 13)
+        canvas.rect(x - 2, 13, 5, 3)
+    canvas.rect(10, 26, 13, 2)
+
+
+def glider(canvas):
+    canvas.fuselage(2, 30, 0)
+    canvas.rect(1, 14, 31, 1)
+    canvas.rect(6, 15, 21, 1)
+    canvas.rect(11, 27, 11, 1)
+
+
+def b2_dorito(canvas):
+    canvas.pixel(16, 3)
+    for row in range(4, 26):
+        span = min(15, (row - 3) * 2)
+        canvas.rect(16 - span, row, span * 2 + 1, 1)
+    for row in range(26, 31):
+        span = 15 - (row - 25) * 2
+        canvas.rect(16 - max(1, span), row, max(3, span * 2 + 1), 1)
+
+
+def balloon(canvas):
+    for row, span in ((2, 3), (3, 6), (4, 9), (5, 11), (6, 13), (7, 14),
+                      (8, 15), (9, 15), (10, 14), (11, 13), (12, 11),
+                      (13, 9), (14, 6), (15, 3)):
+        canvas.rect(16 - span, row, span * 2 + 1, 1)
+    canvas.rect(13, 17, 1, 5)
+    canvas.rect(19, 17, 1, 5)
+    canvas.rect(14, 21, 5, 3)
+
+
 def make(category):
     canvas = Canvas()
-    if category == "widebody_four_engine":
-        airliner(canvas, True, True)
-    elif category == "widebody_twin_jet":
-        airliner(canvas, True, False)
-    elif category == "narrowbody_jet":
-        airliner(canvas, False, False)
-    elif category in {"regional_jet", "business_jet"}:
-        regional_or_business(canvas)
-    elif category == "turboprop":
-        canvas.fuselage(2, 30, 2)
-        for row in range(11, 17):
-            span = 8 + (row - 11) * 2
-            canvas.rect(16 - span, row, span * 2 + 1, 1)
-        canvas.rect(3, 9, 1, 10)
-        canvas.rect(29, 9, 1, 10)
-        canvas.rect(9, 27, 15, 2)
-    elif category == "light_prop":
-        canvas.rect(9, 2, 15, 1)
-        canvas.fuselage(3, 29, 1)
-        for row in range(12, 18):
-            span = 4 + (row - 12) * 2
-            canvas.rect(16 - span, row, span * 2 + 1, 1)
-        canvas.rect(10, 27, 13, 2)
-    elif category == "helicopter":
-        canvas.fuselage(7, 25, 2)
-        canvas.rect(2, 10, 29, 1)
-        canvas.rect(15, 7, 3, 19)
-        canvas.rect(15, 25, 3, 6)
-        canvas.rect(11, 30, 11, 1)
-        canvas.pixel(16, 31)
-    elif category == "generic_747":
-        generic_747(canvas)
+    if category == "single_engine_prop":
+        prop(canvas, 1)
+    elif category == "twin_engine_prop":
+        prop(canvas, 2)
+    elif category == "four_engine_prop":
+        prop(canvas, 4)
+    elif category == "twin_engine_jet":
+        jet(canvas, 2)
+    elif category == "tri_engine_jet":
+        jet(canvas, 3)
+    elif category == "quad_engine_jet":
+        jet(canvas, 4)
+    elif category == "single_rotor_helicopter":
+        single_rotor_helicopter(canvas)
+    elif category == "dual_rotor_helicopter":
+        dual_rotor_helicopter(canvas)
+    elif category == "stratofortress":
+        stratofortress(canvas)
+    elif category == "osprey":
+        osprey(canvas)
+    elif category == "glider":
+        glider(canvas)
+    elif category == "b2_dorito":
+        b2_dorito(canvas)
     elif category == "fighter_jet":
         fighter_jet(canvas)
-    elif category == "superheavy":
-        superheavy(canvas)
+    elif category == "generic_plane":
+        generic_747(canvas)
+    elif category == "balloon":
+        balloon(canvas)
     return canvas
 
 

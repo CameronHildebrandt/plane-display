@@ -1680,7 +1680,6 @@ void drawRouteMarquees(const Route& route) {
   drawCityMarquee(originCity, destinationCity, 34, 16, 60, secondaryWhite);
   drawMinecraftMarquee(route.flightNumber[0] ? route.flightNumber : "-----", 34, 28, 60, tertiaryWhite);
   drawMinecraftMarquee(airlineName(route), 34, 40, 60, tertiaryWhite);
-  drawRefreshDebugLine();
 }
 
 // The initial card render paints every label. Subsequent 75ms refreshes paint
@@ -1797,21 +1796,25 @@ void drawRoute(const Route& route, uint8_t position, uint8_t total) {
   drawRouteMarquees(route);
 }
 
-// The left-card fallback is a deliberately small family library rather than a
-// type-by-type catalogue. At 33px the important recognition cues are planform,
-// engine count/position, and propeller or rotor discs.
+// The fallback library intentionally has only fifteen planform categories.
+// At 33px, engine count, rotor layout, and broad wing geometry communicate
+// more honestly than an over-specific model silhouette.
 enum class AircraftSprite : uint8_t {
-  WidebodyFourEngine,
-  WidebodyTwinJet,
-  NarrowbodyJet,
-  RegionalJet,
-  Turboprop,
-  LightProp,
-  BusinessJet,
-  Helicopter,
-  Generic747,
+  SingleEngineProp,
+  TwinEngineProp,
+  FourEngineProp,
+  TwinEngineJet,
+  TriEngineJet,
+  QuadEngineJet,
+  SingleRotorHelicopter,
+  DualRotorHelicopter,
+  Stratofortress,
+  Osprey,
+  Glider,
+  B2Dorito,
   FighterJet,
-  Superheavy,
+  GenericPlane,
+  Balloon,
 };
 
 void drawPlaneSprite(int16_t x, int16_t y, uint16_t color);
@@ -1822,13 +1825,26 @@ bool typeContains(const char* type, const char* needle) {
 }
 
 AircraftSprite aircraftSpriteForType(const char* type) {
+  if (typeContains(type, "V22") || typeContains(type, "CV22") || typeContains(type, "MV22")) {
+    return AircraftSprite::Osprey;
+  }
+  if (typeContains(type, "B2A") || typeContains(type, "B2 ")) return AircraftSprite::B2Dorito;
+  if (typeContains(type, "B52") || typeContains(type, "B-52")) return AircraftSprite::Stratofortress;
+  if (typeContains(type, "GLID") || typeContains(type, "ASK") || typeContains(type, "ASW") ||
+      typeContains(type, "DG1") || typeContains(type, "DG5") || typeContains(type, "LS") ||
+      typeContains(type, "SZD")) return AircraftSprite::Glider;
+  if (typeContains(type, "BALLOON") || typeContains(type, "BALL") || typeContains(type, "HBAL")) {
+    return AircraftSprite::Balloon;
+  }
+  if (typeContains(type, "CH47") || typeContains(type, "CH46") || typeContains(type, "CH-47") ||
+      typeContains(type, "CH-46")) return AircraftSprite::DualRotorHelicopter;
   // Helicopters first: some have manufacturer strings that otherwise resemble
   // fixed-wing types (for example Bell and Airbus Helicopters).
   if (typeContains(type, "H135") || typeContains(type, "H145") || typeContains(type, "H160") ||
       typeContains(type, "EC") || typeContains(type, "AS") || typeContains(type, "BK") ||
       typeContains(type, "B06") || typeContains(type, "BELL") || typeContains(type, "R22") ||
       typeContains(type, "R44") || typeContains(type, "S76") || typeContains(type, "AW")) {
-    return AircraftSprite::Helicopter;
+    return AircraftSprite::SingleRotorHelicopter;
   }
   // Military fast jets have intentionally distinct delta planforms.
   if (typeContains(type, "F16") || typeContains(type, "F18") || typeContains(type, "FA18") ||
@@ -1836,136 +1852,47 @@ AircraftSprite aircraftSpriteForType(const char* type) {
       typeContains(type, "F14") || typeContains(type, "F5") || typeContains(type, "A10") ||
       typeContains(type, "MIG") || typeContains(type, "SU2") || typeContains(type, "SU3") ||
       typeContains(type, "RAFALE") || typeContains(type, "TYPN")) return AircraftSprite::FighterJet;
-  // Very large cargo aircraft and strategic bombers need their own broad-wing silhouette.
-  if (typeContains(type, "A124") || typeContains(type, "A225") || typeContains(type, "AN12") ||
-      typeContains(type, "AN22") || typeContains(type, "C5A") || typeContains(type, "C5B") ||
-      typeContains(type, "C5M") || typeContains(type, "B52") || typeContains(type, "B1B") ||
-      typeContains(type, "B2A")) return AircraftSprite::Superheavy;
-  // Citation/Challenger/Gulfstream/Learjet and similar rear-engined business jets.
-  if (typeContains(type, "C5") || typeContains(type, "C6") || typeContains(type, "C7") ||
-      typeContains(type, "C68") || typeContains(type, "CL3") || typeContains(type, "CL6") ||
-      typeContains(type, "GLF") || typeContains(type, "LJ") || typeContains(type, "FA") ||
-      typeContains(type, "H25") || typeContains(type, "E35")) return AircraftSprite::BusinessJet;
-  // Dash 8, ATR, Saab, Beech and commuter turboprops retain a one-pixel prop disc.
+  // Four-engine turboprops are rare, but their prop discs are the defining cue.
+  if (typeContains(type, "C130") || typeContains(type, "C-130") || typeContains(type, "P3") ||
+      typeContains(type, "P-3") || typeContains(type, "L188") || typeContains(type, "DHC7") ||
+      typeContains(type, "A400") || typeContains(type, "AN12") || typeContains(type, "AN22")) {
+    return AircraftSprite::FourEngineProp;
+  }
+  // Piston singles and single-engine utility props, including the Cessna Caravan.
+  if (typeContains(type, "C208") || typeContains(type, "C20") || typeContains(type, "C1") ||
+      typeContains(type, "C2") || typeContains(type, "C3") || typeContains(type, "C4") ||
+      typeContains(type, "C8") || typeContains(type, "PA") || typeContains(type, "SR2") ||
+      typeContains(type, "DA4") || typeContains(type, "DA6")) return AircraftSprite::SingleEngineProp;
+  // Dash 8, ATR, Saab, Beech and other commuter twins retain one-pixel prop discs.
   if (typeContains(type, "DH8") || typeContains(type, "DHC") || typeContains(type, "AT4") ||
       typeContains(type, "ATR") || typeContains(type, "SF3") || typeContains(type, "BE2") ||
-      typeContains(type, "BE3") || typeContains(type, "PC1") || typeContains(type, "C20") ||
-      typeContains(type, "C40") || typeContains(type, "C44") || typeContains(type, "SW4")) {
-    return AircraftSprite::Turboprop;
+      typeContains(type, "BE3") || typeContains(type, "PC1") || typeContains(type, "C40") ||
+      typeContains(type, "C44") || typeContains(type, "SW4") || typeContains(type, "B350") ||
+      typeContains(type, "B190")) {
+    return AircraftSprite::TwinEngineProp;
   }
-  // Common light piston/single-prop families; keep them distinct from commuter twins.
-  if (typeContains(type, "C1") || typeContains(type, "C2") || typeContains(type, "C3") ||
-      typeContains(type, "C4") || typeContains(type, "C8") || typeContains(type, "PA") ||
-      typeContains(type, "SR2") || typeContains(type, "DA4") || typeContains(type, "DA6")) {
-    return AircraftSprite::LightProp;
-  }
-  // The 747/A340/A380 retain four visible nacelles; other widebodies are twins.
+  if (typeContains(type, "B72") || typeContains(type, "B727") || typeContains(type, "MD1") ||
+      typeContains(type, "DC10") || typeContains(type, "L101")) return AircraftSprite::TriEngineJet;
+  // The 747/A340/A380/Il-96 and four-engined freighters retain four nacelles.
   if (typeContains(type, "B74") || typeContains(type, "A34") || typeContains(type, "A38") ||
-      typeContains(type, "MD1") || typeContains(type, "IL9")) {
-    return AircraftSprite::WidebodyFourEngine;
+      typeContains(type, "IL9") || typeContains(type, "IL7") || typeContains(type, "C17") ||
+      typeContains(type, "C-17") || typeContains(type, "A124") || typeContains(type, "A225") ||
+      typeContains(type, "C5A") || typeContains(type, "C5B") || typeContains(type, "C5M")) {
+    return AircraftSprite::QuadEngineJet;
   }
+  // All normal two-engined jets share one swept-wing planform at this scale.
   if (typeContains(type, "B77") || typeContains(type, "B78") || typeContains(type, "A33") ||
-      typeContains(type, "A35")) return AircraftSprite::WidebodyTwinJet;
-  // All 737 variants intentionally share this silhouette, alongside like-sized airliners.
-  if (typeContains(type, "B73") || typeContains(type, "A31") || typeContains(type, "A32") ||
-      typeContains(type, "A21") || typeContains(type, "B75") || typeContains(type, "B72") ||
-      typeContains(type, "B71") || typeContains(type, "MD8") || typeContains(type, "DC9")) {
-    return AircraftSprite::NarrowbodyJet;
-  }
-  if (typeContains(type, "E1") || typeContains(type, "E7") || typeContains(type, "E9") ||
+      typeContains(type, "A35") || typeContains(type, "B73") || typeContains(type, "A31") ||
+      typeContains(type, "A32") || typeContains(type, "A21") || typeContains(type, "B75") ||
+      typeContains(type, "B71") || typeContains(type, "MD8") || typeContains(type, "DC9") ||
+      typeContains(type, "E1") || typeContains(type, "E7") || typeContains(type, "E9") ||
       typeContains(type, "CRJ") || typeContains(type, "ARJ") || typeContains(type, "SU9") ||
-      typeContains(type, "F70") || typeContains(type, "F10") || typeContains(type, "BAE")) {
-    return AircraftSprite::RegionalJet;
-  }
-  return AircraftSprite::Generic747;
-}
-
-void drawFuselage(int16_t x, int16_t y, uint8_t start, uint8_t end, uint8_t bodyHalf,
-                  uint16_t color) {
-  for (uint8_t row = start; row <= end; ++row) {
-    uint8_t half = bodyHalf;
-    if (row <= start + 1 || row >= end - 1) half = 0;
-    else if (row == start + 2 || row == end - 2) half = min<uint8_t>(1, bodyHalf);
-    matrix.fillRect(x + 16 - half, y + row, half * 2 + 1, 1, color);
-  }
-}
-
-// Kept temporarily as a visual reference for the generated source sprites.
-// Rendering below reads the editable PNG-derived masks instead.
-void drawAircraftSpriteLegacy(AircraftSprite sprite, int16_t x, int16_t y, uint16_t color) {
-  if (sprite == AircraftSprite::Generic747) {
-    drawPlaneSpritePointingUp(x, y, color);
-    return;
-  }
-
-  // Each primitive below lives inside the same 33x33 canvas: nose at row 1,
-  // tail at row 31, centreline at column 16. No anti-aliasing is used.
-  if (sprite == AircraftSprite::Helicopter) {
-    drawFuselage(x, y, 7, 25, 2, color);
-    matrix.fillRect(x + 2, y + 10, 29, 1, color);             // main rotor
-    matrix.fillRect(x + 15, y + 7, 3, 19, color);
-    matrix.fillRect(x + 15, y + 25, 3, 6, color);             // tail boom
-    matrix.fillRect(x + 11, y + 30, 11, 1, color);            // tailplane
-    matrix.drawPixel(x + 16, y + 31, color);
-    return;
-  }
-
-  if (sprite == AircraftSprite::LightProp) {
-    matrix.fillRect(x + 9, y + 2, 15, 1, color);              // front propeller
-    drawFuselage(x, y, 3, 29, 1, color);
-    for (uint8_t row = 12; row < 18; ++row) {
-      const uint8_t span = 4 + (row - 12) * 2;
-      matrix.fillRect(x + 16 - span, y + row, span * 2 + 1, 1, color);
-    }
-    matrix.fillRect(x + 10, y + 27, 13, 2, color);
-    return;
-  }
-
-  if (sprite == AircraftSprite::Turboprop) {
-    drawFuselage(x, y, 2, 30, 2, color);
-    for (uint8_t row = 11; row < 17; ++row) {
-      const uint8_t span = 8 + (row - 11) * 2;
-      matrix.fillRect(x + 16 - span, y + row, span * 2 + 1, 1, color);
-    }
-    // One-pixel vertical propeller discs at the wing stations are intentional.
-    matrix.fillRect(x + 3, y + 9, 1, 10, color);
-    matrix.fillRect(x + 29, y + 9, 1, 10, color);
-    matrix.fillRect(x + 9, y + 27, 15, 2, color);
-    return;
-  }
-
-  if (sprite == AircraftSprite::RegionalJet || sprite == AircraftSprite::BusinessJet) {
-    drawFuselage(x, y, 2, 30, 2, color);
-    for (uint8_t row = 12; row < 18; ++row) {
-      const uint8_t span = 6 + (row - 12) * 2;
-      matrix.fillRect(x + 16 - span, y + row, span * 2 + 1, 1, color);
-    }
-    // Rear-mounted engine pods and a T-tail distinguish the regional/business family.
-    matrix.fillRect(x + 10, y + 22, 3, 5, color);
-    matrix.fillRect(x + 20, y + 22, 3, 5, color);
-    matrix.fillRect(x + 8, y + 27, 17, 2, color);
-    return;
-  }
-
-  const bool widebody = sprite == AircraftSprite::WidebodyFourEngine ||
-                        sprite == AircraftSprite::WidebodyTwinJet;
-  drawFuselage(x, y, 1, 31, widebody ? 3 : 2, color);
-  for (uint8_t row = 10; row < 19; ++row) {
-    const uint8_t span = (widebody ? 8 : 7) + (row - 10) * (widebody ? 2 : 2);
-    const uint8_t cappedSpan = min<uint8_t>(15, span);
-    matrix.fillRect(x + 16 - cappedSpan, y + row, cappedSpan * 2 + 1, 1, color);
-  }
-  if (sprite == AircraftSprite::WidebodyFourEngine) {
-    matrix.fillRect(x + 4, y + 18, 3, 4, color);
-    matrix.fillRect(x + 10, y + 19, 3, 4, color);
-    matrix.fillRect(x + 20, y + 19, 3, 4, color);
-    matrix.fillRect(x + 26, y + 18, 3, 4, color);
-    matrix.fillRect(x + 8, y + 28, 17, 2, color);
-  } else {
-    matrix.fillRect(x + 7, y + 18, 3, 4, color);
-    matrix.fillRect(x + 23, y + 18, 3, 4, color);
-    matrix.fillRect(x + 10, y + 28, 13, 2, color);
-  }
+      typeContains(type, "F70") || typeContains(type, "F10") || typeContains(type, "BAE") ||
+      typeContains(type, "C5") || typeContains(type, "C6") || typeContains(type, "C7") ||
+      typeContains(type, "C68") || typeContains(type, "CL3") || typeContains(type, "CL6") ||
+      typeContains(type, "GLF") || typeContains(type, "LJ") || typeContains(type, "FA") ||
+      typeContains(type, "H25") || typeContains(type, "E35")) return AircraftSprite::TwinEngineJet;
+  return AircraftSprite::GenericPlane;
 }
 
 void drawAircraftSprite(AircraftSprite sprite, int16_t x, int16_t y, uint16_t color) {
@@ -1981,7 +1908,7 @@ void drawAircraftSprite(AircraftSprite sprite, int16_t x, int16_t y, uint16_t co
 void drawPlaneSprite(int16_t x, int16_t y, uint16_t color) {
   // The source PNG is nose-up; rotate it clockwise for the moving no-planes scene.
   for (uint8_t row = 0; row < kAircraftSpriteSize; ++row) {
-    const uint64_t pixels = kAircraftSpriteMasks[static_cast<uint8_t>(AircraftSprite::Generic747)][row];
+    const uint64_t pixels = kAircraftSpriteMasks[static_cast<uint8_t>(AircraftSprite::GenericPlane)][row];
     for (uint8_t column = 0; column < kAircraftSpriteSize; ++column) {
       if (pixels & (1ULL << (32 - column))) matrix.drawPixel(x + 32 - row, y + column, color);
     }
@@ -1989,7 +1916,7 @@ void drawPlaneSprite(int16_t x, int16_t y, uint16_t color) {
 }
 
 void drawPlaneSpritePointingUp(int16_t x, int16_t y, uint16_t color) {
-  drawAircraftSprite(AircraftSprite::Generic747, x, y, color);
+  drawAircraftSprite(AircraftSprite::GenericPlane, x, y, color);
 }
 
 void drawAircraftFallbackSprite(const char* aircraftType, int16_t x, int16_t y, uint16_t color) {
@@ -2011,25 +1938,6 @@ void drawNoPlanesSpritePixel(int16_t x, int16_t y, uint8_t sourceX, uint8_t sour
   matrix.drawPixel(x + 32 - sourceY, y + sourceX, color);
 }
 
-void drawNoPlanesSpriteRect(int16_t x, int16_t y, uint8_t sourceX, uint8_t sourceY,
-                            uint8_t width, uint8_t height, uint16_t color) {
-  for (uint8_t row = 0; row < height; ++row) {
-    for (uint8_t column = 0; column < width; ++column) {
-      drawNoPlanesSpritePixel(x, y, sourceX + column, sourceY + row, color);
-    }
-  }
-}
-
-void drawNoPlanesFuselage(int16_t x, int16_t y, uint8_t start, uint8_t end,
-                          uint8_t bodyHalf, uint16_t color) {
-  for (uint8_t row = start; row <= end; ++row) {
-    uint8_t half = bodyHalf;
-    if (row <= start + 1 || row >= end - 1) half = 0;
-    else if (row == start + 2 || row == end - 2) half = min<uint8_t>(1, bodyHalf);
-    drawNoPlanesSpriteRect(x, y, 16 - half, row, half * 2 + 1, 1, color);
-  }
-}
-
 void drawNoPlanesAircraftSprite(AircraftSprite sprite, int16_t x, int16_t y, uint16_t color) {
   // Use the same editable source PNGs as the fallback badge, then rotate the
   // nose-up sprite clockwise so it faces in the direction of travel.
@@ -2041,73 +1949,6 @@ void drawNoPlanesAircraftSprite(AircraftSprite sprite, int16_t x, int16_t y, uin
         drawNoPlanesSpritePixel(x, y, column, row, color);
       }
     }
-  }
-  return;
-
-  // kPlaneSprite's native orientation already points right.
-  if (sprite == AircraftSprite::Generic747) {
-    drawPlaneSprite(x, y, color);
-    return;
-  }
-  if (sprite == AircraftSprite::Helicopter) {
-    drawNoPlanesFuselage(x, y, 7, 25, 2, color);
-    drawNoPlanesSpriteRect(x, y, 2, 10, 29, 1, color);
-    drawNoPlanesSpriteRect(x, y, 15, 7, 3, 19, color);
-    drawNoPlanesSpriteRect(x, y, 15, 25, 3, 6, color);
-    drawNoPlanesSpriteRect(x, y, 11, 30, 11, 1, color);
-    drawNoPlanesSpritePixel(x, y, 16, 31, color);
-    return;
-  }
-  if (sprite == AircraftSprite::LightProp) {
-    drawNoPlanesSpriteRect(x, y, 9, 2, 15, 1, color);
-    drawNoPlanesFuselage(x, y, 3, 29, 1, color);
-    for (uint8_t row = 12; row < 18; ++row) {
-      const uint8_t span = 4 + (row - 12) * 2;
-      drawNoPlanesSpriteRect(x, y, 16 - span, row, span * 2 + 1, 1, color);
-    }
-    drawNoPlanesSpriteRect(x, y, 10, 27, 13, 2, color);
-    return;
-  }
-  if (sprite == AircraftSprite::Turboprop) {
-    drawNoPlanesFuselage(x, y, 2, 30, 2, color);
-    for (uint8_t row = 11; row < 17; ++row) {
-      const uint8_t span = 8 + (row - 11) * 2;
-      drawNoPlanesSpriteRect(x, y, 16 - span, row, span * 2 + 1, 1, color);
-    }
-    drawNoPlanesSpriteRect(x, y, 3, 9, 1, 10, color);
-    drawNoPlanesSpriteRect(x, y, 29, 9, 1, 10, color);
-    drawNoPlanesSpriteRect(x, y, 9, 27, 15, 2, color);
-    return;
-  }
-  if (sprite == AircraftSprite::RegionalJet || sprite == AircraftSprite::BusinessJet) {
-    drawNoPlanesFuselage(x, y, 2, 30, 2, color);
-    for (uint8_t row = 12; row < 18; ++row) {
-      const uint8_t span = 6 + (row - 12) * 2;
-      drawNoPlanesSpriteRect(x, y, 16 - span, row, span * 2 + 1, 1, color);
-    }
-    drawNoPlanesSpriteRect(x, y, 10, 22, 3, 5, color);
-    drawNoPlanesSpriteRect(x, y, 20, 22, 3, 5, color);
-    drawNoPlanesSpriteRect(x, y, 8, 27, 17, 2, color);
-    return;
-  }
-  const bool widebody = sprite == AircraftSprite::WidebodyFourEngine ||
-                        sprite == AircraftSprite::WidebodyTwinJet;
-  drawNoPlanesFuselage(x, y, 1, 31, widebody ? 3 : 2, color);
-  for (uint8_t row = 10; row < 19; ++row) {
-    const uint8_t span = (widebody ? 8 : 7) + (row - 10) * 2;
-    const uint8_t cappedSpan = min<uint8_t>(15, span);
-    drawNoPlanesSpriteRect(x, y, 16 - cappedSpan, row, cappedSpan * 2 + 1, 1, color);
-  }
-  if (sprite == AircraftSprite::WidebodyFourEngine) {
-    drawNoPlanesSpriteRect(x, y, 4, 18, 3, 4, color);
-    drawNoPlanesSpriteRect(x, y, 10, 19, 3, 4, color);
-    drawNoPlanesSpriteRect(x, y, 20, 19, 3, 4, color);
-    drawNoPlanesSpriteRect(x, y, 26, 18, 3, 4, color);
-    drawNoPlanesSpriteRect(x, y, 8, 28, 17, 2, color);
-  } else {
-    drawNoPlanesSpriteRect(x, y, 7, 18, 3, 4, color);
-    drawNoPlanesSpriteRect(x, y, 23, 18, 3, 4, color);
-    drawNoPlanesSpriteRect(x, y, 10, 28, 13, 2, color);
   }
 }
 
@@ -2162,7 +2003,7 @@ void playBootAnimation() {
     const uint8_t red = static_cast<uint8_t>(60 + normalized * 190);
     const uint8_t green = static_cast<uint8_t>(210 - normalized * 120);
     const uint8_t blue = static_cast<uint8_t>(255 - normalized * 90);
-    drawNoPlanesAircraftSprite(AircraftSprite::NarrowbodyJet, planeX, planeY,
+    drawNoPlanesAircraftSprite(AircraftSprite::TwinEngineJet, planeX, planeY,
                                matrix.color565(red, green, blue));
     delay(frameMillis);
   }
@@ -2594,8 +2435,6 @@ void clearTransitionTextAreas() {
 void drawAnimatedRouteText(const Route& route, unsigned long phase, bool entering) {
   const uint16_t secondaryWhite = matrix.color565(145, 145, 145);
   const uint16_t tertiaryWhite = matrix.color565(85, 85, 85);
-  const uint16_t specialFlightOrange = visibleColor(255, 128, 0);
-  const uint16_t refreshCountdownRed = visibleColor(235, 40, 40);
   char registration[sizeof(route.registration)];
   strlcpy(registration, route.registration[0] ? route.registration : "UNKNOWN", sizeof(registration));
   for (char* character = registration; *character; ++character) *character = toupper(*character);
@@ -2611,12 +2450,6 @@ void drawAnimatedRouteText(const Route& route, unsigned long phase, bool enterin
   drawAnimatedNormalLine(route.flightNumber[0] ? route.flightNumber : "-----", 34, 28, 60,
                          tertiaryWhite, 2, phase, entering);
   drawAnimatedNormalLine(airlineName(route), 34, 40, 60, tertiaryWhite, 9, phase, entering);
-  char refreshTime[6];
-  char refreshCountdown[3];
-  refreshClockMinutesSeconds(refreshTime);
-  refreshCountdownSeconds(refreshCountdown);
-  drawAnimatedNormalLine(refreshTime, 34, 52, 29, specialFlightOrange, 11, phase, entering);
-  drawAnimatedNormalLine(refreshCountdown, 66, 52, 12, refreshCountdownRed, 11, phase, entering, false, 5);
   drawAnimatedNormalLine(registration, 95, 37, 32, secondaryWhite, 3, phase, entering, true, 0, true);
   drawAnimatedNormalLine(displayAircraftType(route), 95, 47, 32,
                          secondaryWhite, 4, phase, entering);
@@ -3151,7 +2984,6 @@ void processFetchedFlightResponse() {
   // A valid response can legitimately contain no in-range aircraft. Keep the
   // diagnostic honest in that case too, even while the current card finishes
   // its scene before gracefully leaving the queue.
-  if (routeCount > 0 && !showingPairingQr) drawRefreshDebugLine();
 }
 
 void fetchFlightsTask(void*) {
@@ -3505,12 +3337,6 @@ void loop() {
       const bool started = showingPairingQr ? fetchAndDrawPairingQr() : fetchAndDrawFirstFlight();
       nextFlightPollMillis = millis() + (started ? 60000 : 1000);
     }
-  }
-  if (!showingPairingQr && routeCount > 0 && !letterTransitionActive &&
-      !idleToRouteTransitionActive && !routeToIdleTransitionActive &&
-      millis() >= nextRefreshDebugRedrawMillis) {
-    drawRefreshDebugLine();
-    nextRefreshDebugRedrawMillis = millis() + 1000;
   }
   if (!showingPairingQr && routeCount > 0 && !letterTransitionActive &&
       !idleToRouteTransitionActive && !routeToIdleTransitionActive && millis() >= nextRouteAnimationMillis) {
