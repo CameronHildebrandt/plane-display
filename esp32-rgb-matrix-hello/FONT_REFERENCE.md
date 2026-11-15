@@ -13,17 +13,17 @@ variable-width face and is ready for any display field that requests it.
 ```text
 a ooooo/ooooo/oxxxo/oooox/oxxxx/xooox/oxxxx
 b xoooo/xoooo/xxxxo/xooox/xooox/xooox/xxxxo
-c ooooo/ooooo/oxxxo/xoooo/xoooo/xooox/oxxxo
+c ooooo/ooooo/oxxxo/xooox/xoooo/xooox/oxxxo
 d oooox/oooox/oxxxx/xooox/xooox/xooox/oxxxx
 e ooooo/ooooo/oxxxo/xooox/xxxxx/xoooo/oxxxx
 f ooxxo/oxoox/oxooo/xxxoo/oxooo/oxooo/oxooo
-g ooooo/ooooo/oxxxx/xooox/oxxxx/oooox/oxxxo
+g ooooo/ooooo/oxxxx/xooox/oxxxx/oooox/xxxxo
 h xoooo/xoooo/xxxxo/xooox/xooox/xooox/xooox
-i ooxoo/ooooo/oxxoo/ooxoo/ooxoo/ooxoo/oxxxo
-j oooxo/ooooo/ooxxo/oooxo/oooxo/xooxo/oxxoo
-k xoooo/xoooo/xooxo/xoxoo/xxooo/xoxoo/xooxo
-l oxxoo/ooxoo/ooxoo/ooxoo/ooxoo/ooxoo/oxxxo
-m ooooo/ooooo/xxoxo/xoxox/xoxox/xoxox/xoxox
+i ooxo/oooo/oxxo/ooxo/ooxo/ooxo/oxxx
+j ooox/oooo/ooxx/ooox/ooox/xoox/oxxo
+k xooo/xooo/xoox/xoxo/xxoo/xoxo/xoox
+l oxxo/ooxo/ooxo/ooxo/ooxo/ooxo/oxxx
+m ooooo/ooooo/xxoxo/xoxox/xoxox/xooox/xooox
 n ooooo/ooooo/xxxxo/xooox/xooox/xooox/xooox
 o ooooo/ooooo/oxxxo/xooox/xooox/xooox/oxxxo
 p ooooo/ooooo/xxxxo/xooox/xxxxo/xoooo/xoooo
@@ -31,11 +31,11 @@ q ooooo/ooooo/oxxxx/xooox/oxxxx/oooox/oooox
 r ooooo/ooooo/xoxxo/xxoox/xoooo/xoooo/xoooo
 s ooooo/ooooo/oxxxx/xoooo/oxxxo/oooox/xxxxo
 t oxooo/oxooo/xxxoo/oxooo/oxooo/oxoox/ooxxo
-u ooooo/ooooo/xooox/xooox/xooox/xooxx/oxxox
+u ooooo/ooooo/xooox/xooox/xooox/xooox/oxxxx
 v ooooo/ooooo/xooox/xooox/xooox/oxoxo/ooxoo
-w ooooo/ooooo/xooox/xooox/xoxox/xoxox/oxoxo
+w ooooo/ooooo/xooox/xooox/xoxox/xoxox/oxoxx
 x ooooo/ooooo/xooox/oxoxo/ooxoo/oxoxo/xooox
-y ooooo/ooooo/xooox/xooox/oxxxx/oooox/oxxxo
+y ooooo/ooooo/xooox/xooox/oxxxx/oooox/xxxxo
 z ooooo/ooooo/xxxxx/oooxo/ooxoo/oxooo/xxxxx
 ```
 
