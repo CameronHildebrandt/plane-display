@@ -2819,6 +2819,21 @@ void drawNetworkOfflineScreen() {
   drawCityText(secondInstruction, 32 - cityTextWidth(secondInstruction) / 2, 50, 0, 64, dimWhite);
 }
 
+void drawPairingQrLabels() {
+  const uint16_t white = matrix.color565(255, 255, 255);
+  const uint16_t dimWhite = matrix.color565(135, 135, 135);
+  // "Scan to adjust display" is deliberately broken at word boundaries so
+  // every character keeps the normal proportional Minecraft face inside the
+  // left 64px column.
+  drawMinecraftBoldTextCentered("Configure", 32, 13, white);
+  const char* firstInstruction = "Scan to";
+  const char* secondInstruction = "adjust";
+  const char* thirdInstruction = "display";
+  drawCityText(firstInstruction, 32 - cityTextWidth(firstInstruction) / 2, 34, 0, 64, dimWhite);
+  drawCityText(secondInstruction, 32 - cityTextWidth(secondInstruction) / 2, 42, 0, 64, dimWhite);
+  drawCityText(thirdInstruction, 32 - cityTextWidth(thirdInstruction) / 2, 50, 0, 64, dimWhite);
+}
+
 void drawPairingQr(const String& url) {
   // The pairing URL fits in a native 37x37 version-5 grid. Draw each module as
   // exactly one LED: no scaling, interpolation, or partial modules.
@@ -2829,10 +2844,11 @@ void drawPairingQr(const String& url) {
 
   const uint16_t black = matrix.color565(0, 0, 0);
   const uint16_t white = matrix.color565(255, 255, 255);
-  const int16_t left = (matrix.width() - qr.size) / 2;
+  const int16_t left = (matrix.width() / 2) + ((matrix.width() / 2) - qr.size) / 2;
   const int16_t top = (matrix.height() - qr.size) / 2;
   showingNoPlanes = false;
   matrix.fillScreen(black);
+  drawPairingQrLabels();
   for (uint8_t y = 0; y < qr.size; ++y) {
     for (uint8_t x = 0; x < qr.size; ++x) {
       if (qrcode_getModule(&qr, x, y)) {
@@ -2847,7 +2863,7 @@ void drawPairingQrLoading() {
   // every two seconds, with a distinctly fading tail so it reads as loading,
   // not as a static icon.
   const uint16_t black = matrix.color565(0, 0, 0);
-  constexpr int16_t centerX = 64;
+  constexpr int16_t centerX = 96;
   constexpr int16_t centerY = 32;
   // Clockwise order is important: the old zig-zag ordering put equally bright
   // pixels on opposite sides of the ring, reading as two competing heads.
@@ -2862,6 +2878,7 @@ void drawPairingQrLoading() {
   const uint8_t lead = ((millis() - pairingQrSpinnerStartMillis) * 12UL / 2000UL) % 12;
   showingNoPlanes = false;
   matrix.fillScreen(black);
+  drawPairingQrLabels();
   for (uint8_t tail = 0; tail < 12; ++tail) {
     const uint8_t index = (lead + 12 - tail) % 12;
     const uint8_t level = kBrightness[tail];
