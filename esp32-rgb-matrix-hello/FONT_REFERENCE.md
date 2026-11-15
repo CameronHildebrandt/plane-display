@@ -1,8 +1,9 @@
 # Flight display font reference
 
 Every entry is a 7px-high glyph. `x` means a lit LED, `o` means off; rows are
-written from top to bottom, separated by `/`. All normal glyphs are 5px wide.
-The bold capital `Y` is the one exception: it is 6px wide.
+written from top to bottom, separated by `/`. The bold-capital face preserves
+each glyph's authored width: 4px for `I`, 5px for its narrower forms, and 6px
+for its broader forms.
 
 There are four reference faces below. Bold lowercase is currently an exact
 copy of normal lowercase—the firmware does not yet render a separate bold
@@ -105,30 +106,30 @@ z ooooo/ooooo/xxxxx/oooxo/ooxoo/oxooo/xxxxx
 ## Bold capitals
 
 ```text
-A oxxxo/xxoxx/xxoxx/xxxxx/xxoxx/xxoxx/xxoxx
-B xxxxo/xxoxx/xxoxx/xxxxo/xxoxx/xxoxx/xxxxo
-C oxxxo/xxoxx/xxooo/xxooo/xxooo/xxoxx/oxxxo
-D xxxxo/xxoxx/xxoxx/xxoxx/xxoxx/xxoxx/xxxxo
-E xxxxx/xxooo/xxooo/xxxxo/xxooo/xxooo/xxxxx
-F xxxxx/xxooo/xxooo/xxxxo/xxooo/xxooo/xxooo
-G oxxxx/xxoxo/xxooo/xxoxx/xxoxx/xxoxx/oxxxx
-H xxoxx/xxoxx/xxoxx/xxxxx/xxoxx/xxoxx/xxoxx
-I xxxxx/ooxoo/ooxoo/ooxoo/ooxoo/ooxoo/xxxxx
-J ooxxx/oooxo/oooxo/oooxo/xxoxo/xxoxo/oxxxo
-K xxoxx/xxoxx/xxoxo/xxxoo/xxoxo/xxoxx/xxoxx
+A oxxxxo/xxooxx/xxxxxx/xxooxx/xxooxx/xxooxx/xxooxx
+B xxxxxo/xxooxx/xxxxxo/xxooxx/xxooxx/xxooxx/xxxxxo
+C oxxxxo/xxooxx/xxoooo/xxoooo/xxoooo/xxooxx/oxxxxo
+D xxxxxo/xxooxx/xxooxx/xxooxx/xxooxx/xxooxx/xxxxxo
+E xxxxx/xxooo/xxxxo/xxooo/xxooo/xxooo/xxxxx
+F xxxxx/xxooo/xxxxo/xxooo/xxooo/xxooo/xxooo
+G oxxxxx/xxoooo/xxoxxx/xxooxx/xxooxx/xxooxx/oxxxxo
+H xxooxx/xxooxx/xxooxx/xxxxxx/xxooxx/xxooxx/xxooxx
+I xxxx/oxxo/oxxo/oxxo/oxxo/oxxo/xxxx
+J ooooxx/ooooxx/ooooxx/ooooxx/ooooxx/xxooxx/oxxxxo
+K xxooxx/xxoxxo/xxxxoo/xxoxxo/xxooxx/xxooxx/xxooxx
 L xxooo/xxooo/xxooo/xxooo/xxooo/xxooo/xxxxx
-M xooox/xxoxx/xxxxx/xoxox/xooox/xooox/xooox
-N xxoxx/xxxxx/xxxxx/xxoxx/xxoxx/xxoxx/xxoxx
-O oxxxo/xxoxx/xxoxx/xxoxx/xxoxx/xxoxx/oxxxo
-P xxxxo/xxoxx/xxoxx/xxxxo/xxooo/xxooo/xxooo
-Q oxxxo/xxoxx/xxoxx/xxoxx/xxxxx/oxxxo/oooxx
-R xxxxo/xxoxx/xxoxx/xxxxo/xxoxo/xxoxx/xxoxx
-S oxxxx/xxooo/oxxxo/oooxx/oooxx/xxoxx/oxxxx
-T xxxxx/ooxoo/ooxoo/ooxoo/ooxoo/ooxoo/ooxoo
-U xxoxx/xxoxx/xxoxx/xxoxx/xxoxx/xxoxx/oxxxo
-V xxoxx/xxoxx/xxoxx/xxoxx/xxoxx/oxoxo/ooxoo
-W xooox/xooox/xooox/xoxox/xxxxx/xxoxx/xooox
-X xxoxx/xxoxx/oxxxo/ooxoo/oxxxo/xxoxx/xxoxx
+M xxooxx/xxxxxx/xxxxxx/xxooxx/xxooxx/xxooxx/xxooxx
+N xxooxx/xxxoxx/xxxxxx/xxoxxx/xxooxx/xxooxx/xxooxx
+O oxxxxo/xxooxx/xxooxx/xxooxx/xxooxx/xxooxx/oxxxxo
+P xxxxxo/xxooxx/xxxxxo/xxoooo/xxoooo/xxoooo/xxoooo
+Q oxxxxo/xxooxx/xxooxx/xxooxx/xxooxx/xxoxxo/oxxxxx
+R xxxxxo/xxooxx/xxxxxo/xxooxx/xxooxx/xxooxx/xxooxx
+S oxxxxx/xxoooo/oxxxxo/ooooxx/ooooxx/xxooxx/oxxxxo
+T xxxxxx/ooxxoo/ooxxoo/ooxxoo/ooxxoo/ooxxoo/ooxxoo
+U xxooxx/xxooxx/xxooxx/xxooxx/xxooxx/xxooxx/oxxxxo
+V xxooxx/xxooxx/xxooxx/xxooxx/oxxxxo/oxxxxo/ooxxoo
+W xxooxx/xxooxx/xxooxx/xxooxx/xxxxxx/xxxxxx/xxooxx
+X xxooxx/oxxxxo/ooxxoo/oxxxxo/xxxxxx/xxooxx/xxooxx
 Y xxooxx/oxxxxo/ooxxoo/ooxxoo/ooxxoo/ooxxoo/ooxxoo
 Z xxxxx/oooxx/ooxxo/oxxoo/xxooo/xxooo/xxxxx
 ```
@@ -167,6 +168,5 @@ python3 tools/png_to_font.py bold-capitals.png "Bold capitals" > bold-capitals-e
 White is on; black is off. Edit only at actual-pixel resolution—no scaling,
 anti-aliasing, or transparent pixels. Keep the seventh/rightmost column of
 each 7px cell black. On import, completely black right-side columns are
-trimmed, so five-pixel letters stay five pixels wide and a six-pixel letter
-such as bold `Y` remains six pixels wide. Send me the returned `.md` or the
-edited PNG.
+trimmed, so every glyph keeps its intended width (such as the 4px `I` and 6px
+`Y`). Send me the returned `.md` or the edited PNG.
