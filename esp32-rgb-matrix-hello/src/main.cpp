@@ -69,7 +69,7 @@ constexpr int16_t kRotationIndicatorHeight = 4;
 constexpr unsigned long kRotationPipBubbleMillis = 600;
 constexpr unsigned long kBootChevronMillis = 2000;
 constexpr unsigned long kBootChevronStaggerMillis = 1000;
-constexpr unsigned long kBootFadeToRouteMillis = 600;
+constexpr unsigned long kBootExitChevronMillis = 600;
 constexpr unsigned long kBootRouteRollInMillis = 900;
 constexpr unsigned long kWifiOfflinePortalMillis = 60UL * 1000UL;
 constexpr char kDeviceHostname[] = "led-plane";
@@ -153,6 +153,7 @@ bool showingNoPlanes = false;
 // successful flight response gives us a real scene to reveal.
 bool bootTransitionPending = false;
 bool bootToRouteTransitionActive = false;
+float bootExitChevronProgress = 0.0f;
 char bootDisplayName[49] = "PLANE DISPLAY";
 void cacheBootDisplayName(const char* name);
 bool hideUnknownRoutes = false;
@@ -2685,17 +2686,17 @@ constexpr unsigned long kIdleRouteCardRevealMillis = 650;
 void updateBootToRouteTransition() {
   if (!bootToRouteTransitionActive || routeCount == 0) return;
   const unsigned long elapsed = millis() - idleToRouteTransitionStartMillis;
-  if (elapsed < kBootFadeToRouteMillis) {
-    const float phase = static_cast<float>(elapsed) / kBootFadeToRouteMillis;
-    const float eased = phase * phase * (3.0f - 2.0f * phase);
-    drawBootHoldScreen(static_cast<uint8_t>(255.0f * (1.0f - eased)));
-    return;
-  }
+  // Fade-outs require repainting the whole purple card every frame, which can
+  // briefly expose the matrix scan. Sweep a black V over it instead: each
+  // frame changes only the advancing edge and leaves every settled LED alone.
+  const float phase = min(1.0f, static_cast<float>(elapsed) / kBootExitChevronMillis);
+  drawBootChevronLeadingEdge(bootExitChevronProgress, phase, matrix.color565(0, 0, 0));
+  bootExitChevronProgress = phase;
+  if (phase < 1.0f) return;
 
-  const unsigned long rollInElapsed = elapsed - kBootFadeToRouteMillis;
+  const unsigned long rollInElapsed = elapsed - kBootExitChevronMillis;
   if (!idleToRouteCardDrawn) {
     showingNoPlanes = false;
-    matrix.fillScreen(matrix.color565(0, 0, 0));
     drawRouteChrome(routes[routeIndex]);
     idleToRouteCardDrawn = true;
   }
@@ -2967,9 +2968,10 @@ void mergeRefreshedRouteQueue(uint8_t refreshedCount) {
     routeProgressTo = routes[routeIndex].flightProgressPercent;
     nextFlightRotationMillis = millis() + kFlightRotationMillis;
     if (enteringFromBoot) {
-      // The boot title gets a distinct exit: fade its purple card to black,
-      // then use the familiar staggered drop-in for the first live aircraft.
+      // The boot title clears with a black leading-edge chevron, then uses
+      // the familiar staggered drop-in for the first live aircraft.
       bootToRouteTransitionActive = true;
+      bootExitChevronProgress = 0.0f;
       idleToRouteCardDrawn = false;
       idleToRouteTransitionStartMillis = millis();
     } else if (enteringFromIdle) {
