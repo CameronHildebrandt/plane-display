@@ -4,6 +4,10 @@ const SESSION_TTL_SECONDS = 90 * 24 * 60 * 60;
 const SNAPSHOT_TTL_SECONDS = 120;
 const FLIGHT_STATUS_TTL_SECONDS = 10 * 60;
 const AIRLABS_MONTHLY_REQUEST_CAP = 900;
+const AIRLABS_ROUTE_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60;
+// This is intentionally separate from tracked-flight status lookups. With the
+// weekly cache, a normal display should use only a few dozen requests/month.
+const AIRLABS_ROUTE_MONTHLY_REQUEST_CAP = 1000;
 const memoryLimits = new Map();
 let openSkyToken = null;
 // Corrections for confirmed bad/stale records returned by the free reference source.
@@ -179,12 +183,12 @@ async function liveFlights(device, store, env) {
   }
   catch (adsbError) {
     console.log("ADSB.lol request failed; trying OpenSky", adsbError instanceof Error ? adsbError.message : String(adsbError));
-    return { source: "opensky", flights: sortFlightsForDisplay(filterIncompleteFlights(device, await openSkyFlights(device, env))).slice(0, 20) };
+    return { source: "opensky", flights: sortFlightsForDisplay(filterIncompleteFlights(device, await openSkyFlights(device, store, env))).slice(0, 20) };
   }
 }
 
 function hasIdentifiedRoute(flight) {
-  return Boolean(flight.origin && flight.destination && flight.origin !== "---" && flight.destination !== "---");
+  return Boolean(flight.origin && flight.destination && flight.origin !== "???" && flight.destination !== "???");
 }
 function hasIdentifiedCompany(flight) {
   return Boolean(flight.airlineName || flight.airline);
@@ -214,7 +218,19 @@ async function activeTrackedFlights(device, store, env) {
   }));
   const flights = results.flat();
   const routed = applyRoutes(flights, await adsbLolRoutes(flights.map(flight => ({ flight: flight.flightNumber, lat: flight.latitude, lon: flight.longitude })), fetcher));
-  return enrichAirlineNames(await enrichAircraftDetails(routed, store, fetcher), store, fetcher);
+  // Tracked flights already receive a richer AirLabs status lookup below; use
+  // that result rather than issuing a second route query for the same plane.
+  return enrichAirlineNames(await enrichAircraftDetails(preferFlightStatusRoutes(routed), store, fetcher), store, fetcher);
+}
+
+function preferFlightStatusRoutes(flights) {
+  return flights.map(flight => {
+    const origin = airLabsAirportCode(flight.flightStatus?.origin);
+    const destination = airLabsAirportCode(flight.flightStatus?.destination);
+    return origin && destination
+      ? { ...flight, origin, destination, flightProgressPercent: null, flightProgressEstimated: false, routeSource: "airlabs" }
+      : flight;
+  });
 }
 
 async function specialFlightStatus(entry, store, env) {
@@ -364,7 +380,7 @@ function flightDataScore(flight) {
     flight.trackDeg, flight.distanceKm, flight.flightProgressPercent,
     flight.latitude, flight.longitude
   ];
-  return fields.reduce((score, value) => score + (value !== null && value !== undefined && value !== "" && value !== "---" ? 1 : 0), 0);
+  return fields.reduce((score, value) => score + (value !== null && value !== undefined && value !== "" && value !== "???" ? 1 : 0), 0);
 }
 function flightAlphabeticalKey(flight) {
   return String(flight.flightNumber || flight.registration || flight.icao24 || "").toUpperCase();
@@ -391,7 +407,74 @@ async function adsbLolFlights(device, store, env) {
     .sort((a, b) => a.distanceKm - b.distanceKm)
     .slice(0, 20);
   const routed = applyRoutes(flights, await adsbLolRoutes(rawAircraft, fetcher));
-  return enrichAirlineNames(await enrichAircraftDetails(routed, store, fetcher), store, fetcher);
+  return enrichAirlineNames(await enrichAircraftDetails(await enrichAirLabsRoutes(routed, store, env, fetcher), store, fetcher), store, fetcher);
+}
+
+// ADSB.lol remains authoritative for the aircraft's live position and
+// telemetry. AirLabs is preferred only for the published origin/destination,
+// which changes less often but needs fresher schedule data than routeset.
+async function enrichAirLabsRoutes(flights, store, env, fetcher) {
+  if (!env.AIRLABS_API_KEY || !flights.length) return flights;
+  const routes = await Promise.all(flights.map(flight => airLabsRouteForFlight(flight, store, env, fetcher)));
+  return flights.map((flight, index) => {
+    const route = routes[index];
+    if (!route?.origin || !route?.destination) return flight;
+    // AirLabs supplies airports but not the geometry required for a trustworthy
+    // progress percentage, so never retain a percentage from a different route.
+    return { ...flight, origin: route.origin, destination: route.destination,
+      flightProgressPercent: null, flightProgressEstimated: false, routeSource: "airlabs" };
+  });
+}
+
+function airLabsRouteLookup(flight) {
+  const identifier = String(flight.flightNumber || "").trim().toUpperCase();
+  if (/^[A-Z]{2}\d+$/.test(identifier)) return { identifier, parameter: "flight_iata" };
+  if (/^[A-Z]{3}\d+$/.test(identifier)) return { identifier, parameter: "flight_icao" };
+  return null;
+}
+
+function airLabsRouteCacheKey(identifier) {
+  // A weekly expiry handles seasonal changes. Including the weekday prevents a
+  // Monday route from being shown for a flight number reused on another day.
+  return `${identifier}:${new Date().getUTCDay()}`;
+}
+
+function airLabsAirportCode(value) {
+  const code = typeof value === "string" ? value.trim().toUpperCase() : "";
+  return /^[A-Z0-9]{3}$/.test(code) ? code : null;
+}
+
+async function airLabsRouteForFlight(flight, store, env, fetcher) {
+  const lookup = airLabsRouteLookup(flight);
+  if (!lookup) return null;
+  const cacheKey = airLabsRouteCacheKey(lookup.identifier);
+  const cached = await store.getFlightRoute(cacheKey);
+  if (cached && cached.fetchedAt + AIRLABS_ROUTE_CACHE_TTL_SECONDS > unix()) return cached.payload;
+  if (!await store.takeProviderQuota("airlabs_routes", isoDate().slice(0, 7), AIRLABS_ROUTE_MONTHLY_REQUEST_CAP)) {
+    console.log("AirLabs route monthly safety cap reached");
+    return cached?.payload || null;
+  }
+  try {
+    const url = new URL("https://airlabs.co/api/v9/flight");
+    url.searchParams.set(lookup.parameter, lookup.identifier);
+    url.searchParams.set("_fields", "dep_iata,arr_iata");
+    url.searchParams.set("api_key", env.AIRLABS_API_KEY);
+    const response = await fetcher(url);
+    if (!response.ok) throw new Error(`AirLabs returned ${response.status}`);
+    const body = await response.json();
+    const source = body.response || body;
+    const payload = {
+      origin: airLabsAirportCode(source?.dep_iata),
+      destination: airLabsAirportCode(source?.arr_iata)
+    };
+    // Cache misses too: a route-less military/private callsign must not burn a
+    // request on every 120-second display snapshot.
+    await store.putFlightRoute(cacheKey, { payload, fetchedAt: unix() });
+    return payload;
+  } catch (error) {
+    console.log("AirLabs route lookup failed", lookup.identifier, error instanceof Error ? error.message : String(error));
+    return cached?.payload || null;
+  }
 }
 
 async function enrichAirlineNames(flights, store, fetcher) {
@@ -534,7 +617,7 @@ async function adsbLolRoutes(aircraft, fetcher) {
   }
 }
 
-async function openSkyFlights(device, env) {
+async function openSkyFlights(device, store, env) {
   const fetcher = env.fetch || fetch;
   const latitudeDelta = device.radiusKm / 111.32;
   const longitudeDelta = device.radiusKm / (111.32 * Math.max(.1, Math.cos(device.latitude * Math.PI / 180)));
@@ -545,12 +628,13 @@ async function openSkyFlights(device, env) {
   if (!response.ok) throw new Error(`OpenSky returned ${response.status}`);
   const data = await response.json();
   const aircraft = Array.isArray(data.states) ? data.states : [];
-  return aircraft
+  const flights = aircraft
     .filter(s => s[5] !== null && s[6] !== null && (device.includeGrounded || !s[8]))
     .map(s => normalizeOpenSkyState(s, device))
     .filter(Boolean)
     .sort((a, b) => a.distanceKm - b.distanceKm)
     .slice(0, 20);
+  return enrichAirLabsRoutes(flights, store, env, fetcher);
 }
 
 async function getOpenSkyToken(env, fetcher) {
@@ -569,7 +653,7 @@ function normalizeOpenSkyState(s, device) {
   if (distanceKm > device.radiusKm) return null;
   const callsign = typeof s[1] === "string" ? s[1].trim() : null;
   const airline = callsign?.match(/^([A-Z]{3})/)?.[1] || null;
-  return { airline, flightNumber: callsign, origin: null, destination: null, aircraftType: null, altFt: convert(s[7], 3.28084), verticalSpeedFpm: convert(s[11], 196.850394), speedKt: convert(s[9], 1.943844), trackDeg: numberOrNull(s[10]), registration: null, flightProgressPercent: null, latitude, longitude, distanceKm: round(distanceKm, 1), icao24: s[0] || null, lastContact: s[4] ? new Date(s[4] * 1000).toISOString() : null, source: "opensky" };
+  return { airline, flightNumber: callsign, origin: "???", destination: "???", aircraftType: null, altFt: convert(s[7], 3.28084), verticalSpeedFpm: convert(s[11], 196.850394), speedKt: convert(s[9], 1.943844), trackDeg: numberOrNull(s[10]), registration: null, flightProgressPercent: null, latitude, longitude, distanceKm: round(distanceKm, 1), icao24: s[0] || null, lastContact: s[4] ? new Date(s[4] * 1000).toISOString() : null, source: "opensky" };
 }
 function normalizeAdsbLolState(a, device) {
   const latitude = numberOrNull(a.lat), longitude = numberOrNull(a.lon);
@@ -586,7 +670,7 @@ function normalizeAdsbLolState(a, device) {
   if (a.dbFlags & 2) dataFlags.push("interesting");
   if (a.dbFlags & 4) dataFlags.push("pia");
   if (a.dbFlags & 8) dataFlags.push("ladd");
-  return { airline: registrationCallsign ? null : callsign?.match(/^([A-Z]{3})/)?.[1] || null, airlineName: null, airlineCountry: null, flightNumber: callsign, origin: null, destination: null, aircraftType: a.t || null, aircraftTypeName: null, aircraftManufacturer: null, registeredOwner: null, registeredOwnerCountry: null, altFt: numberOrNull(a.alt_baro), altGeomFt: numberOrNull(a.alt_geom), verticalSpeedFpm: numberOrNull(a.baro_rate ?? a.geom_rate), speedKt: numberOrNull(a.gs), trackDeg: numberOrNull(a.track), selectedAltitudeFt: numberOrNull(a.nav_altitude_mcp), selectedHeadingDeg: numberOrNull(a.nav_heading), registration, squawk: a.squawk || null, dataFlags, positionAgeSeconds: numberOrNull(a.seen_pos), signalStrengthDbfs: numberOrNull(a.rssi), flightProgressPercent: null, latitude, longitude, distanceKm: round(distanceKm, 1), icao24: a.hex || null, lastContact: numberOrNull(a.seen) === null ? null : new Date(Date.now() - a.seen * 1000).toISOString(), source: "adsb.lol" };
+  return { airline: registrationCallsign ? null : callsign?.match(/^([A-Z]{3})/)?.[1] || null, airlineName: null, airlineCountry: null, flightNumber: callsign, origin: "???", destination: "???", aircraftType: a.t || null, aircraftTypeName: null, aircraftManufacturer: null, registeredOwner: null, registeredOwnerCountry: null, altFt: numberOrNull(a.alt_baro), altGeomFt: numberOrNull(a.alt_geom), verticalSpeedFpm: numberOrNull(a.baro_rate ?? a.geom_rate), speedKt: numberOrNull(a.gs), trackDeg: numberOrNull(a.track), selectedAltitudeFt: numberOrNull(a.nav_altitude_mcp), selectedHeadingDeg: numberOrNull(a.nav_heading), registration, squawk: a.squawk || null, dataFlags, positionAgeSeconds: numberOrNull(a.seen_pos), signalStrengthDbfs: numberOrNull(a.rssi), flightProgressPercent: null, latitude, longitude, distanceKm: round(distanceKm, 1), icao24: a.hex || null, lastContact: numberOrNull(a.seen) === null ? null : new Date(Date.now() - a.seen * 1000).toISOString(), source: "adsb.lol" };
 }
 function normalizeTrackedAdsbLolState(a, device, tracked) {
   const flight = normalizeAdsbLolState({ ...a, dst: undefined }, { ...device, radiusKm: Infinity });
@@ -747,6 +831,8 @@ export class D1Store {
   async getFlightStatus(id) { const r = await this.db.prepare("SELECT payload_json, fetched_at FROM flight_status_cache WHERE tracked_flight_id=?").bind(id).first(); return r && { payload: JSON.parse(r.payload_json), fetchedAt: r.fetched_at }; }
   async putFlightStatus(id, status) { await this.db.prepare("INSERT INTO flight_status_cache (tracked_flight_id, payload_json, fetched_at) VALUES (?, ?, ?) ON CONFLICT(tracked_flight_id) DO UPDATE SET payload_json=excluded.payload_json, fetched_at=excluded.fetched_at").bind(id, JSON.stringify(status.payload), status.fetchedAt).run(); }
   async deleteFlightStatus(id) { await this.db.prepare("DELETE FROM flight_status_cache WHERE tracked_flight_id=?").bind(id).run(); }
+  async getFlightRoute(key) { const r = await this.db.prepare("SELECT payload_json, fetched_at FROM flight_route_cache WHERE route_key=?").bind(key).first(); return r && { payload: JSON.parse(r.payload_json), fetchedAt: r.fetched_at }; }
+  async putFlightRoute(key, route) { await this.db.prepare("INSERT INTO flight_route_cache (route_key, payload_json, fetched_at) VALUES (?, ?, ?) ON CONFLICT(route_key) DO UPDATE SET payload_json=excluded.payload_json, fetched_at=excluded.fetched_at").bind(key, JSON.stringify(route.payload), route.fetchedAt).run(); }
   async takeProviderQuota(provider, month, limit) { const existing = await this.db.prepare("SELECT requests FROM provider_usage WHERE provider=? AND usage_month=?").bind(provider, month).first(); if (existing && existing.requests >= limit) return false; await this.db.prepare("INSERT INTO provider_usage (provider, usage_month, requests) VALUES (?, ?, 1) ON CONFLICT(provider, usage_month) DO UPDATE SET requests=requests + 1").bind(provider, month).run(); return true; }
 }
 

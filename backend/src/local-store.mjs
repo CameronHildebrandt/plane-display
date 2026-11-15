@@ -1,5 +1,5 @@
 export class LocalStore {
-  constructor(device) { this.devices = new Map([[device.id, device]]); this.pairings = new Map(); this.sessions = new Map(); this.snapshots = new Map(); this.airlines = new Map(); this.aircraft = new Map(); this.trackedFlights = new Map(); this.flightStatuses = new Map(); this.providerUsage = new Map(); }
+  constructor(device) { this.devices = new Map([[device.id, device]]); this.pairings = new Map(); this.sessions = new Map(); this.snapshots = new Map(); this.airlines = new Map(); this.aircraft = new Map(); this.trackedFlights = new Map(); this.flightStatuses = new Map(); this.flightRoutes = new Map(); this.providerUsage = new Map(); }
   async findDeviceByKeyHash(keyHash, now) { return [...this.devices.values()].find(d => d.apiKeyHash === keyHash || (d.previousApiKeyHash === keyHash && d.previousKeyExpiresAt > now)) || null; }
   async getSnapshot(id) { return this.snapshots.get(id) || null; }
   async putSnapshot(id, payload, fetchedAt) { this.snapshots.set(id, { payload, fetchedAt }); }
@@ -22,5 +22,7 @@ export class LocalStore {
   async getFlightStatus(id) { return this.flightStatuses.get(id) || null; }
   async putFlightStatus(id, status) { this.flightStatuses.set(id, status); }
   async deleteFlightStatus(id) { this.flightStatuses.delete(id); }
+  async getFlightRoute(key) { return this.flightRoutes.get(key) || null; }
+  async putFlightRoute(key, route) { this.flightRoutes.set(key, route); }
   async takeProviderQuota(provider, month, limit) { const key = `${provider}:${month}`, used = this.providerUsage.get(key) || 0; if (used >= limit) return false; this.providerUsage.set(key, used + 1); return true; }
 }

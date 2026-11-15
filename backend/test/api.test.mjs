@@ -34,6 +34,53 @@ test("device fetches cached flight-data contract", async () => {
   assert.equal(body.flights[0].flightProgressEstimated, true);
 });
 
+test("AirLabs published routes override routeset and are reused for a week", async () => {
+  const { store, key } = await setup();
+  let airLabsCalls = 0;
+  const source = { fetch: async (url) => {
+    const value = String(url);
+    if (value.includes("/api/0/routeset")) return new Response(JSON.stringify([{
+      callsign: "WJA1476", _airports: [
+        { iata: "YYC", lat: 51.1139, lon: -114.0203 }, { iata: "PSP", lat: 33.8297, lon: -116.5067 }
+      ]
+    }]));
+    if (value.includes("airlabs.co/api/v9/flight")) {
+      airLabsCalls++;
+      assert.match(value, /flight_icao=WJA1476/);
+      return new Response(JSON.stringify({ response: { dep_iata: "YEG", arr_iata: "LAS" } }));
+    }
+    if (value.includes("api.adsbdb.com/v0/airline/WJA")) return new Response(JSON.stringify({ response: [{ name: "WestJet", icao: "WJA", country: "Canada" }] }));
+    if (value.includes("api.adsbdb.com/v0/aircraft/c01476")) return new Response(JSON.stringify({ response: { aircraft: {} } }));
+    if (value.includes("/v2/point/")) return new Response(JSON.stringify({ ac: [{ hex: "c01476", flight: "WJA1476", r: "C-TEST", t: "B38M", alt_baro: 30000, gs: 430, track: 190, lat: 53.6, lon: -113.6 }] }));
+    throw new Error(`unexpected lookup: ${url}`);
+  } };
+  const env = { ...source, AIRLABS_API_KEY: "test-key" };
+  let response = await handle(request("/flightdata", { headers: { "X-Device-Key": key } }), store, env);
+  let [flight] = (await response.json()).flights;
+  assert.equal(flight.origin, "YEG");
+  assert.equal(flight.destination, "LAS");
+  assert.equal(flight.routeSource, "airlabs");
+  assert.equal(flight.flightProgressPercent, null);
+  await store.deleteSnapshot("test");
+  response = await handle(request("/flightdata", { headers: { "X-Device-Key": key } }), store, env);
+  [flight] = (await response.json()).flights;
+  assert.equal(flight.destination, "LAS");
+  assert.equal(airLabsCalls, 1);
+});
+
+test("unresolved airport codes are explicit question marks", async () => {
+  const { store, key } = await setup();
+  const source = { fetch: async url => {
+    if (String(url).includes("/api/0/routeset")) return new Response(JSON.stringify([]));
+    if (String(url).includes("api.adsbdb.com")) return new Response(JSON.stringify({ response: [] }));
+    return new Response(JSON.stringify({ ac: [{ hex: "unknown", flight: "ZZZ1", lat: 53.6, lon: -113.6 }] }));
+  } };
+  const response = await handle(request("/flightdata", { headers: { "X-Device-Key": key } }), store, source);
+  const [flight] = (await response.json()).flights;
+  assert.equal(flight.origin, "???");
+  assert.equal(flight.destination, "???");
+});
+
 test("registered aircraft identity overrides an incorrect live type without carrier rules", async () => {
   const { store, key } = await setup();
   const source = { fetch: async url => {

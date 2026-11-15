@@ -216,7 +216,7 @@ uint8_t routeIndex = 0;
 
 // A deliberately blocky 5x7 face: every glyph is exactly seven LEDs high.
 // It keeps airport codes legible while giving the display a Minecraft-like look.
-constexpr char kMinecraftGlyphs[] = "abcdefghijklmnopqrstuvwxyz0123456789/- :";
+constexpr char kMinecraftGlyphs[] = "abcdefghijklmnopqrstuvwxyz0123456789/- :?";
 constexpr uint8_t kMinecraftFont[][7] PROGMEM = {
     {0x00,0x00,0x0E,0x01,0x0F,0x11,0x0F}, {0x10,0x10,0x1E,0x11,0x11,0x11,0x1E},
     {0x00,0x00,0x0E,0x10,0x10,0x11,0x0E}, {0x01,0x01,0x0F,0x11,0x11,0x11,0x0F},
@@ -240,6 +240,8 @@ constexpr uint8_t kMinecraftFont[][7] PROGMEM = {
     {0x00,0x00,0x00,0x00,0x00,0x00,0x00},
     // : — intentionally two centred pixels so debug timestamps stay compact.
     {0x00,0x00,0x04,0x00,0x00,0x04,0x00},
+    // ? — explicit unknown-airport marker, rather than silently drawing a space.
+    {0x0E,0x11,0x01,0x02,0x04,0x00,0x04},
 };
 
 // The full face uses a standard five-wide zero. Only dense telemetry on the
@@ -462,6 +464,9 @@ constexpr uint8_t kMinecraftNormalCaps[][7] PROGMEM = {
 // silhouette follows the exact bitmap supplied for the airport-code face.
 constexpr uint8_t kMinecraftBoldY[7] PROGMEM = {
     0x33, 0x1E, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C,
+};
+constexpr uint8_t kMinecraftBoldQuestion[7] PROGMEM = {
+    0x0E, 0x1B, 0x03, 0x06, 0x0C, 0x00, 0x0C,
 };
 
 // A compact supporting face for live telemetry. Airport codes intentionally
@@ -743,12 +748,14 @@ int16_t drawMinecraftBoldCaps(const char* text, int16_t x, int16_t y, uint16_t c
       continue;
     }
     const bool isY = *character == 'Y';
+    const bool isQuestion = *character == '?';
     const uint8_t glyph = (*character >= 'A' && *character <= 'Z')
                               ? static_cast<uint8_t>(*character - 'A')
                               : 0;
     for (uint8_t row = 0; row < 7; ++row) {
       const uint8_t pixels = isY ? pgm_read_byte(&kMinecraftBoldY[row])
-                                 : pgm_read_byte(&kMinecraftBoldCaps[glyph][row]);
+          : isQuestion ? pgm_read_byte(&kMinecraftBoldQuestion[row])
+                       : pgm_read_byte(&kMinecraftBoldCaps[glyph][row]);
       const uint8_t glyphWidth = isY ? 6 : 5;
       for (uint8_t column = 0; column < glyphWidth; ++column) {
         if (pixels & (1 << (glyphWidth - 1 - column))) {
@@ -1381,11 +1388,11 @@ void drawRotationIndicator() {
 }
 
 const char* airportCity(const char* code) {
-  if (strcmp(code, "---") == 0) return "---";
+  if (strcmp(code, "???") == 0) return "???";
   for (size_t index = 0; index < kAirportCityCount; ++index) {
     if (strcmp(code, kAirportCities[index].code) == 0) return kAirportCities[index].city;
   }
-  return "---";
+  return "???";
 }
 
 const char* displayAircraftType(const Route& route) {
@@ -2337,6 +2344,7 @@ int16_t drawAnimatedBoldLine(const char* text, int16_t x, int16_t y, int16_t lef
       continue;
     }
     const bool isY = *character == 'Y';
+    const bool isQuestion = *character == '?';
     const uint8_t glyph = (*character >= 'A' && *character <= 'Z')
                               ? static_cast<uint8_t>(*character - 'A') : 0;
     const uint8_t glyphWidth = isY ? 6 : 5;
@@ -2344,7 +2352,8 @@ int16_t drawAnimatedBoldLine(const char* text, int16_t x, int16_t y, int16_t lef
       const int16_t pixelY = y + row + offset;
       if (pixelY < y || pixelY >= y + 7) continue;
       const uint8_t pixels = isY ? pgm_read_byte(&kMinecraftBoldY[row])
-                                 : pgm_read_byte(&kMinecraftBoldCaps[glyph][row]);
+          : isQuestion ? pgm_read_byte(&kMinecraftBoldQuestion[row])
+                       : pgm_read_byte(&kMinecraftBoldCaps[glyph][row]);
       for (uint8_t column = 0; column < glyphWidth; ++column) {
         const int16_t pixelX = x + column;
         if ((pixels & (1 << (glyphWidth - 1 - column))) && pixelX >= left && pixelX < right) {
@@ -2902,7 +2911,7 @@ void processFetchedFlightResponse() {
     const char* candidateRegistration = flight["registration"] | "";
     const char* candidateIcao24 = flight["icao24"] | "";
     const bool hasKnownRoute = candidateOrigin[0] && candidateDestination[0] &&
-        strcmp(candidateOrigin, "---") != 0 && strcmp(candidateDestination, "---") != 0;
+        strcmp(candidateOrigin, "???") != 0 && strcmp(candidateDestination, "???") != 0;
     if (hideUnknownRoutes && !hasKnownRoute) continue;
     // A route is optional enrichment. Keep any live aircraft that has an
     // identity, even when the provider has not resolved its airports yet.
@@ -2913,8 +2922,8 @@ void processFetchedFlightResponse() {
       else if (candidateRegistration[0]) strlcpy(route.identity, candidateRegistration, sizeof(route.identity));
       else if (candidateFlightNumber[0]) strlcpy(route.identity, candidateFlightNumber, sizeof(route.identity));
       else snprintf(route.identity, sizeof(route.identity), "%s>%s", candidateOrigin, candidateDestination);
-      strlcpy(route.origin, candidateOrigin[0] ? candidateOrigin : "---", sizeof(route.origin));
-      strlcpy(route.destination, candidateDestination[0] ? candidateDestination : "---", sizeof(route.destination));
+      strlcpy(route.origin, candidateOrigin[0] ? candidateOrigin : "???", sizeof(route.origin));
+      strlcpy(route.destination, candidateDestination[0] ? candidateDestination : "???", sizeof(route.destination));
       strlcpy(route.flightNumber, candidateFlightNumber, sizeof(route.flightNumber));
       strlcpy(route.operatorCode, candidateOperator, sizeof(route.operatorCode));
       strlcpy(route.registration, candidateRegistration, sizeof(route.registration));
