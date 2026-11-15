@@ -67,8 +67,8 @@ constexpr unsigned long kFlightFetchWatchdogMillis = 30000;
 constexpr int16_t kRotationIndicatorWidth = 32;
 constexpr int16_t kRotationIndicatorHeight = 4;
 constexpr unsigned long kRotationPipBubbleMillis = 600;
-constexpr unsigned long kBootChevronMillis = 1000;
-constexpr unsigned long kBootChevronStaggerMillis = 500;
+constexpr unsigned long kBootChevronMillis = 2000;
+constexpr unsigned long kBootChevronStaggerMillis = 1000;
 constexpr unsigned long kBootFadeToRouteMillis = 600;
 constexpr unsigned long kBootRouteRollInMillis = 900;
 constexpr char kDeviceHostname[] = "led-plane";
@@ -223,7 +223,7 @@ uint8_t routeIndex = 0;
 
 // A deliberately blocky 5x7 face: every glyph is exactly seven LEDs high.
 // It keeps airport codes legible while giving the display a Minecraft-like look.
-constexpr char kMinecraftGlyphs[] = "abcdefghijklmnopqrstuvwxyz0123456789/- :?";
+constexpr char kMinecraftGlyphs[] = "abcdefghijklmnopqrstuvwxyz0123456789/- :'?";
 constexpr uint8_t kMinecraftFont[][7] PROGMEM = {
     {0x00,0x00,0x0E,0x01,0x0F,0x11,0x0F}, {0x10,0x10,0x1E,0x11,0x11,0x11,0x1E},
     {0x00,0x00,0x0E,0x11,0x10,0x11,0x0E}, {0x01,0x01,0x0F,0x11,0x11,0x11,0x0F},
@@ -247,6 +247,8 @@ constexpr uint8_t kMinecraftFont[][7] PROGMEM = {
     {0x00,0x00,0x00,0x00,0x00,0x00,0x00},
     // : — intentionally two centred pixels so debug timestamps stay compact.
     {0x00,0x00,0x04,0x00,0x00,0x04,0x00},
+    // ' — compact apostrophe for display names and city/operator text.
+    {0x03,0x03,0x02,0x00,0x00,0x00,0x00},
     // ? — explicit unknown-airport marker, rather than silently drawing a space.
     {0x0E,0x11,0x01,0x02,0x04,0x00,0x04},
 };
@@ -514,6 +516,9 @@ constexpr uint8_t kMinecraftNormalCapsWidths[] PROGMEM = {
 constexpr uint8_t kMinecraftBoldQuestion[7] PROGMEM = {
     0x0E, 0x1B, 0x03, 0x06, 0x0C, 0x00, 0x0C,
 };
+constexpr uint8_t kMinecraftBoldApostrophe[7] PROGMEM = {
+    0x03, 0x03, 0x02, 0x00, 0x00, 0x00, 0x00,
+};
 
 // A compact supporting face for live telemetry. Airport codes intentionally
 // remain the only large all-capital text on the flight card.
@@ -547,6 +552,7 @@ uint8_t normalGlyphWidth(char character) {
   if (character >= 'a' && character <= 'z') {
     return pgm_read_byte(&kMinecraftLowercaseWidths[character - 'a']);
   }
+  if (character == '\'') return 2;
   return 5;
 }
 
@@ -822,6 +828,16 @@ int16_t drawMinecraftBoldCaps(const char* text, int16_t x, int16_t y, uint16_t c
       x += 6;
       continue;
     }
+    if (*character == '\'') {
+      for (uint8_t row = 0; row < 7; ++row) {
+        const uint8_t pixels = pgm_read_byte(&kMinecraftBoldApostrophe[row]);
+        for (uint8_t column = 0; column < 2; ++column) {
+          if (pixels & (1 << (1 - column))) matrix.drawPixel(x + column, y + row, color);
+        }
+      }
+      x += 3;
+      continue;
+    }
     const bool isQuestion = *character == '?';
     const uint8_t glyph = (*character >= 'A' && *character <= 'Z')
                               ? static_cast<uint8_t>(*character - 'A')
@@ -845,6 +861,10 @@ void drawMinecraftBoldCapsCentered(const char* text, int16_t y, uint16_t color) 
   int16_t width = -1;
   for (const char* character = text; *character; ++character) {
     if (*character == ' ') {
+      width += 3;
+      continue;
+    }
+    if (*character == '\'') {
       width += 3;
       continue;
     }
@@ -2012,8 +2032,25 @@ void drawBootChevron(float progress, uint16_t color) {
   }
 }
 
-void drawBootName(uint8_t brightness) {
-  const uint16_t white = visibleColor(brightness, brightness, brightness);
+// The boot animation never needs to repaint the settled area. Drawing only
+// the advancing strip lets the panel's DMA scan stay visually calm while the
+// leading V edge moves upward.
+void drawBootChevronLeadingEdge(float previous, float current, uint16_t color) {
+  if (current <= previous) return;
+  const int16_t center = (matrix.width() - 1) / 2;
+  const int16_t previousApex = matrix.height() - static_cast<int16_t>(previous * (matrix.height() * 2));
+  const int16_t currentApex = matrix.height() - static_cast<int16_t>(current * (matrix.height() * 2));
+  for (int16_t x = 0; x < matrix.width(); ++x) {
+    const int16_t oldFirstY = previousApex + abs(x - center);
+    const int16_t newFirstY = currentApex + abs(x - center);
+    const int16_t top = max<int16_t>(0, newFirstY);
+    const int16_t bottom = min<int16_t>(matrix.height(), oldFirstY);
+    if (top < bottom) matrix.fillRect(x, top, 1, bottom - top, color);
+  }
+}
+
+void drawBootName(uint8_t /*brightness*/) {
+  const uint16_t black = matrix.color565(0, 0, 0);
   // Names normally fit on one bold line. Split a long name at a word boundary
   // so no configured display name is silently clipped at the panel edge.
   char first[25] = {};
@@ -2021,7 +2058,7 @@ void drawBootName(uint8_t brightness) {
   const size_t length = strlen(bootDisplayName);
   if (length <= 18) {
     strlcpy(first, bootDisplayName, sizeof(first));
-    drawMinecraftBoldCapsCentered(first, 28, white);
+    drawMinecraftBoldCapsCentered(first, 28, black);
     return;
   }
   size_t split = 18;
@@ -2030,8 +2067,8 @@ void drawBootName(uint8_t brightness) {
   memcpy(first, bootDisplayName, min(split, sizeof(first) - 1));
   first[min(split, sizeof(first) - 1)] = '\0';
   strlcpy(second, bootDisplayName + (bootDisplayName[split] == ' ' ? split + 1 : split), sizeof(second));
-  drawMinecraftBoldCapsCentered(first, 23, white);
-  drawMinecraftBoldCapsCentered(second, 34, white);
+  drawMinecraftBoldCapsCentered(first, 23, black);
+  drawMinecraftBoldCapsCentered(second, 34, black);
 }
 
 void drawBootHoldScreen(uint8_t brightness = 255) {
@@ -2046,12 +2083,21 @@ void drawBootHoldScreen(uint8_t brightness = 255) {
 void playBootAnimation() {
   const unsigned long started = millis();
   constexpr unsigned long totalMillis = kBootChevronMillis + 2 * kBootChevronStaggerMillis;
+  float redProgress = 0.0f;
+  float blueProgress = 0.0f;
+  float purpleProgress = 0.0f;
+  matrix.fillScreen(matrix.color565(0, 0, 0));
   while (millis() - started < totalMillis) {
     const unsigned long elapsed = millis() - started;
-    matrix.fillScreen(matrix.color565(0, 0, 0));
-    drawBootChevron(bootChevronProgress(elapsed, 0), visibleColor(105, 12, 26));
-    drawBootChevron(bootChevronProgress(elapsed, kBootChevronStaggerMillis), visibleColor(22, 64, 190));
-    drawBootChevron(bootChevronProgress(elapsed, kBootChevronStaggerMillis * 2), visibleColor(178, 42, 220));
+    const float nextRed = bootChevronProgress(elapsed, 0);
+    const float nextBlue = bootChevronProgress(elapsed, kBootChevronStaggerMillis);
+    const float nextPurple = bootChevronProgress(elapsed, kBootChevronStaggerMillis * 2);
+    drawBootChevronLeadingEdge(redProgress, nextRed, visibleColor(105, 12, 26));
+    drawBootChevronLeadingEdge(blueProgress, nextBlue, visibleColor(22, 64, 190));
+    drawBootChevronLeadingEdge(purpleProgress, nextPurple, visibleColor(178, 42, 220));
+    redProgress = nextRed;
+    blueProgress = nextBlue;
+    purpleProgress = nextPurple;
     delay(16);
   }
   drawBootHoldScreen();
@@ -3178,7 +3224,7 @@ void cacheBootDisplayName(const char* name) {
   size_t output = 0;
   for (const char* character = name; *character && output + 1 < sizeof(normalized); ++character) {
     const char value = toupper(static_cast<unsigned char>(*character));
-    normalized[output++] = (value >= 'A' && value <= 'Z') || value == ' ' || value == '-' ? value : ' ';
+    normalized[output++] = (value >= 'A' && value <= 'Z') || value == ' ' || value == '-' || value == '\'' ? value : ' ';
   }
   while (output > 0 && normalized[output - 1] == ' ') --output;
   normalized[output] = '\0';
