@@ -74,6 +74,19 @@ constexpr unsigned long kBootRouteRollInMillis = 900;
 constexpr unsigned long kWifiOfflinePortalMillis = 60UL * 1000UL;
 constexpr char kDeviceHostname[] = "led-plane";
 
+// WiFiManager owns the captive-portal routes, but its small injection points
+// let the setup experience feel like part of the display rather than a router
+// administration page. Keep these strings static: WiFiManager retains their
+// pointers while the portal is open.
+constexpr char kPortalHead[] = R"html(
+<style>
+:root{color-scheme:dark}*{box-sizing:border-box}body.invert{margin:0;min-height:100vh;display:grid;place-items:center;background:#101014!important;color:#f8f4fa!important;font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.wrap{width:min(100%,420px)!important;min-width:0!important;margin:auto;padding:30px 24px;text-align:left;background:#19171d;border:1px solid #332b39;border-radius:24px;box-shadow:0 24px 80px #0008}body.invert .wrap>h1,body.invert .wrap>h3{display:none}.portal-brand{text-align:center;padding:4px 0 20px}.portal-mark{width:48px;height:48px;margin:0 auto 13px;border-radius:16px;display:grid;place-items:center;background:linear-gradient(135deg,#ff45bd,#b52291);color:white;font-size:26px;box-shadow:0 8px 25px #ff2fb655}.portal-brand h1{margin:0;color:#fff;font-family:"Arial Black",Impact,sans-serif;font-size:28px;line-height:1;letter-spacing:-1.2px}.portal-brand p{margin:10px 0 0;color:#bcb3c2;font-size:15px}.portal-actions{display:grid;gap:10px}.portal-actions form{margin:0}.portal-actions button,button,input[type='submit']{border:0!important;border-radius:14px!important;background:#e632aa!important;color:#fff!important;font-weight:800!important;font-size:16px!important;line-height:1.25rem!important;padding:15px 16px!important;box-shadow:0 8px 20px #e632aa38!important}.portal-actions .info{background:#2b2630!important;color:#f8eefa!important;box-shadow:none!important}.button-icon{display:inline-block;width:24px;margin-right:7px;font-size:18px;vertical-align:-1px}button:active{transform:translateY(1px);opacity:.88!important}label{display:block;color:#d8cdd9!important;font-weight:700!important;margin:14px 0 6px!important}input,select{width:100%!important;border:1px solid #4b3f4e!important;border-radius:12px!important;background:#211d24!important;color:#fff!important;padding:13px!important;font-size:16px!important}input:focus{outline:2px solid #ef3bb4!important;border-color:transparent!important}a{color:#ff6dca!important}hr{border:0!important;border-top:1px solid #3a303d!important;margin:22px 0!important}.msg{border:1px solid #573b50!important;border-left:4px solid #ec38b1!important;border-radius:14px!important;background:#251f27!important;color:#f5eefa!important;padding:16px!important}.q{filter:invert(1) hue-rotate(240deg)}dl{margin:0!important}dt{color:#ff79cf!important;margin-top:13px!important}dd{color:#d8cdd9!important;word-break:break-word}form[action='/']{display:none!important}@media(max-width:460px){.wrap{min-height:100vh;border:0;border-radius:0;display:flex;flex-direction:column;justify-content:center;padding:28px 22px}}
+</style>)html";
+constexpr char kPortalMenu[] = R"html(
+<section class="portal-brand"><div class="portal-mark">✈</div><h1>Plane Display</h1><p>Let’s get this display online.</p></section>
+<section class="portal-actions"><form action="/wifi" method="get"><button type="submit"><span class="button-icon">⌁</span>Connect</button></form><form action="/info" method="get"><button class="info" type="submit"><span class="button-icon">ⓘ</span>Info</button></form></section>)html";
+const char* kPortalMenuItems[] = {"custom"};
+
 // Waveshare ESP32-S3-RGB-Matrix HUB75 wiring. These match Waveshare's
 // Arduino examples for this exact driver board.
 HUB75_I2S_CFG::i2s_pins kHub75Pins = {
@@ -3466,6 +3479,16 @@ bool joinNetworkViaSetupPortal() {
   WiFiManager wifiManager;
   wifiManager.setConfigPortalBlocking(true);
   wifiManager.setConnectTimeout(30);
+  wifiManager.setTitle("Plane Display");
+  wifiManager.setDarkMode(true);
+  wifiManager.setShowInfoErase(false);
+  wifiManager.setShowInfoUpdate(false);
+  wifiManager.setCustomHeadElement(kPortalHead);
+  wifiManager.setCustomMenuHTML(kPortalMenu);
+  // The root page intentionally has exactly two actions. The connection and
+  // information routes remain available, but router-style restart/erase/update
+  // controls are not surfaced in this consumer setup flow.
+  wifiManager.setMenu(kPortalMenuItems, 1);
   wifiManager.setAPCallback(networkSetupPortalStarted);
   networkSetupPortalActive = true;
   // The callback paints before the portal is ready for a phone to join, so
