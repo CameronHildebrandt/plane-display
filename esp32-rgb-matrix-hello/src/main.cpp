@@ -1295,10 +1295,10 @@ void drawRouteChrome(const Route& route, float progressOverride = -2.0f, float p
   matrix.drawPixel(0, 0, visibleColor(red / 10, green / 10, blue / 10));
   matrix.drawPixel(matrix.width() - 1, 0, visibleColor(red / 10, green / 10, blue / 10));
   matrix.fillRect(0, 3, 33, 33, matrix.color565(0, 0, 0));
-  // The aircraft silhouette has its own 32x32 panel at the upper right. The
-  // explicit clear is important during incremental redraws, where a smaller
-  // planform could otherwise leave pixels from the preceding aircraft behind.
-  matrix.fillRect(95, 3, 32, 32, matrix.color565(0, 0, 0));
+  // Aircraft source art is exactly 33×33. It deliberately occupies x=95…127,
+  // borrowing the outer display-edge gutter so its sharp nose, tail, and wing
+  // endpoints remain pixel-for-pixel intact.
+  matrix.fillRect(95, 3, 33, 33, matrix.color565(0, 0, 0));
   // x=33 is the deliberately-off spacer between the 32px badge and the
   // centre text. It is not otherwise painted, so explicitly clear it to
   // prevent an old incremental frame leaving a bright sleeping pixel there.
@@ -1307,7 +1307,6 @@ void drawRouteChrome(const Route& route, float progressOverride = -2.0f, float p
   // telemetry column. Clear it on every card paint so incremental drawing
   // can never leave a coloured pixel between those two regions.
   matrix.fillRect(94, 2, 1, matrix.height() - 3, matrix.color565(0, 0, 0));
-  matrix.fillRect(127, 2, 1, matrix.height() - 3, matrix.color565(0, 0, 0));
   drawOperatorLogo(route, 1, 3);
   drawAircraftPanelSprite(route.aircraftType, 95, 3, matrix.color565(64, 64, 64));
   drawRouteProgressForRoute(route, progressOverride > -1.5f ? progressOverride : route.flightProgressPercent,
@@ -1495,7 +1494,6 @@ void refreshActiveMarquees(const Route& route) {
   // marquee redraws, rather than relying on a future full-screen render.
   matrix.fillRect(33, 2, 1, matrix.height() - 3, black);
   matrix.fillRect(94, 2, 1, matrix.height() - 3, black);
-  matrix.fillRect(127, 2, 1, matrix.height() - 3, black);
   char registration[sizeof(route.registration)];
   strlcpy(registration, route.registration[0] ? route.registration : "UNKNOWN", sizeof(registration));
   for (char* character = registration; *character; ++character) *character = toupper(*character);
@@ -1798,23 +1796,11 @@ void drawAircraftFallbackSprite(const char* aircraftType, int16_t x, int16_t y, 
   drawAircraftSprite(aircraftSpriteForType(aircraftType), x, y, color);
 }
 
-// Aircraft source sprites are deliberately 33x33, with their nose and tail on
-// the centreline. The fixed display panel is 32x32 so it can keep a dark LED
-// on both horizontal sides. Sample the source canvas while preserving both
-// outer endpoints; this retains the sharp nose and tail instead of simply
-// cropping one of them away.
+// Aircraft source sprites are deliberately 33×33, with their nose and tail on
+// the centreline. The upper-right art region bleeds into the display's outer
+// edge, so use every original pixel without resampling or clipping.
 void drawAircraftPanelSprite(const char* aircraftType, int16_t x, int16_t y, uint16_t color) {
-  const uint8_t spriteIndex = static_cast<uint8_t>(aircraftSpriteForType(aircraftType));
-  for (uint8_t panelRow = 0; panelRow < 32; ++panelRow) {
-    const uint8_t sourceRow = static_cast<uint8_t>((panelRow * 32 + 15) / 31);
-    const uint64_t pixels = kAircraftSpriteMasks[spriteIndex][sourceRow];
-    for (uint8_t panelColumn = 0; panelColumn < 32; ++panelColumn) {
-      const uint8_t sourceColumn = static_cast<uint8_t>((panelColumn * 32 + 15) / 31);
-      if (pixels & (1ULL << (32 - sourceColumn))) {
-        matrix.drawPixel(x + panelColumn, y + panelRow, color);
-      }
-    }
-  }
+  drawAircraftSprite(aircraftSpriteForType(aircraftType), x, y, color);
 }
 
 // Fallback badges deliberately stay top-down. The no-planes animation is
@@ -2404,7 +2390,6 @@ void clearTransitionTextAreas() {
   matrix.fillRect(1, 47, 32, 7, black);
   matrix.fillRect(95, 37, 32, 7, black);
   matrix.fillRect(95, 47, 32, 7, black);
-  matrix.fillRect(127, 2, 1, matrix.height() - 3, black);
 }
 
 void drawAnimatedRouteText(const Route& route, unsigned long phase, bool entering) {
