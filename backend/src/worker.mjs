@@ -82,22 +82,22 @@ async function flightPayload(device, store, env) {
   const now = unix();
   const debugPack = selectedDebugPack(device.debugMode);
   if (debugPack) {
-    const payload = { generatedAt: new Date().toISOString(), dataAgeSeconds: 0, source: `debug:${debugPack.id}`, flights: debugFlights(debugPack) };
+    const payload = { displayName: device.name, generatedAt: new Date().toISOString(), dataAgeSeconds: 0, source: `debug:${debugPack.id}`, flights: debugFlights(debugPack) };
     return json(payload, 200, { "Cache-Control": "no-store", "X-Data-Age-Seconds": "0" });
   }
   const cached = await store.getSnapshot(device.id);
   if (cached && cached.fetchedAt + SNAPSHOT_TTL_SECONDS > now) {
-    return json(cached.payload, 200, { "Cache-Control": "private, max-age=60", "X-Data-Age-Seconds": String(now - cached.fetchedAt) });
+    return json({ ...cached.payload, displayName: device.name }, 200, { "Cache-Control": "private, max-age=60", "X-Data-Age-Seconds": String(now - cached.fetchedAt) });
   }
   try {
     const { source, flights } = await liveFlights(device, store, env);
-    const payload = { generatedAt: new Date().toISOString(), dataAgeSeconds: 0, source, flights };
+    const payload = { displayName: device.name, generatedAt: new Date().toISOString(), dataAgeSeconds: 0, source, flights };
     await store.putSnapshot(device.id, payload, now);
     return json(payload, 200, { "Cache-Control": "private, max-age=60", "X-Data-Age-Seconds": "0" });
   } catch (error) {
     // A stale snapshot is much more useful to a display than an error during a provider hiccup.
     if (cached) {
-      const payload = { ...cached.payload, dataAgeSeconds: now - cached.fetchedAt, stale: true };
+      const payload = { ...cached.payload, displayName: device.name, dataAgeSeconds: now - cached.fetchedAt, stale: true };
       return json(payload, 200, { "Cache-Control": "no-store", "X-Data-Age-Seconds": String(now - cached.fetchedAt), "Warning": "110 - Response is stale" });
     }
     console.log("OpenSky request failed", error instanceof Error ? error.message : String(error));

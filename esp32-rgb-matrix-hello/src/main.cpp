@@ -67,6 +67,10 @@ constexpr unsigned long kFlightFetchWatchdogMillis = 30000;
 constexpr int16_t kRotationIndicatorWidth = 32;
 constexpr int16_t kRotationIndicatorHeight = 4;
 constexpr unsigned long kRotationPipBubbleMillis = 600;
+constexpr unsigned long kBootChevronMillis = 1000;
+constexpr unsigned long kBootChevronStaggerMillis = 500;
+constexpr unsigned long kBootFadeToRouteMillis = 600;
+constexpr unsigned long kBootRouteRollInMillis = 900;
 constexpr char kDeviceHostname[] = "led-plane";
 constexpr char kSetupAccessPoint[] = "LED-Plane-Setup";
 
@@ -142,9 +146,12 @@ int16_t nextNoPlanesSpriteX = -kNoPlanesSpriteWidth;
 uint8_t nextNoPlanesAircraftSprite = 0;
 bool nextNoPlanesSpriteActive = false;
 bool showingNoPlanes = false;
-// The colourful boot vignette ends on a deliberately blank panel. Preserve
-// that clean canvas until the first result decides which real scene to reveal.
+// The final boot card holds the configured display name until the first
+// successful flight response gives us a real scene to reveal.
 bool bootTransitionPending = false;
+bool bootToRouteTransitionActive = false;
+char bootDisplayName[49] = "PLANE DISPLAY";
+void cacheBootDisplayName(const char* name);
 bool hideUnknownRoutes = false;
 volatile bool flightFetchInProgress = false;
 volatile bool flightFetchFinished = false;
@@ -806,6 +813,10 @@ void drawTinyText(const char* text, int16_t x, int16_t y, uint16_t color) {
 
 int16_t drawMinecraftBoldCaps(const char* text, int16_t x, int16_t y, uint16_t color) {
   for (const char* character = text; *character; ++character) {
+    if (*character == ' ') {
+      x += 3;
+      continue;
+    }
     if (*character == '-') {
       matrix.fillRect(x, y + 3, 5, 1, color);
       x += 6;
@@ -833,6 +844,10 @@ int16_t drawMinecraftBoldCaps(const char* text, int16_t x, int16_t y, uint16_t c
 void drawMinecraftBoldCapsCentered(const char* text, int16_t y, uint16_t color) {
   int16_t width = -1;
   for (const char* character = text; *character; ++character) {
+    if (*character == ' ') {
+      width += 3;
+      continue;
+    }
     const uint8_t glyph = (*character >= 'A' && *character <= 'Z')
                               ? static_cast<uint8_t>(*character - 'A') : 0;
     width += ((*character == '-' || *character == '?')
@@ -1977,37 +1992,69 @@ void drawNoPlanes() {
   drawNoPlanesFrame();
 }
 
-// A short, self-contained boot vignette: a colourful aircraft accelerates
-// across a dark runway, climbs away, and leaves the panel completely black.
-// It does not depend on Wi-Fi or provider data, so every power-on starts clean.
-void playBootAnimation() {
-  constexpr uint8_t frames = 38;
-  constexpr uint16_t frameMillis = 38;
-  const uint16_t black = matrix.color565(0, 0, 0);
-  for (uint8_t frame = 0; frame < frames; ++frame) {
-    matrix.fillScreen(black);
-    const int16_t planeX = -32 + frame * 5;
-    const float normalized = static_cast<float>(frame) / (frames - 1);
-    const int16_t planeY = 25 - static_cast<int16_t>(normalized * normalized * 18.0f);
-    // Three crisp contrails fade from rich blue to warm pink behind the plane.
-    const uint8_t trailLength = min<uint8_t>(28, frame * 2);
-    for (uint8_t pixel = 0; pixel < trailLength; ++pixel) {
-      const float fade = 1.0f - static_cast<float>(pixel) / max<uint8_t>(1, trailLength);
-      const uint8_t red = static_cast<uint8_t>(210 * fade);
-      const uint8_t green = static_cast<uint8_t>(45 * fade);
-      const uint8_t blue = static_cast<uint8_t>(180 * fade);
-      const int16_t trailX = planeX - pixel;
-      matrix.drawPixel(trailX, planeY + 15, matrix.color565(red, green, blue));
-      if ((pixel & 1) == 0) matrix.drawPixel(trailX, planeY + 16, matrix.color565(0, red, blue));
+float bootChevronProgress(unsigned long elapsed, unsigned long delay) {
+  if (elapsed <= delay) return 0.0f;
+  return min(1.0f, static_cast<float>(elapsed - delay) / kBootChevronMillis);
+}
+
+// A filled 45-degree chevron rises from below the panel. Once its point has
+// passed the top edge, every column is filled; drawing later chevrons last
+// naturally creates the layered colour-cycle effect without a separate mask.
+void drawBootChevron(float progress, uint16_t color) {
+  if (progress <= 0.0f) return;
+  const int16_t center = (matrix.width() - 1) / 2;
+  const int16_t apexY = matrix.height() - static_cast<int16_t>(progress * (matrix.height() * 2));
+  for (int16_t x = 0; x < matrix.width(); ++x) {
+    const int16_t firstY = apexY + abs(x - center);
+    if (firstY < matrix.height()) {
+      matrix.fillRect(x, max<int16_t>(0, firstY), 1, matrix.height() - max<int16_t>(0, firstY), color);
     }
-    const uint8_t red = static_cast<uint8_t>(60 + normalized * 190);
-    const uint8_t green = static_cast<uint8_t>(210 - normalized * 120);
-    const uint8_t blue = static_cast<uint8_t>(255 - normalized * 90);
-    drawNoPlanesAircraftSprite(AircraftSprite::TwinEngineJet, planeX, planeY,
-                               matrix.color565(red, green, blue));
-    delay(frameMillis);
   }
-  matrix.fillScreen(black);
+}
+
+void drawBootName(uint8_t brightness) {
+  const uint16_t white = visibleColor(brightness, brightness, brightness);
+  // Names normally fit on one bold line. Split a long name at a word boundary
+  // so no configured display name is silently clipped at the panel edge.
+  char first[25] = {};
+  char second[25] = {};
+  const size_t length = strlen(bootDisplayName);
+  if (length <= 18) {
+    strlcpy(first, bootDisplayName, sizeof(first));
+    drawMinecraftBoldCapsCentered(first, 28, white);
+    return;
+  }
+  size_t split = 18;
+  while (split > 0 && bootDisplayName[split] != ' ') --split;
+  if (split == 0) split = 18;
+  memcpy(first, bootDisplayName, min(split, sizeof(first) - 1));
+  first[min(split, sizeof(first) - 1)] = '\0';
+  strlcpy(second, bootDisplayName + (bootDisplayName[split] == ' ' ? split + 1 : split), sizeof(second));
+  drawMinecraftBoldCapsCentered(first, 23, white);
+  drawMinecraftBoldCapsCentered(second, 34, white);
+}
+
+void drawBootHoldScreen(uint8_t brightness = 255) {
+  const uint8_t purpleRed = static_cast<uint8_t>((178UL * brightness) / 255UL);
+  const uint8_t purpleGreen = static_cast<uint8_t>((42UL * brightness) / 255UL);
+  const uint8_t purpleBlue = static_cast<uint8_t>((220UL * brightness) / 255UL);
+  matrix.fillScreen(matrix.color565(0, 0, 0));
+  drawBootChevron(1.0f, visibleColor(purpleRed, purpleGreen, purpleBlue));
+  drawBootName(brightness);
+}
+
+void playBootAnimation() {
+  const unsigned long started = millis();
+  constexpr unsigned long totalMillis = kBootChevronMillis + 2 * kBootChevronStaggerMillis;
+  while (millis() - started < totalMillis) {
+    const unsigned long elapsed = millis() - started;
+    matrix.fillScreen(matrix.color565(0, 0, 0));
+    drawBootChevron(bootChevronProgress(elapsed, 0), visibleColor(105, 12, 26));
+    drawBootChevron(bootChevronProgress(elapsed, kBootChevronStaggerMillis), visibleColor(22, 64, 190));
+    drawBootChevron(bootChevronProgress(elapsed, kBootChevronStaggerMillis * 2), visibleColor(178, 42, 220));
+    delay(16);
+  }
+  drawBootHoldScreen();
   bootTransitionPending = true;
 }
 
@@ -2535,6 +2582,35 @@ void updateLetterTransition() {
 constexpr unsigned long kIdleRouteTransitionMillis = 2000;
 constexpr unsigned long kIdleRouteCardRevealMillis = 650;
 
+void updateBootToRouteTransition() {
+  if (!bootToRouteTransitionActive || routeCount == 0) return;
+  const unsigned long elapsed = millis() - idleToRouteTransitionStartMillis;
+  if (elapsed < kBootFadeToRouteMillis) {
+    const float phase = static_cast<float>(elapsed) / kBootFadeToRouteMillis;
+    const float eased = phase * phase * (3.0f - 2.0f * phase);
+    drawBootHoldScreen(static_cast<uint8_t>(255.0f * (1.0f - eased)));
+    return;
+  }
+
+  const unsigned long rollInElapsed = elapsed - kBootFadeToRouteMillis;
+  if (!idleToRouteCardDrawn) {
+    showingNoPlanes = false;
+    matrix.fillScreen(matrix.color565(0, 0, 0));
+    drawRouteChrome(routes[routeIndex]);
+    idleToRouteCardDrawn = true;
+  }
+  clearTransitionTextAreas();
+  drawAnimatedRouteText(routes[routeIndex], rollInElapsed, true);
+  if (rollInElapsed < kBootRouteRollInMillis) return;
+
+  bootToRouteTransitionActive = false;
+  routeSceneStartMillis = millis();
+  nextRouteAnimationMillis = routeSceneStartMillis + 2000;
+  nextRotationIndicatorMillis = routeSceneStartMillis;
+  drawRouteProgressForRoute(routes[routeIndex], routes[routeIndex].flightProgressPercent);
+  drawRotationIndicator();
+}
+
 void updateIdleToRouteTransition() {
   if (!idleToRouteTransitionActive || routeCount == 0) return;
   const unsigned long elapsed = millis() - idleToRouteTransitionStartMillis;
@@ -2746,7 +2822,8 @@ bool routesHaveSameIdentity(const Route& first, const Route& second) {
 // until it has finished its 20-second scene and its exit animation.
 void mergeRefreshedRouteQueue(uint8_t refreshedCount) {
   if (routeCount == 0) {
-    const bool enteringFromIdle = showingNoPlanes || bootTransitionPending;
+    const bool enteringFromBoot = bootTransitionPending;
+    const bool enteringFromIdle = showingNoPlanes;
     bootTransitionPending = false;
     memcpy(routes, refreshedRoutes, sizeof(Route) * refreshedCount);
     routeCount = refreshedCount;
@@ -2756,7 +2833,13 @@ void mergeRefreshedRouteQueue(uint8_t refreshedCount) {
     rotationPipTransitionActive = false;
     routeProgressTo = routes[routeIndex].flightProgressPercent;
     nextFlightRotationMillis = millis() + kFlightRotationMillis;
-    if (enteringFromIdle) {
+    if (enteringFromBoot) {
+      // The boot title gets a distinct exit: fade its purple card to black,
+      // then use the familiar staggered drop-in for the first live aircraft.
+      bootToRouteTransitionActive = true;
+      idleToRouteCardDrawn = false;
+      idleToRouteTransitionStartMillis = millis();
+    } else if (enteringFromIdle) {
       // Let the idle plane continue while the request result is applied, then
       // use the same staggered drop-in language as a route-to-route change.
       idleToRouteTransitionActive = true;
@@ -2906,6 +2989,8 @@ void processFetchedFlightResponse() {
     if (routeCount == 0 && !showingNoPlanes) showNoPlanesAfterDataFailure();
     return;
   }
+
+  cacheBootDisplayName(payload["displayName"] | "");
 
   // HTTP success plus valid JSON is the moment a refresh becomes observable
   // to the display. Record it before reconciling the queue so the orange
@@ -3075,6 +3160,8 @@ void loadDisplayPreferences() {
   Preferences preferences;
   preferences.begin("led-plane", true);
   hideUnknownRoutes = preferences.getBool("hide-unknown-routes", false);
+  const String savedName = preferences.getString("display-name", "PLANE DISPLAY");
+  strlcpy(bootDisplayName, savedName.c_str(), sizeof(bootDisplayName));
   preferences.end();
 }
 
@@ -3082,6 +3169,24 @@ void saveDisplayPreferences() {
   Preferences preferences;
   preferences.begin("led-plane", false);
   preferences.putBool("hide-unknown-routes", hideUnknownRoutes);
+  preferences.end();
+}
+
+void cacheBootDisplayName(const char* name) {
+  if (!name || !name[0]) return;
+  char normalized[sizeof(bootDisplayName)] = {};
+  size_t output = 0;
+  for (const char* character = name; *character && output + 1 < sizeof(normalized); ++character) {
+    const char value = toupper(static_cast<unsigned char>(*character));
+    normalized[output++] = (value >= 'A' && value <= 'Z') || value == ' ' || value == '-' ? value : ' ';
+  }
+  while (output > 0 && normalized[output - 1] == ' ') --output;
+  normalized[output] = '\0';
+  if (!normalized[0] || strcmp(normalized, bootDisplayName) == 0) return;
+  strlcpy(bootDisplayName, normalized, sizeof(bootDisplayName));
+  Preferences preferences;
+  preferences.begin("led-plane", false);
+  preferences.putString("display-name", bootDisplayName);
   preferences.end();
 }
 
@@ -3264,9 +3369,9 @@ void setup() {
   // 5 V panel supply is verified.
   matrix.setBrightness8(255);
   lastDisplayMaintenanceWipeMillis = millis();
-  playBootAnimation();
   pinMode(kBootButtonPin, INPUT_PULLUP);
   loadDisplayPreferences();
+  playBootAnimation();
   connectWifiAndEnableLocalUpdater();
   fetchAndDrawFirstFlight();
   nextFlightPollMillis = millis() + 60000;
@@ -3291,12 +3396,13 @@ void loop() {
   // duration before falling back to the idle animation.
   if (!showingPairingQr && routeCount == 1 && routes[0].pendingRemoval &&
       !letterTransitionActive && !routeToIdleTransitionActive && !idleToRouteTransitionActive &&
+      !bootToRouteTransitionActive &&
       millis() >= nextFlightRotationMillis) {
     routeToIdleTransitionActive = true;
     routeToIdleTransitionStartMillis = millis();
   }
   if (!showingPairingQr && routeCount > 1 && !letterTransitionActive &&
-      !routeToIdleTransitionActive && !idleToRouteTransitionActive &&
+      !routeToIdleTransitionActive && !idleToRouteTransitionActive && !bootToRouteTransitionActive &&
       millis() >= nextFlightRotationMillis) {
     letterTransitionRouteIndex = (routeIndex + 1) % routeCount;
     letterTransitionStartMillis = millis();
@@ -3320,6 +3426,7 @@ void loop() {
     nextFlightRotationMillis = 0xFFFFFFFFUL;
   }
   if (letterTransitionActive) updateLetterTransition();
+  if (bootToRouteTransitionActive) updateBootToRouteTransition();
   if (idleToRouteTransitionActive) updateIdleToRouteTransition();
   if (routeToIdleTransitionActive) updateRouteToIdleTransition();
   if (millis() >= nextFlightPollMillis) {
@@ -3339,12 +3446,13 @@ void loop() {
     }
   }
   if (!showingPairingQr && routeCount > 0 && !letterTransitionActive &&
-      !idleToRouteTransitionActive && !routeToIdleTransitionActive && millis() >= nextRouteAnimationMillis) {
+      !idleToRouteTransitionActive && !routeToIdleTransitionActive && !bootToRouteTransitionActive &&
+      millis() >= nextRouteAnimationMillis) {
     refreshActiveMarquees(routes[routeIndex]);
     nextRouteAnimationMillis = millis() + 75;
   }
   if (!showingPairingQr && routeCount > 0 && !idleToRouteTransitionActive &&
-      !routeToIdleTransitionActive && millis() >= nextRotationIndicatorMillis) {
+      !routeToIdleTransitionActive && !bootToRouteTransitionActive && millis() >= nextRotationIndicatorMillis) {
     if (routeProgressAnimationActive) {
       const RouteProgressFrame progress = animatedRouteProgress();
       drawRouteProgressForRoute(routes[routeIndex], progress.percent, progress.opacity);
