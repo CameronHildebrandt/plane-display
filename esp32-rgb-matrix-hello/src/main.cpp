@@ -476,15 +476,19 @@ constexpr uint8_t kMinecraftNormalCaps[][7] PROGMEM = {
     {0x0E,0x11,0x10,0x10,0x10,0x11,0x0E},{0x1E,0x11,0x11,0x11,0x11,0x11,0x1E},
     {0x1F,0x10,0x10,0x1E,0x10,0x10,0x1F},{0x1F,0x10,0x10,0x1E,0x10,0x10,0x10},
     {0x0E,0x11,0x10,0x17,0x11,0x11,0x0E},{0x11,0x11,0x11,0x1F,0x11,0x11,0x11},
-    {0x0E,0x04,0x04,0x04,0x04,0x04,0x0E},{0x07,0x02,0x02,0x02,0x12,0x12,0x0C},
-    {0x11,0x12,0x14,0x18,0x14,0x12,0x11},{0x10,0x10,0x10,0x10,0x10,0x10,0x1F},
-    {0x11,0x1B,0x15,0x15,0x11,0x11,0x11},{0x11,0x19,0x15,0x13,0x11,0x11,0x11},
+    {0x07,0x02,0x02,0x02,0x02,0x02,0x07},{0x07,0x02,0x02,0x02,0x12,0x12,0x0C},
+    {0x11,0x12,0x1C,0x12,0x11,0x11,0x11},{0x10,0x10,0x10,0x10,0x10,0x10,0x1F},
+    {0x11,0x1B,0x15,0x11,0x11,0x11,0x11},{0x11,0x19,0x15,0x13,0x11,0x11,0x11},
     {0x0E,0x11,0x11,0x11,0x11,0x11,0x0E},{0x1E,0x11,0x11,0x1E,0x10,0x10,0x10},
     {0x0E,0x11,0x11,0x11,0x15,0x12,0x0D},{0x1E,0x11,0x11,0x1E,0x14,0x12,0x11},
     {0x0F,0x10,0x10,0x0E,0x01,0x01,0x1E},{0x1F,0x04,0x04,0x04,0x04,0x04,0x04},
     {0x11,0x11,0x11,0x11,0x11,0x11,0x0E},{0x11,0x11,0x11,0x11,0x11,0x0A,0x04},
-    {0x11,0x11,0x11,0x15,0x15,0x15,0x0A},{0x11,0x11,0x0A,0x04,0x0A,0x11,0x11},
+    {0x11,0x11,0x11,0x11,0x15,0x15,0x0A},{0x11,0x0A,0x04,0x0A,0x11,0x11,0x11},
     {0x11,0x11,0x0A,0x04,0x04,0x04,0x04},{0x1F,0x01,0x02,0x04,0x08,0x10,0x1F},
+};
+constexpr uint8_t kMinecraftNormalCapsWidths[] PROGMEM = {
+    5, 5, 5, 5, 5, 5, 5, 5, 4, 5, 5, 5, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
 };
 
 constexpr uint8_t kMinecraftBoldQuestion[7] PROGMEM = {
@@ -516,6 +520,23 @@ uint8_t minecraftGlyphIndex(char character) {
   return found ? static_cast<uint8_t>(found - kMinecraftGlyphs) : 38;
 }
 
+uint8_t normalGlyphWidth(char character) {
+  if (character >= 'A' && character <= 'Z') {
+    return pgm_read_byte(&kMinecraftNormalCapsWidths[character - 'A']);
+  }
+  return 5;
+}
+
+uint8_t normalGlyphAdvance(char character, bool compactZero = false) {
+  return compactZero && character == '0' ? 5 : normalGlyphWidth(character) + 1;
+}
+
+int16_t normalTextWidth(const char* text) {
+  int16_t width = -1;
+  for (const char* character = text; *character; ++character) width += normalGlyphAdvance(*character);
+  return width;
+}
+
 void drawMinecraftCentered(const char* text, int16_t y, uint16_t color) {
   const int16_t width = strlen(text) * 6 - 1;
   int16_t x = (matrix.width() - width) / 2;
@@ -532,7 +553,7 @@ void drawMinecraftCentered(const char* text, int16_t y, uint16_t color) {
 
 void drawMinecraftMarquee(const char* text, int16_t left, int16_t y, int16_t width,
                           uint16_t color) {
-  const int16_t textWidth = strlen(text) * 6 - 1;
+  const int16_t textWidth = normalTextWidth(text);
   int16_t offset = 0;
   if (textWidth > width) {
     const int16_t travel = textWidth - width;
@@ -544,20 +565,22 @@ void drawMinecraftMarquee(const char* text, int16_t left, int16_t y, int16_t wid
     else offset = travel - (phase - 4000UL - oneWay) / 75UL;
   }
   int16_t x = left - offset;
-  for (const char* character = text; *character; ++character, x += 6) {
+  for (const char* character = text; *character;) {
     const bool uppercase = *character >= 'A' && *character <= 'Z';
     const uint8_t glyph = uppercase ? static_cast<uint8_t>(*character - 'A')
                                     : minecraftGlyphIndex(*character);
+    const uint8_t glyphWidth = normalGlyphWidth(*character);
     for (uint8_t row = 0; row < 7; ++row) {
       const uint8_t pixels = uppercase ? pgm_read_byte(&kMinecraftNormalCaps[glyph][row])
                                        : pgm_read_byte(&kMinecraftFont[glyph][row]);
-      for (uint8_t column = 0; column < 5; ++column) {
+      for (uint8_t column = 0; column < glyphWidth; ++column) {
         const int16_t pixelX = x + column;
-        if ((pixels & (1 << (4 - column))) && pixelX >= left && pixelX < left + width) {
+        if ((pixels & (1 << (glyphWidth - 1 - column))) && pixelX >= left && pixelX < left + width) {
           matrix.drawPixel(pixelX, y + row, color);
         }
       }
     }
+    x += normalGlyphAdvance(*character++);
   }
 }
 
@@ -589,10 +612,6 @@ void drawVerticalRouteArrow(int16_t x, int16_t y, bool climbing, uint16_t color,
       if (pixelX >= left && pixelX < right) matrix.drawPixel(pixelX, pixelY, color);
     }
   }
-}
-
-int16_t normalTextWidth(const char* text) {
-  return *text ? static_cast<int16_t>(strlen(text) * 6 - 1) : 0;
 }
 
 enum class CityAccent : uint8_t { None, Acute, Grave, Circumflex, Tilde, Diaeresis, Ring, Cedilla };
@@ -634,8 +653,13 @@ uint8_t cityGlyphCount(const char* text) {
 }
 
 int16_t cityTextWidth(const char* text) {
-  const uint8_t count = cityGlyphCount(text);
-  return count ? count * 6 - 1 : 0;
+  int16_t width = -1;
+  for (const char* cursor = text; *cursor;) {
+    const CityGlyph glyph = nextCityGlyph(cursor);
+    width += normalGlyphAdvance(glyph.base);
+    cursor += glyph.bytes;
+  }
+  return width;
 }
 
 void drawCityAccent(CityAccent accent, int16_t x, int16_t y, int16_t left, int16_t right, uint16_t color) {
@@ -666,15 +690,16 @@ void drawCityText(const char* text, int16_t x, int16_t y, int16_t left, int16_t 
     }
     const bool uppercase = glyphInfo.base >= 'A' && glyphInfo.base <= 'Z';
     const uint8_t glyph = uppercase ? static_cast<uint8_t>(glyphInfo.base - 'A') : minecraftGlyphIndex(glyphInfo.base);
+    const uint8_t glyphWidth = normalGlyphWidth(glyphInfo.base);
     for (uint8_t row = 0; row < 7; ++row) {
       const uint8_t pixels = uppercase ? pgm_read_byte(&kMinecraftNormalCaps[glyph][row])
                                        : pgm_read_byte(&kMinecraftFont[glyph][row]);
-      for (uint8_t column = 0; column < 5; ++column) {
-        if ((pixels & (1 << (4 - column))) && x + column >= left && x + column < right) matrix.drawPixel(x + column, y + row, color);
+      for (uint8_t column = 0; column < glyphWidth; ++column) {
+        if ((pixels & (1 << (glyphWidth - 1 - column))) && x + column >= left && x + column < right) matrix.drawPixel(x + column, y + row, color);
       }
     }
     drawCityAccent(glyphInfo.accent, x, y, left, right, color);
-    x += 6;
+    x += normalGlyphAdvance(glyphInfo.base);
     cursor += glyphInfo.bytes;
   }
 }
@@ -707,7 +732,7 @@ void drawRegistrationMarquee(const char* text, int16_t left, int16_t y, int16_t 
                              uint16_t color) {
   int16_t textWidth = -1;
   for (const char* character = text; *character; ++character) {
-    textWidth += (*character == '-' ? 2 : (*character == '0' ? 4 : 5)) + 1;
+    textWidth += *character == '-' ? 3 : normalGlyphAdvance(*character, true);
   }
   int16_t offset = 0;
   if (textWidth > width) {
@@ -731,18 +756,19 @@ void drawRegistrationMarquee(const char* text, int16_t left, int16_t y, int16_t 
     const bool uppercase = *character >= 'A' && *character <= 'Z';
     const uint8_t glyph = uppercase ? static_cast<uint8_t>(*character - 'A')
                                     : minecraftGlyphIndex(*character);
+    const uint8_t glyphWidth = compactZero ? 5 : normalGlyphWidth(*character);
     for (uint8_t row = 0; row < 7; ++row) {
       const uint8_t pixels = compactZero ? pgm_read_byte(&kMinecraftTelemetryZero[row])
                                        : uppercase ? pgm_read_byte(&kMinecraftNormalCaps[glyph][row])
                                        : pgm_read_byte(&kMinecraftFont[glyph][row]);
-      for (uint8_t column = 0; column < 5; ++column) {
+      for (uint8_t column = 0; column < glyphWidth; ++column) {
         const int16_t pixelX = x + column;
-        if ((pixels & (1 << (4 - column))) && pixelX >= left && pixelX < left + width) {
+        if ((pixels & (1 << (glyphWidth - 1 - column))) && pixelX >= left && pixelX < left + width) {
           matrix.drawPixel(pixelX, y + row, color);
         }
       }
     }
-    x += compactZero ? 5 : 6;
+    x += normalGlyphAdvance(*character, compactZero);
     ++character;
   }
 }
@@ -2247,20 +2273,21 @@ void drawAnimatedNormalLine(const char* text, int16_t left, int16_t y, int16_t w
     const bool uppercase = *character >= 'A' && *character <= 'Z';
     const uint8_t glyph = uppercase ? static_cast<uint8_t>(*character - 'A')
                                     : minecraftGlyphIndex(*character);
+    const uint8_t glyphWidth = compactZero && *character == '0' ? 5 : normalGlyphWidth(*character);
     for (uint8_t row = 0; row < 7; ++row) {
       const int16_t pixelY = y + row + offset;
       if (pixelY < y || pixelY >= y + 7) continue;
       const uint8_t pixels = compactZero && *character == '0' ? pgm_read_byte(&kMinecraftTelemetryZero[row])
                                        : uppercase ? pgm_read_byte(&kMinecraftNormalCaps[glyph][row])
                                        : pgm_read_byte(&kMinecraftFont[glyph][row]);
-      for (uint8_t column = 0; column < 5; ++column) {
+      for (uint8_t column = 0; column < glyphWidth; ++column) {
         const int16_t pixelX = x + column;
-        if ((pixels & (1 << (4 - column))) && pixelX >= left && pixelX < left + width) {
+        if ((pixels & (1 << (glyphWidth - 1 - column))) && pixelX >= left && pixelX < left + width) {
           matrix.drawPixel(pixelX, pixelY, color);
         }
       }
     }
-    x += compactZero && *character == '0' ? 5 : 6;
+    x += normalGlyphAdvance(*character, compactZero);
   }
 }
 
@@ -2416,13 +2443,14 @@ void drawAnimatedCityText(const char* text, int16_t x, int16_t y, int16_t left, 
     }
     const bool uppercase = glyphInfo.base >= 'A' && glyphInfo.base <= 'Z';
     const uint8_t glyph = uppercase ? static_cast<uint8_t>(glyphInfo.base - 'A') : minecraftGlyphIndex(glyphInfo.base);
+    const uint8_t glyphWidth = normalGlyphWidth(glyphInfo.base);
     for (uint8_t row = 0; row < 7; ++row) {
       const int16_t pixelY = y + row + offset;
       if (pixelY < y || pixelY >= y + 7) continue;
       const uint8_t pixels = uppercase ? pgm_read_byte(&kMinecraftNormalCaps[glyph][row])
                                        : pgm_read_byte(&kMinecraftFont[glyph][row]);
-      for (uint8_t column = 0; column < 5; ++column) {
-        if ((pixels & (1 << (4 - column))) && x + column >= left && x + column < right) {
+      for (uint8_t column = 0; column < glyphWidth; ++column) {
+        if ((pixels & (1 << (glyphWidth - 1 - column))) && x + column >= left && x + column < right) {
           matrix.drawPixel(x + column, pixelY, color);
         }
       }
@@ -2444,7 +2472,7 @@ void drawAnimatedCityText(const char* text, int16_t x, int16_t y, int16_t left, 
         default: break;
       }
     }
-    x += 6;
+    x += normalGlyphAdvance(glyphInfo.base);
     cursor += glyphInfo.bytes;
     ++glyphIndex;
   }

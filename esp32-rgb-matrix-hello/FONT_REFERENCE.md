@@ -1,9 +1,9 @@
 # Flight display font reference
 
 Every entry is a 7px-high glyph. `x` means a lit LED, `o` means off; rows are
-written from top to bottom, separated by `/`. The bold-capital face preserves
-each glyph's authored width: 4px for `I`, 5px for its narrower forms, and 6px
-for its broader forms.
+written from top to bottom, separated by `/`. The uppercase faces preserve
+their authored widths; notably, normal and bold `I` are 4px wide. The bold
+faces also retain their 5px and 6px forms.
 
 There are four reference faces below. Bold lowercase is a separate,
 variable-width face and is ready for any display field that requests it.
@@ -50,11 +50,11 @@ E xxxxx/xoooo/xoooo/xxxxo/xoooo/xoooo/xxxxx
 F xxxxx/xoooo/xoooo/xxxxo/xoooo/xoooo/xoooo
 G oxxxo/xooox/xoooo/xoxxx/xooox/xooox/oxxxo
 H xooox/xooox/xooox/xxxxx/xooox/xooox/xooox
-I oxxxo/ooxoo/ooxoo/ooxoo/ooxoo/ooxoo/oxxxo
+I oxxx/ooxo/ooxo/ooxo/ooxo/ooxo/oxxx
 J ooxxx/oooxo/oooxo/oooxo/xooxo/xooxo/oxxoo
-K xooox/xooxo/xoxoo/xxooo/xoxoo/xooxo/xooox
+K xooox/xooxo/xxxoo/xooxo/xooox/xooox/xooox
 L xoooo/xoooo/xoooo/xoooo/xoooo/xoooo/xxxxx
-M xooox/xxoxx/xoxox/xoxox/xooox/xooox/xooox
+M xooox/xxoxx/xoxox/xooox/xooox/xooox/xooox
 N xooox/xxoox/xoxox/xooxx/xooox/xooox/xooox
 O oxxxo/xooox/xooox/xooox/xooox/xooox/oxxxo
 P xxxxo/xooox/xooox/xxxxo/xoooo/xoooo/xoooo
@@ -64,8 +64,8 @@ S oxxxx/xoooo/xoooo/oxxxo/oooox/oooox/xxxxo
 T xxxxx/ooxoo/ooxoo/ooxoo/ooxoo/ooxoo/ooxoo
 U xooox/xooox/xooox/xooox/xooox/xooox/oxxxo
 V xooox/xooox/xooox/xooox/xooox/oxoxo/ooxoo
-W xooox/xooox/xooox/xoxox/xoxox/xoxox/oxoxo
-X xooox/xooox/oxoxo/ooxoo/oxoxo/xooox/xooox
+W xooox/xooox/xooox/xooox/xoxox/xoxox/oxoxo
+X xooox/oxoxo/ooxoo/oxoxo/xooox/xooox/xooox
 Y xooox/xooox/oxoxo/ooxoo/ooxoo/ooxoo/ooxoo
 Z xxxxx/oooox/oooxo/ooxoo/oxooo/xoooo/xxxxx
 ```
