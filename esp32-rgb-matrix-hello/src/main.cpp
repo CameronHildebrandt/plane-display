@@ -343,14 +343,15 @@ bool marqueeIsMoving(int16_t contentWidth, int16_t slotWidth) {
   const unsigned long phase = (millis() - routeSceneStartMillis) % (4000UL + oneWay * 2UL);
   const unsigned long endHoldStart = 2000UL + oneWay;
   const unsigned long returnStart = 4000UL + oneWay;
-  // The return-to-start and outbound journeys both use integer 75ms steps.
-  // Repaint the first 75ms of each hold once so the terminal offset itself is
-  // visible, then leave that exact frame untouched for the rest of the hold.
-  // Without these two single-frame handoffs, the prior travel-1 (or 1) pixel
-  // is the last paint and the marquee appears to freeze just short of its end.
-  if (phase < 75UL) return true;
+  // The display's incremental render can arrive just after a 75ms boundary.
+  // Give each endpoint a single, short 200ms handoff window: it reliably
+  // paints the terminal offset even with that scheduling jitter, then leaves
+  // the remaining pause completely untouched. A 75ms window was occasionally
+  // missed, leaving the held marquee at travel-1 until the return journey.
+  constexpr unsigned long kEndpointHandoffMillis = 200UL;
+  if (phase < kEndpointHandoffMillis) return true;
   if (phase >= 2000UL && phase < endHoldStart) return true;
-  if (phase >= endHoldStart && phase < endHoldStart + 75UL) return true;
+  if (phase >= endHoldStart && phase < endHoldStart + kEndpointHandoffMillis) return true;
   return phase >= returnStart;
 }
 
@@ -1615,7 +1616,9 @@ void drawAirportRoute(const Route& route, int16_t x, int16_t y, uint16_t color) 
 
 int16_t registrationTextWidth(const char* text) {
   int16_t width = -1;
-  for (const char* character = text; *character; ++character) width += *character == '-' ? 3 : (*character == '0' ? 5 : 6);
+  for (const char* character = text; *character; ++character) {
+    width += *character == '-' ? 3 : normalGlyphAdvance(*character, true);
+  }
   return width;
 }
 
