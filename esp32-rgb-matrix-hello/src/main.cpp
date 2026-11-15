@@ -71,8 +71,8 @@ constexpr unsigned long kBootChevronMillis = 2000;
 constexpr unsigned long kBootChevronStaggerMillis = 1000;
 constexpr unsigned long kBootFadeToRouteMillis = 600;
 constexpr unsigned long kBootRouteRollInMillis = 900;
+constexpr unsigned long kWifiOfflinePortalMillis = 60UL * 1000UL;
 constexpr char kDeviceHostname[] = "led-plane";
-constexpr char kSetupAccessPoint[] = "LED-Plane-Setup";
 
 // Waveshare ESP32-S3-RGB-Matrix HUB75 wiring. These match Waveshare's
 // Arduino examples for this exact driver board.
@@ -104,6 +104,9 @@ HUB75_I2S_CFG matrixConfig = makeMatrixConfig();
 MatrixPanel_I2S_DMA matrix(matrixConfig);
 WebServer updateServer(80);
 bool shouldRestart = false;
+char setupAccessPoint[32] = "Plane Display ----";
+unsigned long wifiOfflineSinceMillis = 0;
+bool networkSetupPortalActive = false;
 unsigned long nextFlightPollMillis = 0;
 unsigned long nextRefreshDebugRedrawMillis = 0;
 String pairingUrl;
@@ -897,6 +900,57 @@ int16_t drawMinecraftBoldLowercase(const char* text, int16_t x, int16_t y, uint1
     x += glyphWidth + 1;
   }
   return x - 1;
+}
+
+int16_t boldGlyphAdvance(char character) {
+  if (character == ' ') return 3;
+  if (character == '-' || character == '?') return 6;
+  if (character == '\'') return 3;
+  if (character >= 'A' && character <= 'Z') return pgm_read_byte(&kMinecraftBoldCapsWidths[character - 'A']) + 1;
+  if (character >= 'a' && character <= 'z') return pgm_read_byte(&kMinecraftBoldLowercaseWidths[character - 'a']) + 1;
+  return 0;
+}
+
+int16_t boldTextWidth(const char* text) {
+  int16_t width = 0;
+  for (const char* character = text; *character; ++character) width += boldGlyphAdvance(*character);
+  return width ? width - 1 : 0;
+}
+
+void drawMinecraftBoldText(const char* text, int16_t x, int16_t y, uint16_t color) {
+  for (const char* character = text; *character; ++character) {
+    if (*character == ' ') { x += 3; continue; }
+    if (*character == '-') { matrix.fillRect(x, y + 3, 5, 1, color); x += 6; continue; }
+    if (*character == '\'') {
+      for (uint8_t row = 0; row < 7; ++row) {
+        const uint8_t pixels = pgm_read_byte(&kMinecraftBoldApostrophe[row]);
+        for (uint8_t column = 0; column < 2; ++column) {
+          if (pixels & (1 << (1 - column))) matrix.drawPixel(x + column, y + row, color);
+        }
+      }
+      x += 3;
+      continue;
+    }
+    const bool upper = *character >= 'A' && *character <= 'Z';
+    const bool lower = *character >= 'a' && *character <= 'z';
+    if (!upper && !lower) continue;
+    const uint8_t glyph = upper ? static_cast<uint8_t>(*character - 'A')
+                                : static_cast<uint8_t>(*character - 'a');
+    const uint8_t glyphWidth = upper ? pgm_read_byte(&kMinecraftBoldCapsWidths[glyph])
+                                     : pgm_read_byte(&kMinecraftBoldLowercaseWidths[glyph]);
+    for (uint8_t row = 0; row < 7; ++row) {
+      const uint8_t pixels = upper ? pgm_read_byte(&kMinecraftBoldCaps[glyph][row])
+                                   : pgm_read_byte(&kMinecraftBoldLowercase[glyph][row]);
+      for (uint8_t column = 0; column < glyphWidth; ++column) {
+        if (pixels & (1 << (glyphWidth - 1 - column))) matrix.drawPixel(x + column, y + row, color);
+      }
+    }
+    x += glyphWidth + 1;
+  }
+}
+
+void drawMinecraftBoldTextCentered(const char* text, int16_t centerX, int16_t y, uint16_t color) {
+  drawMinecraftBoldText(text, centerX - boldTextWidth(text) / 2, y, color);
 }
 
 uint16_t visibleColor(uint8_t red, uint8_t green, uint8_t blue) {
@@ -2718,6 +2772,39 @@ String pairingEndpoint() {
   return finalSlash < 0 ? String() : endpoint.substring(0, finalSlash) + "/api/device/pairing";
 }
 
+// This is deliberately a small, open Wi-Fi QR payload: the ESP32's setup AP
+// is only a local captive portal, and joining it is the one action needed to
+// open WiFiManager's network picker.
+void drawNetworkOfflineScreen() {
+  constexpr uint8_t kQrVersion = 3;
+  uint8_t qrBuffer[qrcode_getBufferSize(kQrVersion)];
+  QRCode qr;
+  const String payload = String("WIFI:T:nopass;S:") + setupAccessPoint + ";;";
+  qrcode_initText(&qr, qrBuffer, kQrVersion, ECC_LOW, payload.c_str());
+
+  const uint16_t black = matrix.color565(0, 0, 0);
+  const uint16_t white = matrix.color565(255, 255, 255);
+  const uint16_t dimWhite = matrix.color565(135, 135, 135);
+  const int16_t left = (matrix.width() / 2) + ((matrix.width() / 2) - qr.size) / 2;
+  const int16_t top = (matrix.height() - qr.size) / 2;
+  showingNoPlanes = false;
+  matrix.fillScreen(black);
+  for (uint8_t y = 0; y < qr.size; ++y) {
+    for (uint8_t x = 0; x < qr.size; ++x) {
+      if (qrcode_getModule(&qr, x, y)) matrix.drawPixel(left + x, top + y, white);
+    }
+  }
+  // Keep text entirely inside the left 64px half. The human-facing title uses
+  // the full variable-width bold faces, while the instruction uses the normal
+  // upper/lowercase body face.
+  drawMinecraftBoldTextCentered("Network", 32, 15, white);
+  drawMinecraftBoldTextCentered("Offline", 32, 25, white);
+  const char* firstInstruction = "Scan to";
+  const char* secondInstruction = "connect";
+  drawCityText(firstInstruction, 32 - cityTextWidth(firstInstruction) / 2, 40, 0, 64, dimWhite);
+  drawCityText(secondInstruction, 32 - cityTextWidth(secondInstruction) / 2, 50, 0, 64, dimWhite);
+}
+
 void drawPairingQr(const String& url) {
   // The pairing URL fits in a native 37x37 version-5 grid. Draw each module as
   // exactly one LED: no scaling, interpolation, or partial modules.
@@ -3204,10 +3291,19 @@ bool updateRequestIsAuthorized() {
 
 void loadDisplayPreferences() {
   Preferences preferences;
-  preferences.begin("led-plane", true);
+  preferences.begin("led-plane", false);
   hideUnknownRoutes = preferences.getBool("hide-unknown-routes", false);
   const String savedName = preferences.getString("display-name", "PLANE DISPLAY");
   strlcpy(bootDisplayName, savedName.c_str(), sizeof(bootDisplayName));
+  uint32_t setupUuid = preferences.getULong("setup-uuid", 0);
+  if (setupUuid == 0) {
+    setupUuid = esp_random();
+    preferences.putULong("setup-uuid", setupUuid);
+  }
+  // A random persisted UUID fragment avoids exposing a common factory AP name
+  // while still leaving the network easy to recognise in a phone's Wi-Fi list.
+  snprintf(setupAccessPoint, sizeof(setupAccessPoint), "Plane Display %04lX",
+           static_cast<unsigned long>((setupUuid >> 16) & 0xFFFF));
   preferences.end();
 }
 
@@ -3358,6 +3454,26 @@ void synchronizeClock() {
   }
 }
 
+void networkSetupPortalStarted(WiFiManager*) {
+  networkSetupPortalActive = true;
+  drawNetworkOfflineScreen();
+  Serial.printf("Wi-Fi setup portal: %s\n", setupAccessPoint);
+}
+
+bool joinNetworkViaSetupPortal() {
+  WiFiManager wifiManager;
+  wifiManager.setConfigPortalBlocking(true);
+  wifiManager.setConnectTimeout(30);
+  wifiManager.setAPCallback(networkSetupPortalStarted);
+  networkSetupPortalActive = true;
+  // The callback paints before the portal is ready for a phone to join, so
+  // there is never a blank or stale flight card during configuration.
+  const bool connected = wifiManager.autoConnect(setupAccessPoint);
+  networkSetupPortalActive = false;
+  if (connected) saveWifiCredentials();
+  return connected;
+}
+
 void connectWifiAndEnableLocalUpdater() {
   WiFi.mode(WIFI_STA);
   // Matrix refresh plus Wi-Fi power saving can make OTA acknowledgements late.
@@ -3382,18 +3498,14 @@ void connectWifiAndEnableLocalUpdater() {
   }
 
   if (!connected) {
-    WiFiManager wifiManager;
     // Saved network credentials are stored in the ESP32's non-volatile memory.
-    // If reconnecting fails (including the first boot), start the setup portal.
-    wifiManager.setConfigPortalBlocking(true);
-    wifiManager.setConnectTimeout(30);
-
-    if (!wifiManager.autoConnect(kSetupAccessPoint)) {
-      Serial.println("Wi-Fi setup timed out; restarting portal.");
+    // If reconnecting fails (including the first boot), the QR-led captive
+    // portal remains available until the owner supplies a working network.
+    if (!joinNetworkViaSetupPortal()) {
+      Serial.println("Wi-Fi setup portal closed without a connection; reopening.");
       delay(1000);
       ESP.restart();
     }
-    saveWifiCredentials();
   }
 
   synchronizeClock();
@@ -3403,6 +3515,25 @@ void connectWifiAndEnableLocalUpdater() {
 
   Serial.printf("Wi-Fi connected. Local updater: http://%s.local (%s)\n",
                 kDeviceHostname, WiFi.localIP().toString().c_str());
+}
+
+void monitorWifiConnectivity() {
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiOfflineSinceMillis = 0;
+    return;
+  }
+  if (wifiOfflineSinceMillis == 0) {
+    wifiOfflineSinceMillis = millis();
+    return;
+  }
+  if (networkSetupPortalActive || millis() - wifiOfflineSinceMillis < kWifiOfflinePortalMillis) return;
+
+  Serial.println("Wi-Fi has been unavailable for one minute; opening setup portal.");
+  if (joinNetworkViaSetupPortal()) {
+    synchronizeClock();
+    nextFlightPollMillis = millis();
+    wifiOfflineSinceMillis = 0;
+  }
 }
 
 }  // namespace
@@ -3426,6 +3557,8 @@ void setup() {
 void loop() {
   // HUB75 DMA refresh runs independently; handle local web update traffic here.
   updateServer.handleClient();
+  monitorWifiConnectivity();
+  if (networkSetupPortalActive) return;
   handleBootButton();
   updatePairingQrRequest();
   if (flightFetchInProgress && flightFetchStartedMillis != 0 &&
