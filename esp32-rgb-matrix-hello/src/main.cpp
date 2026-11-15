@@ -326,7 +326,17 @@ bool marqueeIsMoving(int16_t contentWidth, int16_t slotWidth) {
   if (contentWidth <= slotWidth) return false;
   const unsigned long oneWay = (contentWidth - slotWidth) * 75UL;
   const unsigned long phase = (millis() - routeSceneStartMillis) % (4000UL + oneWay * 2UL);
-  return (phase >= 2000UL && phase < 2000UL + oneWay) || phase >= 4000UL + oneWay;
+  const unsigned long endHoldStart = 2000UL + oneWay;
+  const unsigned long returnStart = 4000UL + oneWay;
+  // The return-to-start and outbound journeys both use integer 75ms steps.
+  // Repaint the first 75ms of each hold once so the terminal offset itself is
+  // visible, then leave that exact frame untouched for the rest of the hold.
+  // Without these two single-frame handoffs, the prior travel-1 (or 1) pixel
+  // is the last paint and the marquee appears to freeze just short of its end.
+  if (phase < 75UL) return true;
+  if (phase >= 2000UL && phase < endHoldStart) return true;
+  if (phase >= endHoldStart && phase < endHoldStart + 75UL) return true;
+  return phase >= returnStart;
 }
 
 void drawTelemetryPixel(int16_t x, int16_t y, uint16_t color, int16_t left, int16_t right) {
