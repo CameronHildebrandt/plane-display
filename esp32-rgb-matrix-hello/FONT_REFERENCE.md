@@ -5,10 +5,8 @@ written from top to bottom, separated by `/`. The bold-capital face preserves
 each glyph's authored width: 4px for `I`, 5px for its narrower forms, and 6px
 for its broader forms.
 
-There are four reference faces below. Bold lowercase is currently an exact
-copy of normal lowercase—the firmware does not yet render a separate bold
-lowercase face—but it is included as its own editable sheet so we can promote
-your edits into a real fourth face when wanted.
+There are four reference faces below. Bold lowercase is a separate,
+variable-width face and is ready for any display field that requests it.
 
 ## Normal lowercase
 
@@ -75,32 +73,32 @@ Z xxxxx/oooox/oooxo/ooxoo/oxooo/xoooo/xxxxx
 ## Bold lowercase
 
 ```text
-a ooooo/ooooo/oxxxo/oooox/oxxxx/xooox/oxxxx
-b xoooo/xoooo/xxxxo/xooox/xooox/xooox/xxxxo
-c ooooo/ooooo/oxxxo/xoooo/xoooo/xooox/oxxxo
-d oooox/oooox/oxxxx/xooox/xooox/xooox/oxxxx
-e ooooo/ooooo/oxxxo/xooox/xxxxx/xoooo/oxxxx
-f ooxxo/oxoox/oxooo/xxxoo/oxooo/oxooo/oxooo
-g ooooo/ooooo/oxxxx/xooox/oxxxx/oooox/oxxxo
-h xoooo/xoooo/xxxxo/xooox/xooox/xooox/xooox
-i ooxoo/ooooo/oxxoo/ooxoo/ooxoo/ooxoo/oxxxo
-j oooxo/ooooo/ooxxo/oooxo/oooxo/xooxo/oxxoo
-k xoooo/xoooo/xooxo/xoxoo/xxooo/xoxoo/xooxo
-l oxxoo/ooxoo/ooxoo/ooxoo/ooxoo/ooxoo/oxxxo
-m ooooo/ooooo/xxoxo/xoxox/xoxox/xoxox/xoxox
-n ooooo/ooooo/xxxxo/xooox/xooox/xooox/xooox
-o ooooo/ooooo/oxxxo/xooox/xooox/xooox/oxxxo
-p ooooo/ooooo/xxxxo/xooox/xxxxo/xoooo/xoooo
-q ooooo/ooooo/oxxxx/xooox/oxxxx/oooox/oooox
-r ooooo/ooooo/xoxxo/xxoox/xoooo/xoooo/xoooo
-s ooooo/ooooo/oxxxx/xoooo/oxxxo/oooox/xxxxo
-t oxooo/oxooo/xxxoo/oxooo/oxooo/oxoox/ooxxo
-u ooooo/ooooo/xooox/xooox/xooox/xooxx/oxxox
-v ooooo/ooooo/xooox/xooox/xooox/oxoxo/ooxoo
-w ooooo/ooooo/xooox/xooox/xoxox/xoxox/oxoxo
-x ooooo/ooooo/xooox/oxoxo/ooxoo/oxoxo/xooox
-y ooooo/ooooo/xooox/xooox/oxxxx/oooox/oxxxo
-z ooooo/ooooo/xxxxx/oooxo/ooxoo/oxooo/xxxxx
+a oooooo/oooooo/oxxxxo/ooooxx/oxxxxx/xxooxx/oxxxxx
+b xxoooo/xxoooo/xxxxxo/xxooxx/xxooxx/xxooxx/xxxxxo
+c oooooo/oooooo/oxxxxo/xxooxx/xxoooo/xxooxx/oxxxxo
+d ooooxx/ooooxx/oxxxxx/xxooxx/xxooxx/xxooxx/oxxxxx
+e oooooo/oooooo/oxxxxo/xxooxx/xxxxxx/xxoooo/oxxxxx
+f ooxxx/oxxoo/xxxxx/oxxoo/oxxoo/oxxoo/oxxoo
+g oooooo/oxxxxx/xxooxx/xxooxx/oxxxxx/ooooxx/xxxxxo
+h xxoooo/xxoooo/xxxxxo/xxooxx/xxooxx/xxooxx/xxooxx
+i oxx/ooo/oxx/oxx/oxx/oxx/oxx
+j ooooxx/oooooo/ooooxx/ooooxx/ooooxx/xxooxx/oxxxxo
+k xxooo/xxooo/xxoxx/xxxxo/xxxoo/xxxxo/xxoxx
+l oxxo/oxxo/oxxo/oxxo/oxxo/oxxo/ooxx
+m oooooo/oooooo/xxxxxo/xxxxxx/xxxxxx/xxooxx/xxooxx
+n oooooo/oooooo/xxxxxo/xxooxx/xxooxx/xxooxx/xxooxx
+o oooooo/oooooo/oxxxxo/xxooxx/xxooxx/xxooxx/oxxxxo
+p oooooo/oooooo/xxxxxo/xxooxx/xxxxxo/xxoooo/xxoooo
+q oooooo/oooooo/oxxxxx/xxooxx/oxxxxx/ooooxx/ooooxx
+r oooooo/oooooo/xxxxxo/xxooxx/xxoooo/xxoooo/xxoooo
+s ooooo/ooooo/oxxxx/xxooo/oxxxo/oooxx/xxxxo
+t oxxo/oxxo/xxxx/oxxo/oxxo/oxxo/ooxx
+u oooooo/oooooo/xxooxx/xxooxx/xxooxx/xxooxx/oxxxxx
+v oooooo/oooooo/xxooxx/xxooxx/xxooxx/oxxxxo/ooxxoo
+w oooooo/oooooo/xxooxx/xxooxx/xxooxx/xxxxxx/oxxxxx
+x oooooo/oooooo/xxooxx/oxxxxo/ooxxoo/oxxxxo/xxooxx
+y oooooo/oooooo/xxooxx/xxooxx/oxxxxx/ooooxx/xxxxxo
+z oooooo/oooooo/xxxxxx/oooxxo/ooxxoo/oxxooo/xxxxxx
 ```
 
 ## Bold capitals
