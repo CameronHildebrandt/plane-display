@@ -4,6 +4,7 @@ export class LocalStore {
   async getSnapshot(id) { return this.snapshots.get(id) || null; }
   async putSnapshot(id, payload, fetchedAt) { this.snapshots.set(id, { payload, fetchedAt }); }
   async deleteSnapshot(id) { this.snapshots.delete(id); }
+  async deleteAllSnapshots() { this.snapshots.clear(); }
   async createPairing(tokenHash, deviceId, expiresAt) { this.pairings.set(tokenHash, { deviceId, expiresAt, used: false }); }
   async consumePairing(tokenHash, now) { const p = this.pairings.get(tokenHash); if (!p || p.used || p.expiresAt <= now) return null; p.used = true; return p.deviceId; }
   async createSession(tokenHash, deviceId, expiresAt) { this.sessions.set(tokenHash, { deviceId, expiresAt }); }
@@ -16,7 +17,7 @@ export class LocalStore {
   async putAirline(code, airline) { this.airlines.set(code, airline); }
   async getAircraft(icao24) { return this.aircraft.get(icao24) || null; }
   async putAircraft(icao24, aircraft) { this.aircraft.set(icao24, aircraft); }
-  async getTrackedFlights(deviceId, flightDate) { return [...this.trackedFlights.values()].filter(entry => entry.deviceId === deviceId && (!flightDate || entry.flightDate === flightDate)).map(entry => ({ ...entry, identifier: entry.identifier || entry.flightNumber, identifierType: entry.identifierType || "flightNumber" })); }
+  async getTrackedFlights(deviceId, flightDate) { return [...this.trackedFlights.values()].filter(entry => (!deviceId || entry.deviceId === deviceId) && (!flightDate || entry.flightDate === flightDate)).map(entry => ({ ...entry, identifier: entry.identifier || entry.flightNumber, identifierType: entry.identifierType || "flightNumber" })); }
   async addTrackedFlight(entry) { this.trackedFlights.set(entry.id, entry); }
   async deleteTrackedFlight(deviceId, id) { const entry = this.trackedFlights.get(id); if (entry?.deviceId !== deviceId) return false; this.trackedFlights.delete(id); return true; }
   async getFlightStatus(id) { return this.flightStatuses.get(id) || null; }

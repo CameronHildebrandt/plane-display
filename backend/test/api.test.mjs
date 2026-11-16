@@ -216,6 +216,21 @@ test("an active special flight is added outside the local radius and marked for 
   assert.equal(body.flights.some(item => item.flightNumber === "WJA410"), true);
 });
 
+test("a special flight created by one display is delivered to every display", async () => {
+  const { store } = await setup();
+  const otherKey = "other-device-key-123456789012345678901234567890";
+  store.devices.set("other", {
+    id: "other", name: "Other display", apiKeyHash: await hash(otherKey), latitude: 53.5, longitude: -113.5,
+    radiusKm: 100, includeGrounded: false, hideIncompleteData: false, debugMode: false, rotationRequested: false
+  });
+  await store.addTrackedFlight({ id: crypto.randomUUID(), deviceId: "test", flightNumber: "ACA123", title: "Family arrival", flightDate: new Date().toISOString().slice(0, 10), createdAt: Date.now() });
+  const response = await handle(request("/flightdata", { headers: { "X-Device-Key": otherKey } }), store, liveSource);
+  const body = await response.json();
+  const flight = body.flights.find(item => item.flightNumber === "ACA123");
+  assert.equal(flight.specialFlight, true);
+  assert.equal(flight.trackedFlightTitle, "Family arrival");
+});
+
 test("an active special tail number uses the registration lookup and is marked for display priority", async () => {
   const { store, key } = await setup();
   await store.addTrackedFlight({ id: crypto.randomUUID(), deviceId: "test", flightNumber: "C-GMPO", identifierType: "tailNumber", title: "RCMP aircraft", flightDate: new Date().toISOString().slice(0, 10), createdAt: Date.now() });
@@ -351,6 +366,8 @@ test("a live special flight carries cached optional AirLabs ETA data without aff
   assert.equal(flight.flightStatus.arrivalDelayMinutes, 30);
   assert.equal(flight.flightStatus.etaDisplay, "10:30");
   assert.equal(flight.flightStatus.arrivalDelayPercent, 50);
+  assert.equal(flight.flightProgressPercent, 100);
+  assert.equal(flight.flightProgressEstimated, true);
   assert.equal(airLabsCalls, 1);
 });
 

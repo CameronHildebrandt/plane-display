@@ -183,7 +183,8 @@ async function liveFlights(device, store, env) {
   }
   catch (adsbError) {
     console.log("ADSB.lol request failed; trying OpenSky", adsbError instanceof Error ? adsbError.message : String(adsbError));
-    return { source: "opensky", flights: sortFlightsForDisplay(filterIncompleteFlights(device, await openSkyFlights(device, store, env))).slice(0, 20) };
+    const [nearby, tracked] = await Promise.all([openSkyFlights(device, store, env), activeTrackedFlights(device, store, env)]);
+    return { source: "opensky", flights: sortFlightsForDisplay(filterIncompleteFlights(device, mergeTrackedFlights(nearby, tracked))).slice(0, 20) };
   }
 }
 
@@ -195,11 +196,15 @@ function hasIdentifiedCompany(flight) {
 }
 function filterIncompleteFlights(device, flights) {
   if (!device.hideIncompleteData) return flights;
-  return flights.filter(flight => hasIdentifiedCompany(flight) && hasIdentifiedRoute(flight));
+  // A manually marked special flight is intentional even while one of its
+  // optional enrichments is temporarily unavailable.
+  return flights.filter(flight => flight.specialFlight || (hasIdentifiedCompany(flight) && hasIdentifiedRoute(flight)));
 }
 
 async function activeTrackedFlights(device, store, env) {
-  const tracked = await store.getTrackedFlights(device.id, isoDate());
+  // A special flight is a display-wide event. Its owner device remains the
+  // only device allowed to edit or remove it, but every display receives it.
+  const tracked = await store.getTrackedFlights(null, isoDate());
   if (!tracked.length) return [];
   const fetcher = env.fetch || fetch;
   const results = await Promise.all(tracked.map(async entry => {
@@ -227,10 +232,24 @@ function preferFlightStatusRoutes(flights) {
   return flights.map(flight => {
     const origin = airLabsAirportCode(flight.flightStatus?.origin);
     const destination = airLabsAirportCode(flight.flightStatus?.destination);
-    return origin && destination
-      ? { ...flight, origin, destination, flightProgressPercent: null, flightProgressEstimated: false, routeSource: "airlabs" }
-      : flight;
+    const statusProgress = flightProgressFromStatus(flight.flightStatus);
+    return {
+      ...flight,
+      ...(origin && destination ? { origin, destination, routeSource: "airlabs" } : {}),
+      // A published departure/arrival timetable is a better progress source
+      // than a guessed great-circle route. If it is incomplete, keep the
+      // existing ADS-B-derived progress rather than replacing it with null.
+      ...(statusProgress === null ? {} : { flightProgressPercent: statusProgress, flightProgressEstimated: true })
+    };
   });
+}
+
+function flightProgressFromStatus(status, now = unix()) {
+  if (!status) return null;
+  const departure = status.actualDepartureEpoch || status.estimatedDepartureEpoch || status.scheduledDepartureEpoch;
+  const arrival = status.actualArrivalEpoch || status.estimatedArrivalEpoch || status.scheduledArrivalEpoch;
+  if (!Number.isFinite(departure) || !Number.isFinite(arrival) || arrival <= departure) return null;
+  return Math.max(0, Math.min(100, (now - departure) / (arrival - departure) * 100));
 }
 
 async function specialFlightStatus(entry, store, env) {
@@ -271,7 +290,10 @@ function normalizeFlightStatus(status) {
   };
   const scheduledDepartureEpoch = timestamp(status.dep_time);
   const scheduledArrivalEpoch = timestamp(status.arr_time);
+  const estimatedDepartureEpoch = timestamp(status.dep_estimated || status.dep_time);
+  const actualDepartureEpoch = timestamp(status.dep_actual);
   const estimatedArrivalEpoch = timestamp(status.arr_estimated || status.arr_time);
+  const actualArrivalEpoch = timestamp(status.arr_actual);
   const arrivalDelayMinutes = number(status.arr_delayed);
   const scheduledDurationMinutes = scheduledDepartureEpoch && scheduledArrivalEpoch && scheduledArrivalEpoch > scheduledDepartureEpoch
     ? (scheduledArrivalEpoch - scheduledDepartureEpoch) / 60 : null;
@@ -282,7 +304,7 @@ function normalizeFlightStatus(status) {
   const etaSource = status.arr_estimated || status.arr_time || "";
   const etaMatch = String(etaSource).match(/[T ](\d{2}):(\d{2})/);
   const etaDisplay = etaMatch ? `${Number(etaMatch[1])}:${etaMatch[2]}` : null;
-  return { provider: "airlabs", status: typeof status.status === "string" ? status.status : null, scheduledDeparture: status.dep_time || null, estimatedDeparture: status.dep_estimated || null, actualDeparture: status.dep_actual || null, scheduledArrival: status.arr_time || null, estimatedArrival: status.arr_estimated || null, actualArrival: status.arr_actual || null, estimatedArrivalEpoch, etaDisplay, departureDelayMinutes: number(status.dep_delayed), arrivalDelayMinutes, arrivalDelayPercent, origin: status.dep_iata || null, destination: status.arr_iata || null };
+  return { provider: "airlabs", status: typeof status.status === "string" ? status.status : null, scheduledDeparture: status.dep_time || null, estimatedDeparture: status.dep_estimated || null, actualDeparture: status.dep_actual || null, scheduledArrival: status.arr_time || null, estimatedArrival: status.arr_estimated || null, actualArrival: status.arr_actual || null, scheduledDepartureEpoch, estimatedDepartureEpoch, actualDepartureEpoch, scheduledArrivalEpoch, estimatedArrivalEpoch, actualArrivalEpoch, etaDisplay, departureDelayMinutes: number(status.dep_delayed), arrivalDelayMinutes, arrivalDelayPercent, origin: status.dep_iata || null, destination: status.arr_iata || null };
 }
 
 const DEBUG_AIRPORTS = Object.freeze([
@@ -777,7 +799,7 @@ async function addTrackedFlight(request, store) {
   const statusIdentifier = identifierType === "flightNumber" ? cleanFlightNumber(body.statusIdentifier) || identifier : null;
   const entry = { id: crypto.randomUUID(), deviceId: device.id, flightNumber: identifier, identifierType, statusIdentifier, title, flightDate, createdAt: unix() };
   await store.addTrackedFlight(entry);
-  await store.deleteSnapshot(device.id);
+  await store.deleteAllSnapshots();
   return json({ trackedFlight: publicTrackedFlight(entry) }, 201);
 }
 async function removeTrackedFlight(request, store, id) {
@@ -786,7 +808,7 @@ async function removeTrackedFlight(request, store, id) {
   if (!/^[0-9a-f-]{36}$/i.test(id)) return json({ error: "Tracked flight not found." }, 404);
   const removed = await store.deleteTrackedFlight(device.id, id);
   if (!removed) return json({ error: "Tracked flight not found." }, 404);
-  await Promise.all([store.deleteSnapshot(device.id), store.deleteFlightStatus(id)]);
+  await Promise.all([store.deleteAllSnapshots(), store.deleteFlightStatus(id)]);
   return json({ ok: true });
 }
 function publicTrackedFlight(entry) { const identifier = entry.identifier || entry.flightNumber; const identifierType = entry.identifierType || "flightNumber"; return { id: entry.id, identifier, identifierType, statusIdentifier: entry.statusIdentifier || null, flightNumber: identifierType === "flightNumber" ? identifier : null, tailNumber: identifierType === "tailNumber" ? identifier : null, title: entry.title, flightDate: entry.flightDate }; }
@@ -813,6 +835,7 @@ export class D1Store {
   async getSnapshot(id) { const r = await this.db.prepare("SELECT payload_json, fetched_at FROM flight_snapshots WHERE device_id = ?").bind(id).first(); return r && { payload: JSON.parse(r.payload_json), fetchedAt: r.fetched_at }; }
   async putSnapshot(id, payload, now) { await this.db.prepare("INSERT INTO flight_snapshots (device_id, payload_json, fetched_at) VALUES (?, ?, ?) ON CONFLICT(device_id) DO UPDATE SET payload_json=excluded.payload_json, fetched_at=excluded.fetched_at").bind(id, JSON.stringify(payload), now).run(); }
   async deleteSnapshot(id) { await this.db.prepare("DELETE FROM flight_snapshots WHERE device_id = ?").bind(id).run(); }
+  async deleteAllSnapshots() { await this.db.prepare("DELETE FROM flight_snapshots").run(); }
   async createPairing(h, id, expires) { await this.db.prepare("INSERT INTO pairing_codes (token_hash, device_id, expires_at) VALUES (?, ?, ?)").bind(h, id, expires).run(); }
   async consumePairing(h, now) { const row = await this.db.prepare("UPDATE pairing_codes SET used_at = ? WHERE token_hash = ? AND used_at IS NULL AND expires_at > ? RETURNING device_id").bind(now, h, now).first(); return row?.device_id || null; }
   async createSession(h, id, expires, now) { await this.db.prepare("INSERT INTO sessions (token_hash, device_id, expires_at, created_at) VALUES (?, ?, ?, ?)").bind(h, id, expires, now).run(); }
@@ -825,7 +848,14 @@ export class D1Store {
   async putAirline(code, airline) { await this.db.prepare("INSERT INTO airline_cache (icao_code, name, country, fetched_at) VALUES (?, ?, ?, ?) ON CONFLICT(icao_code) DO UPDATE SET name=excluded.name, country=excluded.country, fetched_at=excluded.fetched_at").bind(code, airline.name, airline.country, airline.fetchedAt).run(); }
   async getAircraft(icao24) { const r = await this.db.prepare("SELECT type_code, type_name, manufacturer, owner_code, owner_name, owner_country, identity_version, fetched_at FROM aircraft_cache WHERE icao24=?").bind(icao24).first(); return r && { typeCode: r.type_code, typeName: r.type_name, manufacturer: r.manufacturer, ownerCode: r.owner_code, ownerName: r.owner_name, ownerCountry: r.owner_country, identityVersion: r.identity_version, fetchedAt: r.fetched_at }; }
   async putAircraft(icao24, aircraft) { await this.db.prepare("INSERT INTO aircraft_cache (icao24, type_code, type_name, manufacturer, owner_code, owner_name, owner_country, identity_version, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(icao24) DO UPDATE SET type_code=excluded.type_code, type_name=excluded.type_name, manufacturer=excluded.manufacturer, owner_code=excluded.owner_code, owner_name=excluded.owner_name, owner_country=excluded.owner_country, identity_version=excluded.identity_version, fetched_at=excluded.fetched_at").bind(icao24, aircraft.typeCode, aircraft.typeName, aircraft.manufacturer, aircraft.ownerCode, aircraft.ownerName, aircraft.ownerCountry, aircraft.identityVersion, aircraft.fetchedAt).run(); }
-  async getTrackedFlights(deviceId, flightDate) { const query = flightDate ? "SELECT * FROM tracked_flights WHERE device_id=? AND flight_date=? ORDER BY created_at DESC" : "SELECT * FROM tracked_flights WHERE device_id=? ORDER BY flight_date ASC, created_at DESC"; const { results } = await this.db.prepare(query).bind(...(flightDate ? [deviceId, flightDate] : [deviceId])).all(); return results.map(trackedFlightRow); }
+  async getTrackedFlights(deviceId, flightDate) {
+    const clauses = [], bindings = [];
+    if (deviceId) { clauses.push("device_id=?"); bindings.push(deviceId); }
+    if (flightDate) { clauses.push("flight_date=?"); bindings.push(flightDate); }
+    const query = `SELECT * FROM tracked_flights${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""} ORDER BY flight_date ASC, created_at DESC`;
+    const { results } = await this.db.prepare(query).bind(...bindings).all();
+    return results.map(trackedFlightRow);
+  }
   async addTrackedFlight(entry) { await this.db.prepare("INSERT INTO tracked_flights (id, device_id, flight_number, identifier_type, status_identifier, title, flight_date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(entry.id, entry.deviceId, entry.flightNumber, entry.identifierType, entry.statusIdentifier, entry.title, entry.flightDate, entry.createdAt).run(); }
   async deleteTrackedFlight(deviceId, id) { const result = await this.db.prepare("DELETE FROM tracked_flights WHERE id=? AND device_id=?").bind(id, deviceId).run(); return result.meta.changes > 0; }
   async getFlightStatus(id) { const r = await this.db.prepare("SELECT payload_json, fetched_at FROM flight_status_cache WHERE tracked_flight_id=?").bind(id).first(); return r && { payload: JSON.parse(r.payload_json), fetchedAt: r.fetched_at }; }

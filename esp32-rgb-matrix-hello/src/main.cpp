@@ -1783,6 +1783,9 @@ void drawRouteMarquees(const Route& route) {
   drawCityMarquee(originCity, destinationCity, 34, 16, 60, secondaryWhite);
   drawMinecraftMarquee(route.flightNumber[0] ? route.flightNumber : "-----", 34, 28, 60, tertiaryWhite);
   drawMinecraftMarquee(airlineName(route), 34, 40, 60, tertiaryWhite);
+  if (route.specialFlight && route.specialFlightTitle[0]) {
+    drawMinecraftMarquee(route.specialFlightTitle, 34, 52, 60, visibleColor(255, 128, 0));
+  }
 }
 
 // The initial card render paints every label. Subsequent 75ms refreshes paint
@@ -1804,6 +1807,7 @@ void refreshActiveMarquees(const Route& route) {
   const char* aircraftType = displayAircraftType(route);
   const char* flightNumber = route.flightNumber[0] ? route.flightNumber : "-----";
   const char* operatorName = airlineName(route);
+  const char* specialTitle = route.specialFlight ? route.specialFlightTitle : "";
   if (registrationTextWidth(registration) > 32 && marqueeIsMoving(registrationTextWidth(registration), 32)) {
     matrix.fillRect(95, 37, 32, 7, black);
     drawRegistrationMarquee(registration, 95, 37, 32, secondaryWhite);
@@ -1824,6 +1828,10 @@ void refreshActiveMarquees(const Route& route) {
   if (normalTextWidth(operatorName) > 60 && marqueeIsMoving(normalTextWidth(operatorName), 60)) {
     matrix.fillRect(34, 40, 60, 7, black);
     drawMinecraftMarquee(operatorName, 34, 40, 60, tertiaryWhite);
+  }
+  if (specialTitle[0] && normalTextWidth(specialTitle) > 60 && marqueeIsMoving(normalTextWidth(specialTitle), 60)) {
+    matrix.fillRect(34, 52, 60, 7, black);
+    drawMinecraftMarquee(specialTitle, 34, 52, 60, visibleColor(255, 128, 0));
   }
   // Telemetry normally stays completely still. Only the exceptional values
   // wider than their 32-pixel slot are re-rendered as a marquee.
@@ -2611,6 +2619,9 @@ void drawAnimatedRouteText(const Route& route, unsigned long phase, bool enterin
   drawAnimatedNormalLine(route.flightNumber[0] ? route.flightNumber : "-----", 34, 28, 60,
                          tertiaryWhite, 2, phase, entering);
   drawAnimatedNormalLine(airlineName(route), 34, 40, 60, tertiaryWhite, 9, phase, entering);
+  if (route.specialFlight && route.specialFlightTitle[0]) {
+    drawAnimatedNormalLine(route.specialFlightTitle, 34, 52, 60, visibleColor(255, 128, 0), 10, phase, entering);
+  }
   drawAnimatedNormalLine(registration, 95, 37, 32, secondaryWhite, 3, phase, entering, true, 0, true);
   drawAnimatedNormalLine(displayAircraftType(route), 95, 47, 32,
                          secondaryWhite, 4, phase, entering);
