@@ -255,7 +255,12 @@ function flightProgressFromStatus(status, now = unix()) {
 async function specialFlightStatus(entry, store, env) {
   if (!env.AIRLABS_API_KEY) return null;
   const cached = await store.getFlightStatus(entry.id);
-  if (cached && cached.fetchedAt + FLIGHT_STATUS_TTL_SECONDS > unix()) return cached.payload;
+  // Status cache entries written before schedule progress was introduced only
+  // contain an arrival timestamp. Refresh those once so active special flights
+  // gain a complete departure-to-arrival progress window immediately.
+  const cachedHasTimeline = Number.isFinite(cached?.payload?.estimatedDepartureEpoch || cached?.payload?.actualDepartureEpoch || cached?.payload?.scheduledDepartureEpoch) &&
+    Number.isFinite(cached?.payload?.estimatedArrivalEpoch || cached?.payload?.actualArrivalEpoch || cached?.payload?.scheduledArrivalEpoch);
+  if (cached && cachedHasTimeline && cached.fetchedAt + FLIGHT_STATUS_TTL_SECONDS > unix()) return cached.payload;
   if (!await store.takeProviderQuota("airlabs", isoDate().slice(0, 7), AIRLABS_MONTHLY_REQUEST_CAP)) {
     console.log("AirLabs monthly safety cap reached");
     return cached?.payload || null;
