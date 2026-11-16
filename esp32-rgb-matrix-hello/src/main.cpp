@@ -168,6 +168,10 @@ bool bootTransitionPending = false;
 bool bootToRouteTransitionActive = false;
 float bootExitChevronProgress = 0.0f;
 char bootDisplayName[49] = "PLANE DISPLAY";
+// The initial factory/provisioning build supplies this once. Afterwards the
+// board-owned copy in NVS is authoritative, so a shared OTA firmware image
+// cannot accidentally turn several displays into the same backend device.
+char persistedDeviceKey[96] = {};
 void cacheBootDisplayName(const char* name);
 bool hideUnknownRoutes = false;
 volatile bool flightFetchInProgress = false;
@@ -2797,6 +2801,10 @@ String pairingEndpoint() {
   return finalSlash < 0 ? String() : endpoint.substring(0, finalSlash) + "/api/device/pairing";
 }
 
+const char* activeDeviceKey() {
+  return persistedDeviceKey;
+}
+
 // This is deliberately a small, open Wi-Fi QR payload: the ESP32's setup AP
 // is only a local captive portal, and joining it is the one action needed to
 // open WiFiManager's network picker.
@@ -2908,7 +2916,7 @@ void fetchPairingQrTask(void*) {
     const String endpoint = pairingEndpoint();
     if (!endpoint.isEmpty() && beginBackendRequest(request, secureClient, endpoint)) {
       request.setTimeout(15000);
-      request.addHeader("X-Device-Key", LED_PLANE_DEVICE_KEY);
+      request.addHeader("X-Device-Key", activeDeviceKey());
       status = request.POST("");
       if (status == HTTP_CODE_OK) {
         JsonDocument payload;
@@ -2961,7 +2969,7 @@ bool fetchAndDrawPairingQr() {
   // loading spinner stays visible through Wi-Fi/TLS delays and retries.
   pairingQrRetryPending = true;
   drawPairingQrLoading();
-  if (strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(LED_PLANE_DEVICE_KEY) == 0 ||
+  if (strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(activeDeviceKey()) == 0 ||
       WiFi.status() != WL_CONNECTED || flightFetchInProgress || millis() < pairingQrRetryMillis) {
     return true;
   }
@@ -3259,7 +3267,7 @@ void fetchFlightsTask(void*) {
       // waits briefly at most, then receives the network to itself.
       request.setConnectTimeout(8000);
       request.setTimeout(12000);
-      request.addHeader("X-Device-Key", LED_PLANE_DEVICE_KEY);
+      request.addHeader("X-Device-Key", activeDeviceKey());
       status = request.GET();
       if (status == HTTP_CODE_OK) {
         const String response = request.getString();
@@ -3285,7 +3293,7 @@ void fetchFlightsTask(void*) {
 }
 
 bool fetchAndDrawFirstFlight() {
-  if (strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(LED_PLANE_DEVICE_KEY) == 0 ||
+  if (strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(activeDeviceKey()) == 0 ||
       WiFi.status() != WL_CONNECTED || flightFetchInProgress || flightFetchFinished) {
     return false;
   }
@@ -3335,6 +3343,13 @@ bool updateRequestIsAuthorized() {
 void loadDisplayPreferences() {
   Preferences preferences;
   preferences.begin("led-plane", false);
+  const String savedDeviceKey = preferences.getString("device-key", "");
+  if (savedDeviceKey.length()) {
+    strlcpy(persistedDeviceKey, savedDeviceKey.c_str(), sizeof(persistedDeviceKey));
+  } else if (strlen(LED_PLANE_DEVICE_KEY)) {
+    strlcpy(persistedDeviceKey, LED_PLANE_DEVICE_KEY, sizeof(persistedDeviceKey));
+    preferences.putString("device-key", persistedDeviceKey);
+  }
   hideUnknownRoutes = preferences.getBool("hide-unknown-routes", false);
   const String savedName = preferences.getString("display-name", "PLANE DISPLAY");
   strlcpy(bootDisplayName, savedName.c_str(), sizeof(bootDisplayName));
