@@ -1178,7 +1178,7 @@ const char* airlineName(const Route& route) {
   if (isRcafFlight(route)) return "Royal Canadian Air Force";
   if (isSunwestFlight(route)) return "Sunwest Aviation";
   if (isStarsFlight(route)) return "Stars Air Ambulance";
-  if (isKlmFlight(route)) return "KLM";
+  if (isKlmFlight(route)) return "Koninklijke Luchtvaart Maatschappij";
   if (isUsMilitaryFlight(route)) return "United States Military";
   return route.operatorCode[0] ? route.operatorCode : "";
 }
