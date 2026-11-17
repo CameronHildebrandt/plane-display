@@ -343,6 +343,7 @@ test("rotation is requested by owner and applied only after authenticated device
   const configBody = await config.json();
   assert.equal(configBody.name, "Test display");
   assert.equal(configBody.rotateKey, true);
+  assert.equal(config.headers.get("Cache-Control"), "no-store");
   const rotated = await handle(request("/api/device/rotate", { method: "POST", headers: { "X-Device-Key": key } }), store);
   const { deviceKey } = await rotated.json();
   assert.match(deviceKey, /^[A-Za-z0-9_-]{43}$/);

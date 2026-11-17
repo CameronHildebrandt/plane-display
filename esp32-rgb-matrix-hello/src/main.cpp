@@ -134,6 +134,14 @@ volatile bool pairingQrFetchInProgress = false;
 volatile bool pairingQrFetchFinished = false;
 volatile int pairingQrFetchStatus = 0;
 char pairingQrFetchedUrl[256] = {};
+// Display settings are deliberately fetched separately from flight data. The
+// settings response is tiny and authoritative for a board's name/location.
+bool deviceConfigRefreshPending = false;
+bool deviceConfigRefreshFlightsPending = false;
+volatile bool deviceConfigFetchInProgress = false;
+volatile bool deviceConfigFetchFinished = false;
+volatile int deviceConfigFetchStatus = 0;
+char deviceConfigFetchedName[49] = {};
 bool bootButtonWasPressed = false;
 unsigned long lastBootButtonPressMillis = 0;
 unsigned long nextFlightRotationMillis = 0;
@@ -2802,6 +2810,12 @@ String pairingEndpoint() {
   return finalSlash < 0 ? String() : endpoint.substring(0, finalSlash) + "/api/device/pairing";
 }
 
+String deviceConfigEndpoint() {
+  String endpoint(LED_PLANE_BACKEND_URL);
+  const int finalSlash = endpoint.lastIndexOf('/');
+  return finalSlash < 0 ? String() : endpoint.substring(0, finalSlash) + "/api/device/config";
+}
+
 const char* activeDeviceKey() {
   return persistedDeviceKey;
 }
@@ -3001,6 +3015,78 @@ bool fetchAndDrawPairingQr() {
 void updatePairingQrRequest() {
   processPairingQrResponse();
   if (showingPairingQr && pairingQrRetryPending) fetchAndDrawPairingQr();
+}
+
+void fetchDeviceConfigTask(void*) {
+  int status = -1;
+  char name[sizeof(deviceConfigFetchedName)] = {};
+
+  {
+    WiFiClientSecure secureClient;
+    HTTPClient request;
+    const String endpoint = deviceConfigEndpoint();
+    if (!endpoint.isEmpty() && beginBackendRequest(request, secureClient, endpoint)) {
+      // This should be a sub-second Worker/D1 lookup. Keep it bounded so a
+      // transient endpoint failure never delays the route display for long.
+      request.setConnectTimeout(4000);
+      request.setTimeout(6000);
+      request.addHeader("X-Device-Key", activeDeviceKey());
+      status = request.GET();
+      if (status == HTTP_CODE_OK) {
+        JsonDocument payload;
+        const DeserializationError error = deserializeJson(payload, request.getStream());
+        const char* responseName = payload["name"] | "";
+        if (!error && responseName[0]) strlcpy(name, responseName, sizeof(name));
+      } else {
+        Serial.printf("Configuration request failed: HTTP %d\n", status);
+      }
+      request.end();
+    }
+  }
+
+  // Publish last, so the draw loop never sees a partially written name.
+  strlcpy(deviceConfigFetchedName, name, sizeof(deviceConfigFetchedName));
+  deviceConfigFetchStatus = status;
+  deviceConfigFetchFinished = true;
+  deviceConfigFetchInProgress = false;
+  vTaskDelete(nullptr);
+}
+
+void requestDeviceConfigRefresh() {
+  deviceConfigRefreshPending = true;
+  // Location changes need a fresh aircraft list, not the regular minute wait.
+  deviceConfigRefreshFlightsPending = true;
+}
+
+void maybeStartDeviceConfigRefresh() {
+  if (!deviceConfigRefreshPending || deviceConfigFetchInProgress ||
+      strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(activeDeviceKey()) == 0 ||
+      WiFi.status() != WL_CONNECTED || flightFetchInProgress || pairingQrFetchInProgress) {
+    return;
+  }
+  deviceConfigFetchInProgress = true;
+  if (xTaskCreatePinnedToCore(fetchDeviceConfigTask, "device-config", 6144, nullptr, 1, nullptr, 0) != pdPASS) {
+    deviceConfigFetchInProgress = false;
+    deviceConfigFetchStatus = -3;
+    deviceConfigFetchFinished = true;
+  }
+}
+
+void processDeviceConfigResponse() {
+  if (!deviceConfigFetchFinished) return;
+  deviceConfigFetchFinished = false;
+  deviceConfigRefreshPending = false;
+  if (deviceConfigFetchStatus == HTTP_CODE_OK && deviceConfigFetchedName[0]) {
+    cacheBootDisplayName(deviceConfigFetchedName);
+    Serial.println("Display configuration refreshed.");
+  } else {
+    Serial.printf("Display configuration refresh completed with status %d\n", deviceConfigFetchStatus);
+  }
+  if (deviceConfigRefreshFlightsPending) {
+    deviceConfigRefreshFlightsPending = false;
+    // Start a flight fetch as soon as this request has released TLS.
+    nextFlightPollMillis = millis();
+  }
 }
 
 bool routesHaveSameIdentity(const Route& first, const Route& second) {
@@ -3337,7 +3423,9 @@ void handleBootButton() {
         drawNoPlanes();
       }
       nextFlightRotationMillis = millis() + kFlightRotationMillis;
-      fetchAndDrawFirstFlight();
+      // Settings are edited through the QR page. Pull them before refreshing
+      // routes so a changed location is visible immediately.
+      requestDeviceConfigRefresh();
     }
   }
   bootButtonWasPressed = pressed;
@@ -3626,8 +3714,10 @@ void setup() {
   loadDisplayPreferences();
   playBootAnimation();
   connectWifiAndEnableLocalUpdater();
-  fetchAndDrawFirstFlight();
-  nextFlightPollMillis = millis() + 60000;
+  // A powered-off board may have been moved or renamed. Synchronize its tiny
+  // settings payload before asking the comparatively slow flight providers.
+  requestDeviceConfigRefresh();
+  nextFlightPollMillis = millis();
 }
 
 void loop() {
@@ -3637,6 +3727,8 @@ void loop() {
   if (networkSetupPortalActive) return;
   handleBootButton();
   updatePairingQrRequest();
+  processDeviceConfigResponse();
+  maybeStartDeviceConfigRefresh();
   if (flightFetchInProgress && flightFetchStartedMillis != 0 &&
       millis() - flightFetchStartedMillis > kFlightFetchWatchdogMillis) {
     // Restarting is safer than force-deleting a task while mbedTLS owns its
@@ -3684,7 +3776,7 @@ void loop() {
   if (bootToRouteTransitionActive) updateBootToRouteTransition();
   if (idleToRouteTransitionActive) updateIdleToRouteTransition();
   if (routeToIdleTransitionActive) updateRouteToIdleTransition();
-  if (millis() >= nextFlightPollMillis) {
+  if (!deviceConfigRefreshPending && !deviceConfigFetchInProgress && millis() >= nextFlightPollMillis) {
     // Do not let a blocking network refresh erase the exit/enter frames. When
     // a refresh lands on a scene boundary, hold it until the new card has had
     // its initial marquee pause.

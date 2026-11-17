@@ -158,7 +158,9 @@ async function requestRotation(request, store) {
 async function deviceConfig(request, store) {
   const device = await authenticateDevice(request, store);
   if (!device) return json({ error: "Device authentication required" }, 401);
-  return json({ name: device.name, latitude: device.latitude, longitude: device.longitude, radiusKm: device.radiusKm, includeGrounded: Boolean(device.includeGrounded), hideIncompleteData: Boolean(device.hideIncompleteData), debugPack: selectedDebugPack(device.debugMode)?.id || null, rotateKey: Boolean(device.rotationRequested) });
+  // Settings edits must be visible as soon as a display exits its QR screen.
+  // Do not allow an intermediary cache to replay an old name or location.
+  return json({ name: device.name, latitude: device.latitude, longitude: device.longitude, radiusKm: device.radiusKm, includeGrounded: Boolean(device.includeGrounded), hideIncompleteData: Boolean(device.hideIncompleteData), debugPack: selectedDebugPack(device.debugMode)?.id || null, rotateKey: Boolean(device.rotationRequested) }, 200, { "Cache-Control": "no-store" });
 }
 
 async function rotateDeviceKey(request, store) {
