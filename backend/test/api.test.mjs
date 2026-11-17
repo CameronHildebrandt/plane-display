@@ -36,6 +36,9 @@ test("device fetches cached flight-data contract", async () => {
 
 test("AirLabs published routes override routeset and are reused for a week", async () => {
   const { store, key } = await setup();
+  // Keep this test aircraft close to the provider route while retaining the
+  // display's broad test search area, so its geometric progress is valid.
+  store.devices.get("test").radiusKm = 2000;
   let airLabsCalls = 0;
   const source = { fetch: async (url) => {
     const value = String(url);
@@ -51,7 +54,7 @@ test("AirLabs published routes override routeset and are reused for a week", asy
     }
     if (value.includes("api.adsbdb.com/v0/airline/WJA")) return new Response(JSON.stringify({ response: [{ name: "WestJet", icao: "WJA", country: "Canada" }] }));
     if (value.includes("api.adsbdb.com/v0/aircraft/c01476")) return new Response(JSON.stringify({ response: { aircraft: {} } }));
-    if (value.includes("/v2/point/")) return new Response(JSON.stringify({ ac: [{ hex: "c01476", flight: "WJA1476", r: "C-TEST", t: "B38M", alt_baro: 30000, gs: 430, track: 190, lat: 53.6, lon: -113.6 }] }));
+    if (value.includes("/v2/point/")) return new Response(JSON.stringify({ ac: [{ hex: "c01476", flight: "WJA1476", r: "C-TEST", t: "B38M", alt_baro: 30000, gs: 430, track: 190, lat: 44, lon: -115.3 }] }));
     throw new Error(`unexpected lookup: ${url}`);
   } };
   const env = { ...source, AIRLABS_API_KEY: "test-key" };
@@ -60,7 +63,8 @@ test("AirLabs published routes override routeset and are reused for a week", asy
   assert.equal(flight.origin, "YEG");
   assert.equal(flight.destination, "LAS");
   assert.equal(flight.routeSource, "airlabs");
-  assert.equal(flight.flightProgressPercent, null);
+  assert.equal(Number.isFinite(flight.flightProgressPercent), true);
+  assert.equal(flight.flightProgressEstimated, true);
   await store.deleteSnapshot("test");
   response = await handle(request("/flightdata", { headers: { "X-Device-Key": key } }), store, env);
   [flight] = (await response.json()).flights;

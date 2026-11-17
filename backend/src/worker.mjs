@@ -488,10 +488,11 @@ async function enrichAirLabsRoutes(flights, store, env, fetcher) {
   return flights.map((flight, index) => {
     const route = routes[index];
     if (!route?.origin || !route?.destination) return flight;
-    // AirLabs supplies airports but not the geometry required for a trustworthy
-    // progress percentage, so never retain a percentage from a different route.
+    // AirLabs supplies the more current published airport pair, but not the
+    // position geometry. Keep ADSB.lol's already-calculated live progress
+    // instead of blanking the indicator whenever the route label is upgraded.
     return { ...flight, origin: route.origin, destination: route.destination,
-      flightProgressPercent: null, flightProgressEstimated: false, routeSource: "airlabs" };
+      routeSource: "airlabs" };
   });
 }
 

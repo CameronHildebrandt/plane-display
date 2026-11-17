@@ -125,6 +125,7 @@ unsigned long nextRefreshDebugRedrawMillis = 0;
 String pairingUrl;
 unsigned long pairingUrlRefreshMillis = 0;
 bool showingPairingQr = false;
+bool pairingQrLoadingPainted = false;
 int pairingQrRequestStatus = 0;
 bool pairingQrRetryPending = false;
 unsigned long pairingQrRetryMillis = 0;
@@ -2866,6 +2867,7 @@ void drawPairingQr(const String& url) {
   const int16_t left = (matrix.width() / 2) + ((matrix.width() / 2) - qr.size) / 2;
   const int16_t top = (matrix.height() - qr.size) / 2;
   showingNoPlanes = false;
+  pairingQrLoadingPainted = false;
   matrix.fillScreen(black);
   drawPairingQrLabels();
   for (uint8_t y = 0; y < qr.size; ++y) {
@@ -2896,8 +2898,14 @@ void drawPairingQrLoading() {
                                      60, 45, 35, 28, 26, 26};
   const uint8_t lead = ((millis() - pairingQrSpinnerStartMillis) * 12UL / 2000UL) % 12;
   showingNoPlanes = false;
-  matrix.fillScreen(black);
-  drawPairingQrLabels();
+  if (!pairingQrLoadingPainted) {
+    // Paint the static instructions once. Later frames touch only the 13×13
+    // spinner area, so the lettering remains perfectly steady while loading.
+    matrix.fillScreen(black);
+    drawPairingQrLabels();
+    pairingQrLoadingPainted = true;
+  }
+  matrix.fillRect(centerX - 6, centerY - 6, 13, 13, black);
   for (uint8_t tail = 0; tail < 12; ++tail) {
     const uint8_t index = (lead + 12 - tail) % 12;
     const uint8_t level = kBrightness[tail];
