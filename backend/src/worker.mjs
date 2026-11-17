@@ -2,6 +2,11 @@ const encoder = new TextEncoder();
 const PAIRING_TTL_SECONDS = 5 * 60;
 const SESSION_TTL_SECONDS = 90 * 24 * 60 * 60;
 const SNAPSHOT_TTL_SECONDS = 120;
+// The ESP32 abandons a slow refresh after twelve seconds. Leave it a generous
+// margin for TLS and JSON parsing: live positions must win over optional
+// branding/route enrichment whenever an upstream provider is sluggish.
+const PROVIDER_TIMEOUT_MS = 4000;
+const OPTIONAL_ENRICHMENT_BUDGET_MS = 4500;
 const FLIGHT_STATUS_TTL_SECONDS = 10 * 60;
 const AIRLABS_MONTHLY_REQUEST_CAP = 900;
 const AIRLABS_ROUTE_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60;
@@ -177,14 +182,45 @@ async function authenticateSession(request, store) {
 }
 async function liveFlights(device, store, env) {
   try {
-    const nearby = await adsbLolFlights(device, store, env);
-    const tracked = await activeTrackedFlights(device, store, env);
+    const [nearby, tracked] = await Promise.all([
+      adsbLolFlights(device, store, env),
+      valueWithin(activeTrackedFlights(device, store, env), [], 3000, "special-flight lookup")
+    ]);
     return { source: "adsb.lol", flights: sortFlightsForDisplay(filterIncompleteFlights(device, mergeTrackedFlights(nearby, tracked))).slice(0, 20) };
   }
   catch (adsbError) {
     console.log("ADSB.lol request failed; trying OpenSky", adsbError instanceof Error ? adsbError.message : String(adsbError));
     const [nearby, tracked] = await Promise.all([openSkyFlights(device, store, env), activeTrackedFlights(device, store, env)]);
     return { source: "opensky", flights: sortFlightsForDisplay(filterIncompleteFlights(device, mergeTrackedFlights(nearby, tracked))).slice(0, 20) };
+  }
+}
+
+async function fetchProvider(fetcher, input, init = {}, timeoutMs = PROVIDER_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetcher(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function valueWithin(value, fallback, timeoutMs, label) {
+  const safeValue = Promise.resolve(value).catch(error => {
+    console.log(`${label} failed`, error instanceof Error ? error.message : String(error));
+    return fallback;
+  });
+  let timer;
+  const deadline = new Promise(resolve => {
+    timer = setTimeout(() => {
+      console.log(`${label} exceeded ${timeoutMs}ms; using live data without it`);
+      resolve(fallback);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([safeValue, deadline]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -210,7 +246,7 @@ async function activeTrackedFlights(device, store, env) {
   const results = await Promise.all(tracked.map(async entry => {
     try {
       const lookupKind = entry.identifierType === "tailNumber" ? "reg" : "callsign";
-      const response = await fetcher(`https://api.adsb.lol/v2/${lookupKind}/${encodeURIComponent(entry.identifier)}`);
+      const response = await fetchProvider(fetcher, `https://api.adsb.lol/v2/${lookupKind}/${encodeURIComponent(entry.identifier)}`);
       if (!response.ok) throw new Error(`ADSB.lol ${lookupKind} lookup returned ${response.status}`);
       const body = await response.json();
       const aircraft = Array.isArray(body.ac) ? body.ac : [];
@@ -423,7 +459,7 @@ function sortFlightsForDisplay(flights) {
 async function adsbLolFlights(device, store, env) {
   const fetcher = env.fetch || fetch;
   const radiusNm = Math.min(250, device.radiusKm / 1.852);
-  const response = await fetcher(`https://api.adsb.lol/v2/point/${device.latitude}/${device.longitude}/${radiusNm}`);
+  const response = await fetchProvider(fetcher, `https://api.adsb.lol/v2/point/${device.latitude}/${device.longitude}/${radiusNm}`);
   if (!response.ok) throw new Error(`ADSB.lol returned ${response.status}`);
   const data = await response.json();
   const rawAircraft = Array.isArray(data.ac) ? data.ac : [];
@@ -433,8 +469,11 @@ async function adsbLolFlights(device, store, env) {
     .filter(Boolean)
     .sort((a, b) => a.distanceKm - b.distanceKm)
     .slice(0, 20);
-  const routed = applyRoutes(flights, await adsbLolRoutes(rawAircraft, fetcher));
-  return enrichAirlineNames(await enrichAircraftDetails(await enrichAirLabsRoutes(routed, store, env, fetcher), store, fetcher), store, fetcher);
+  const enriched = (async () => {
+    const routed = applyRoutes(flights, await adsbLolRoutes(rawAircraft, fetcher));
+    return enrichAirlineNames(await enrichAircraftDetails(await enrichAirLabsRoutes(routed, store, env, fetcher), store, fetcher), store, fetcher);
+  })();
+  return valueWithin(enriched, flights, OPTIONAL_ENRICHMENT_BUDGET_MS, "flight enrichment");
 }
 
 // ADSB.lol remains authoritative for the aircraft's live position and
@@ -486,7 +525,7 @@ async function airLabsRouteForFlight(flight, store, env, fetcher) {
     url.searchParams.set(lookup.parameter, lookup.identifier);
     url.searchParams.set("_fields", "dep_iata,arr_iata");
     url.searchParams.set("api_key", env.AIRLABS_API_KEY);
-    const response = await fetcher(url);
+    const response = await fetchProvider(fetcher, url);
     if (!response.ok) throw new Error(`AirLabs returned ${response.status}`);
     const body = await response.json();
     const source = body.response || body;
@@ -522,7 +561,7 @@ async function airlineName(code, store, fetcher) {
   const cached = await store.getAirline(code);
   if (cached && cached.fetchedAt + maxAgeSeconds > unix()) return cached;
   try {
-    const response = await fetcher(`https://api.adsbdb.com/v0/airline/${encodeURIComponent(code)}`);
+    const response = await fetchProvider(fetcher, `https://api.adsbdb.com/v0/airline/${encodeURIComponent(code)}`);
     if (!response.ok) throw new Error(`ADSBDB airline lookup returned ${response.status}`);
     const body = await response.json();
     const airline = Array.isArray(body.response) ? body.response.find(a => a.icao === code) || body.response[0] : null;
@@ -605,7 +644,7 @@ async function aircraftDetails(icao24, store, fetcher) {
   const cached = await store.getAircraft(icao24);
   if (cached && cached.identityVersion >= 2 && cached.fetchedAt + maxAgeSeconds > unix()) return cached;
   try {
-    const response = await fetcher(`https://api.adsbdb.com/v0/aircraft/${encodeURIComponent(icao24)}`);
+    const response = await fetchProvider(fetcher, `https://api.adsbdb.com/v0/aircraft/${encodeURIComponent(icao24)}`);
     if (!response.ok) throw new Error(`ADSBDB aircraft lookup returned ${response.status}`);
     const aircraft = (await response.json()).response?.aircraft;
     const result = {
@@ -633,7 +672,7 @@ async function adsbLolRoutes(aircraft, fetcher) {
     .map(a => ({ callsign: a.flight.trim(), lat: a.lat, lng: a.lon }));
   if (!planes.length) return [];
   try {
-    const response = await fetcher("https://api.adsb.lol/api/0/routeset", { method: "POST", headers: { "Content-Type": "application/json", "Referer": "https://adsb.lol/" }, body: JSON.stringify({ planes }) });
+    const response = await fetchProvider(fetcher, "https://api.adsb.lol/api/0/routeset", { method: "POST", headers: { "Content-Type": "application/json", "Referer": "https://adsb.lol/" }, body: JSON.stringify({ planes }) });
     if (!response.ok) throw new Error(`ADSB.lol routeset returned ${response.status}`);
     const routes = await response.json();
     return Array.isArray(routes) ? routes : [];
@@ -651,7 +690,7 @@ async function openSkyFlights(device, store, env) {
   const params = new URLSearchParams({ lamin: String(device.latitude - latitudeDelta), lamax: String(device.latitude + latitudeDelta), lomin: String(device.longitude - longitudeDelta), lomax: String(device.longitude + longitudeDelta) });
   const headers = {};
   if (env.OPEN_SKY_CLIENT_ID && env.OPEN_SKY_CLIENT_SECRET) headers.Authorization = `Bearer ${await getOpenSkyToken(env, fetcher)}`;
-  const response = await fetcher(`https://opensky-network.org/api/states/all?${params}`, { headers });
+  const response = await fetchProvider(fetcher, `https://opensky-network.org/api/states/all?${params}`, { headers });
   if (!response.ok) throw new Error(`OpenSky returned ${response.status}`);
   const data = await response.json();
   const aircraft = Array.isArray(data.states) ? data.states : [];
@@ -661,12 +700,12 @@ async function openSkyFlights(device, store, env) {
     .filter(Boolean)
     .sort((a, b) => a.distanceKm - b.distanceKm)
     .slice(0, 20);
-  return enrichAirLabsRoutes(flights, store, env, fetcher);
+  return valueWithin(enrichAirLabsRoutes(flights, store, env, fetcher), flights, OPTIONAL_ENRICHMENT_BUDGET_MS, "OpenSky route enrichment");
 }
 
 async function getOpenSkyToken(env, fetcher) {
   if (openSkyToken && openSkyToken.expiresAt > unix() + 30) return openSkyToken.value;
-  const response = await fetcher("https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "client_credentials", client_id: env.OPEN_SKY_CLIENT_ID, client_secret: env.OPEN_SKY_CLIENT_SECRET }).toString() });
+  const response = await fetchProvider(fetcher, "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "client_credentials", client_id: env.OPEN_SKY_CLIENT_ID, client_secret: env.OPEN_SKY_CLIENT_SECRET }).toString() });
   if (!response.ok) throw new Error(`OpenSky authentication returned ${response.status}`);
   const body = await response.json();
   if (!body.access_token) throw new Error("OpenSky authentication response did not contain a token");
@@ -756,7 +795,7 @@ const TICKET_TO_CALLSIGNS = Object.freeze({
 });
 async function routeForTrackedCandidate(identifier, fetcher) {
   try {
-    const response = await fetcher(`https://api.adsb.lol/v2/callsign/${encodeURIComponent(identifier)}`);
+    const response = await fetchProvider(fetcher, `https://api.adsb.lol/v2/callsign/${encodeURIComponent(identifier)}`);
     if (!response.ok) return null;
     const aircraft = (await response.json()).ac?.find(item => numberOrNull(item.lat) !== null && numberOrNull(item.lon) !== null);
     if (!aircraft) return null;
