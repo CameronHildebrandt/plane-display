@@ -69,7 +69,7 @@ constexpr int16_t kRotationIndicatorHeight = 4;
 constexpr unsigned long kRotationPipBubbleMillis = 600;
 constexpr unsigned long kBootChevronMillis = 2000;
 constexpr unsigned long kBootChevronStaggerMillis = 1000;
-constexpr unsigned long kBootExitChevronMillis = 600;
+constexpr unsigned long kBootExitChevronMillis = 2000;
 constexpr unsigned long kBootRouteRollInMillis = 900;
 constexpr unsigned long kWifiOfflinePortalMillis = 60UL * 1000UL;
 constexpr char kDeviceHostname[] = "led-plane";
@@ -2119,6 +2119,51 @@ void drawNoPlanesAircraftSprite(AircraftSprite sprite, int16_t x, int16_t y, uin
   }
 }
 
+struct NoPlanesScene {
+  AircraftSprite primarySprite;
+  int16_t primaryX;
+  bool hasNextSprite;
+  AircraftSprite nextSprite;
+  int16_t nextX;
+};
+
+bool noPlanesSpriteHasPixel(AircraftSprite sprite, int16_t spriteX, int16_t spriteY,
+                            int16_t panelX, int16_t panelY) {
+  // This is the inverse of drawNoPlanesSpritePixel's clockwise rotation. It
+  // reads the editable source mask directly, so differential painting keeps
+  // working when a sprite's silhouette changes later.
+  const int16_t sourceX = panelY - spriteY;
+  const int16_t sourceY = 32 - (panelX - spriteX);
+  if (sourceX < 0 || sourceX >= kAircraftSpriteSize ||
+      sourceY < 0 || sourceY >= kAircraftSpriteSize) {
+    return false;
+  }
+  const uint64_t pixels = kAircraftSpriteMasks[static_cast<uint8_t>(sprite)][sourceY];
+  return (pixels & (1ULL << (32 - sourceX))) != 0;
+}
+
+bool noPlanesSceneHasPixel(const NoPlanesScene& scene, int16_t panelX, int16_t panelY) {
+  if (noPlanesSpriteHasPixel(scene.primarySprite, scene.primaryX, 12, panelX, panelY)) return true;
+  return scene.hasNextSprite &&
+      noPlanesSpriteHasPixel(scene.nextSprite, scene.nextX, 12, panelX, panelY);
+}
+
+void drawNoPlanesSceneDelta(const NoPlanesScene& before, const NoPlanesScene& after) {
+  const uint16_t black = matrix.color565(0, 0, 0);
+  const uint16_t white = matrix.color565(255, 255, 255);
+  // Only the pixels whose composited value changes are written. Although the
+  // test spans the small fixed flight lane, it is sprite-data driven: moving
+  // or replacing any 33×33 source asset automatically produces its own true
+  // leading/trailing edges without per-sprite paint code.
+  for (int16_t y = 12; y < 12 + kAircraftSpriteSize; ++y) {
+    for (int16_t x = 0; x < matrix.width(); ++x) {
+      const bool wasLit = noPlanesSceneHasPixel(before, x, y);
+      const bool isLit = noPlanesSceneHasPixel(after, x, y);
+      if (wasLit != isLit) matrix.drawPixel(x, y, isLit ? white : black);
+    }
+  }
+}
+
 void drawNoPlanesFrame() {
   const uint16_t black = matrix.color565(0, 0, 0);
   const uint16_t white = matrix.color565(255, 255, 255);
@@ -2147,21 +2192,6 @@ void drawNoPlanes() {
 float bootChevronProgress(unsigned long elapsed, unsigned long delay) {
   if (elapsed <= delay) return 0.0f;
   return min(1.0f, static_cast<float>(elapsed - delay) / kBootChevronMillis);
-}
-
-// A filled 45-degree chevron rises from below the panel. Once its point has
-// passed the top edge, every column is filled; drawing later chevrons last
-// naturally creates the layered colour-cycle effect without a separate mask.
-void drawBootChevron(float progress, uint16_t color) {
-  if (progress <= 0.0f) return;
-  const int16_t center = (matrix.width() - 1) / 2;
-  const int16_t apexY = matrix.height() - static_cast<int16_t>(progress * (matrix.height() * 2));
-  for (int16_t x = 0; x < matrix.width(); ++x) {
-    const int16_t firstY = apexY + abs(x - center);
-    if (firstY < matrix.height()) {
-      matrix.fillRect(x, max<int16_t>(0, firstY), 1, matrix.height() - max<int16_t>(0, firstY), color);
-    }
-  }
 }
 
 // The boot animation never needs to repaint the settled area. Drawing only
@@ -2203,12 +2233,9 @@ void drawBootName(uint8_t /*brightness*/) {
   drawMinecraftBoldCapsCentered(second, 34, black);
 }
 
-void drawBootHoldScreen(uint8_t brightness = 255) {
-  const uint8_t purpleRed = static_cast<uint8_t>((178UL * brightness) / 255UL);
-  const uint8_t purpleGreen = static_cast<uint8_t>((42UL * brightness) / 255UL);
-  const uint8_t purpleBlue = static_cast<uint8_t>((220UL * brightness) / 255UL);
-  matrix.fillScreen(matrix.color565(0, 0, 0));
-  drawBootChevron(1.0f, visibleColor(purpleRed, purpleGreen, purpleBlue));
+void drawBootHoldText(uint8_t brightness = 255) {
+  // The completed purple chevron already occupies the whole background. Draw
+  // only the title here—rewriting the card makes the panel visibly flash.
   drawBootName(brightness);
 }
 
@@ -2232,16 +2259,18 @@ void playBootAnimation() {
     purpleProgress = nextPurple;
     delay(16);
   }
-  drawBootHoldScreen();
+  // Finish the final sub-frame by painting only the remaining leading edge,
+  // then overlay the name on the background already drawn by the chevrons.
+  drawBootChevronLeadingEdge(purpleProgress, 1.0f, visibleColor(178, 42, 220));
+  drawBootHoldText();
   bootTransitionPending = true;
 }
 
 void advanceNoPlanesAnimation() {
-  // Keep the fixed elements on the panel. Only clear the old plane footprint,
-  // then paint its next position, so the border and status label never blink.
-  const uint16_t black = matrix.color565(0, 0, 0);
-  matrix.fillRect(noPlanesSpriteX, 12, 33, 33, black);
-  if (nextNoPlanesSpriteActive) matrix.fillRect(nextNoPlanesSpriteX, 12, 33, 33, black);
+  const NoPlanesScene before = {
+      static_cast<AircraftSprite>(noPlanesAircraftSprite), noPlanesSpriteX,
+      nextNoPlanesSpriteActive, static_cast<AircraftSprite>(nextNoPlanesAircraftSprite), nextNoPlanesSpriteX,
+  };
 
   ++noPlanesSpriteX;
   if (nextNoPlanesSpriteActive) ++nextNoPlanesSpriteX;
@@ -2262,12 +2291,11 @@ void advanceNoPlanesAnimation() {
     noPlanesAircraftSprite = nextNoPlanesAircraftSprite;
     nextNoPlanesSpriteActive = false;
   }
-  drawNoPlanesAircraftSprite(static_cast<AircraftSprite>(noPlanesAircraftSprite), noPlanesSpriteX, 12,
-                              matrix.color565(255, 255, 255));
-  if (nextNoPlanesSpriteActive) {
-    drawNoPlanesAircraftSprite(static_cast<AircraftSprite>(nextNoPlanesAircraftSprite),
-                               nextNoPlanesSpriteX, 12, matrix.color565(255, 255, 255));
-  }
+  const NoPlanesScene after = {
+      static_cast<AircraftSprite>(noPlanesAircraftSprite), noPlanesSpriteX,
+      nextNoPlanesSpriteActive, static_cast<AircraftSprite>(nextNoPlanesAircraftSprite), nextNoPlanesSpriteX,
+  };
+  drawNoPlanesSceneDelta(before, after);
 }
 
 void showNoPlanesAfterDataFailure() {
