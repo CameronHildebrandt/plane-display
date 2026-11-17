@@ -288,9 +288,17 @@ constexpr uint8_t kMinecraftLowercaseWidths[] PROGMEM = {
     5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
 };
 
-// The full face uses a standard five-wide zero. Only dense telemetry on the
-// right side gets this compact four-wide variant.
-constexpr uint8_t kMinecraftTelemetryZero[7] PROGMEM = {0x0C,0x12,0x12,0x16,0x1A,0x12,0x0C};
+// Normal numerals are a proportional 5×7 face. `1` has one less empty column
+// than the other figures, matching the variable-width alphabet faces.
+constexpr uint8_t kMinecraftNormalDigitWidths[] PROGMEM = {
+    5, 4, 5, 5, 5, 5, 5, 5, 5, 5,
+};
+
+// Registration marquees are the sole user of the skinny numeral face. Its
+// zero keeps the established narrow/slashed artwork; all other figures reuse
+// their normal pixels but lose their trailing spacer. `1` is already narrow,
+// so it deliberately retains its normal advance.
+constexpr uint8_t kMinecraftSkinnyZero[7] PROGMEM = {0x0C,0x12,0x12,0x16,0x1A,0x12,0x0C};
 
 // The compact `kts` sprite has intentionally bespoke spacing and two local
 // pixel edits. Keep it independent from the editable lowercase face.
@@ -312,6 +320,8 @@ constexpr uint8_t kTelemetryUnitGlyphs[][5] PROGMEM = {
 enum class TelemetryUnit : uint8_t { None, Feet, FeetPerMinute, Knots, Degrees, Kilometres };
 
 uint8_t minecraftGlyphIndex(char character);
+uint8_t normalGlyphWidth(char character);
+uint8_t normalGlyphAdvance(char character);
 
 int8_t telemetryUnitGlyphIndex(char character) {
   switch (character) {
@@ -337,7 +347,7 @@ const char* telemetryUnitText(TelemetryUnit unit) {
 int16_t telemetryNumberWidth(const char* text) {
   int16_t width = 0;
   for (const char* character = text; *character; ++character) {
-    width += (*character == '.' || *character == ':') ? 2 : (*character == '0' ? 5 : 6);
+    width += (*character == '.' || *character == ':') ? 2 : normalGlyphAdvance(*character);
   }
   return width ? width - 1 : 0;
 }
@@ -413,15 +423,14 @@ int16_t drawMinecraftTelemetryNumber(const char* text, int16_t x, int16_t y, uin
       continue;
     }
     const uint8_t glyph = minecraftGlyphIndex(*character);
+    const uint8_t glyphWidth = normalGlyphWidth(*character);
     for (uint8_t row = 0; row < 7; ++row) {
-      const uint8_t pixels = *character == '0'
-                                 ? pgm_read_byte(&kMinecraftTelemetryZero[row])
-                                 : pgm_read_byte(&kMinecraftFont[glyph][row]);
-      for (uint8_t column = 0; column < 5; ++column) {
-        if (pixels & (1 << (4 - column))) drawTelemetryPixel(x + column, y + row, color, left, right);
+      const uint8_t pixels = pgm_read_byte(&kMinecraftFont[glyph][row]);
+      for (uint8_t column = 0; column < glyphWidth; ++column) {
+        if (pixels & (1 << (glyphWidth - 1 - column))) drawTelemetryPixel(x + column, y + row, color, left, right);
       }
     }
-    x += *character == '0' ? 5 : 6;
+    x += normalGlyphAdvance(*character);
   }
   return x;
 }
@@ -582,12 +591,22 @@ uint8_t normalGlyphWidth(char character) {
   if (character >= 'a' && character <= 'z') {
     return pgm_read_byte(&kMinecraftLowercaseWidths[character - 'a']);
   }
+  if (character >= '0' && character <= '9') {
+    return pgm_read_byte(&kMinecraftNormalDigitWidths[character - '0']);
+  }
   if (character == '\'') return 2;
   return 5;
 }
 
-uint8_t normalGlyphAdvance(char character, bool compactZero = false) {
-  return compactZero && character == '0' ? 5 : normalGlyphWidth(character) + 1;
+uint8_t normalGlyphAdvance(char character) {
+  return normalGlyphWidth(character) + 1;
+}
+
+uint8_t skinnyNumeralAdvance(char character) {
+  if (character >= '0' && character <= '9' && character != '1') {
+    return normalGlyphAdvance(character) - 1;
+  }
+  return normalGlyphAdvance(character);
 }
 
 int16_t normalTextWidth(const char* text) {
@@ -791,7 +810,7 @@ void drawRegistrationMarquee(const char* text, int16_t left, int16_t y, int16_t 
                              uint16_t color) {
   int16_t textWidth = -1;
   for (const char* character = text; *character; ++character) {
-    textWidth += *character == '-' ? 3 : normalGlyphAdvance(*character, true);
+    textWidth += *character == '-' ? 3 : skinnyNumeralAdvance(*character);
   }
   int16_t offset = 0;
   if (textWidth > width) {
@@ -811,13 +830,13 @@ void drawRegistrationMarquee(const char* text, int16_t left, int16_t y, int16_t 
       ++character;
       continue;
     }
-    const bool compactZero = *character == '0';
+    const bool skinnyZero = *character == '0';
     const bool uppercase = *character >= 'A' && *character <= 'Z';
     const uint8_t glyph = uppercase ? static_cast<uint8_t>(*character - 'A')
                                     : minecraftGlyphIndex(*character);
-    const uint8_t glyphWidth = compactZero ? 5 : normalGlyphWidth(*character);
+    const uint8_t glyphWidth = skinnyZero ? 5 : normalGlyphWidth(*character);
     for (uint8_t row = 0; row < 7; ++row) {
-      const uint8_t pixels = compactZero ? pgm_read_byte(&kMinecraftTelemetryZero[row])
+      const uint8_t pixels = skinnyZero ? pgm_read_byte(&kMinecraftSkinnyZero[row])
                                        : uppercase ? pgm_read_byte(&kMinecraftNormalCaps[glyph][row])
                                        : pgm_read_byte(&kMinecraftFont[glyph][row]);
       for (uint8_t column = 0; column < glyphWidth; ++column) {
@@ -827,7 +846,7 @@ void drawRegistrationMarquee(const char* text, int16_t left, int16_t y, int16_t 
         }
       }
     }
-    x += normalGlyphAdvance(*character, compactZero);
+    x += skinnyNumeralAdvance(*character);
     ++character;
   }
 }
@@ -1733,7 +1752,7 @@ void drawAirportRoute(const Route& route, int16_t x, int16_t y, uint16_t color) 
 int16_t registrationTextWidth(const char* text) {
   int16_t width = -1;
   for (const char* character = text; *character; ++character) {
-    width += *character == '-' ? 3 : normalGlyphAdvance(*character, true);
+    width += *character == '-' ? 3 : skinnyNumeralAdvance(*character);
   }
   return width;
 }
@@ -2299,7 +2318,7 @@ int8_t letterDropOffset(unsigned long phase, uint8_t line, uint8_t character,
 void drawAnimatedNormalLine(const char* text, int16_t left, int16_t y, int16_t width,
                             uint16_t color, uint8_t line, unsigned long phase,
                             bool entering, bool compactHyphen = false, uint8_t startIndex = 0,
-                            bool compactZero = false) {
+                            bool skinnyNumerals = false) {
   int16_t x = left;
   uint8_t characterIndex = 0;
   for (const char* character = text; *character; ++character, ++characterIndex) {
@@ -2314,11 +2333,12 @@ void drawAnimatedNormalLine(const char* text, int16_t left, int16_t y, int16_t w
     const bool uppercase = *character >= 'A' && *character <= 'Z';
     const uint8_t glyph = uppercase ? static_cast<uint8_t>(*character - 'A')
                                     : minecraftGlyphIndex(*character);
-    const uint8_t glyphWidth = compactZero && *character == '0' ? 5 : normalGlyphWidth(*character);
+    const bool skinnyZero = skinnyNumerals && *character == '0';
+    const uint8_t glyphWidth = skinnyZero ? 5 : normalGlyphWidth(*character);
     for (uint8_t row = 0; row < 7; ++row) {
       const int16_t pixelY = y + row + offset;
       if (pixelY < y || pixelY >= y + 7) continue;
-      const uint8_t pixels = compactZero && *character == '0' ? pgm_read_byte(&kMinecraftTelemetryZero[row])
+      const uint8_t pixels = skinnyZero ? pgm_read_byte(&kMinecraftSkinnyZero[row])
                                        : uppercase ? pgm_read_byte(&kMinecraftNormalCaps[glyph][row])
                                        : pgm_read_byte(&kMinecraftFont[glyph][row]);
       for (uint8_t column = 0; column < glyphWidth; ++column) {
@@ -2328,14 +2348,14 @@ void drawAnimatedNormalLine(const char* text, int16_t left, int16_t y, int16_t w
         }
       }
     }
-    x += normalGlyphAdvance(*character, compactZero);
+    x += skinnyNumerals ? skinnyNumeralAdvance(*character) : normalGlyphAdvance(*character);
   }
 }
 
 int16_t telemetryTextAdvance(const char* text) {
   int16_t advance = 0;
   for (const char* character = text; *character; ++character) {
-    advance += (*character == '.' || *character == ':') ? 2 : (*character == '0' ? 5 : 6);
+    advance += (*character == '.' || *character == ':') ? 2 : normalGlyphAdvance(*character);
   }
   return advance;
 }
@@ -2361,18 +2381,17 @@ void drawAnimatedTelemetryNumber(const char* text, int16_t x, int16_t y, int16_t
       continue;
     }
     const uint8_t glyph = minecraftGlyphIndex(*character);
+    const uint8_t glyphWidth = normalGlyphWidth(*character);
     for (uint8_t row = 0; row < 7; ++row) {
       const int16_t pixelY = y + row + offset;
       if (pixelY < y || pixelY >= y + 7) continue;
-      const uint8_t pixels = *character == '0'
-                                 ? pgm_read_byte(&kMinecraftTelemetryZero[row])
-                                 : pgm_read_byte(&kMinecraftFont[glyph][row]);
-      for (uint8_t column = 0; column < 5; ++column) {
+      const uint8_t pixels = pgm_read_byte(&kMinecraftFont[glyph][row]);
+      for (uint8_t column = 0; column < glyphWidth; ++column) {
         const int16_t pixelX = x + column;
-        if ((pixels & (1 << (4 - column))) && pixelX >= left && pixelX < right) matrix.drawPixel(pixelX, pixelY, color);
+        if ((pixels & (1 << (glyphWidth - 1 - column))) && pixelX >= left && pixelX < right) matrix.drawPixel(pixelX, pixelY, color);
       }
     }
-    x += *character == '0' ? 5 : 6;
+    x += normalGlyphAdvance(*character);
   }
 }
 
