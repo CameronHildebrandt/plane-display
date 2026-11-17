@@ -15,12 +15,17 @@ from typing import Dict, List
 from PIL import Image
 
 ALPHABET = "abcdefghijklmnopqrstuvwxyz"
+NUMERALS = "0123456789"
 CELL_WIDTH = 7  # six glyph pixels + one guaranteed-black separator
 CELL_HEIGHT = 7
 COLUMNS = len(ALPHABET)
 
 
-def read_face(markdown: Path, face: str) -> Dict[str, List[str]]:
+def glyph_order(face: str) -> str:
+    return NUMERALS if "numeral" in face.lower() else ALPHABET
+
+
+def read_face(markdown: Path, face: str, glyphs: str) -> Dict[str, List[str]]:
     heading = f"## {face}".lower()
     lines = markdown.read_text(encoding="utf-8").splitlines()
     start = next((i for i, line in enumerate(lines) if line.strip().lower() == heading), None)
@@ -36,7 +41,7 @@ def read_face(markdown: Path, face: str) -> Dict[str, List[str]]:
             continue
         if not in_block:
             continue
-        match = re.fullmatch(r"([a-zA-Z])\s+([xo/]+)", line.strip())
+        match = re.fullmatch(r"([a-zA-Z0-9])\s+([xo/]+)", line.strip())
         if not match:
             continue
         glyph, bitmap = match.groups()
@@ -46,7 +51,7 @@ def read_face(markdown: Path, face: str) -> Dict[str, List[str]]:
         if any(len(row) > CELL_WIDTH - 1 for row in pixel_rows):
             raise ValueError(f"{glyph} is wider than six pixels")
         rows[glyph.lower()] = pixel_rows
-    missing = set(ALPHABET) - rows.keys()
+    missing = set(glyphs) - rows.keys()
     if missing:
         raise ValueError(f"Missing glyphs: {''.join(sorted(missing))}")
     return rows
@@ -59,10 +64,11 @@ def main() -> None:
     parser.add_argument("output", type=Path, help="Output PNG path")
     args = parser.parse_args()
 
-    glyphs = read_face(args.markdown, args.face)
-    image = Image.new("1", (COLUMNS * CELL_WIDTH, CELL_HEIGHT), 0)
+    glyphs_order = glyph_order(args.face)
+    glyphs = read_face(args.markdown, args.face, glyphs_order)
+    image = Image.new("1", (len(glyphs_order) * CELL_WIDTH, CELL_HEIGHT), 0)
     pixels = image.load()
-    for index, glyph in enumerate(ALPHABET):
+    for index, glyph in enumerate(glyphs_order):
         cell_x = index * CELL_WIDTH
         cell_y = 0
         for row_index, row in enumerate(glyphs[glyph]):

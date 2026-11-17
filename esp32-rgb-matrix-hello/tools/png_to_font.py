@@ -13,6 +13,7 @@ from pathlib import Path
 from PIL import Image
 
 ALPHABET = "abcdefghijklmnopqrstuvwxyz"
+NUMERALS = "0123456789"
 CELL_WIDTH = 7
 CELL_HEIGHT = 7
 COLUMNS = len(ALPHABET)
@@ -24,8 +25,9 @@ def main() -> None:
     parser.add_argument("face", help='Label printed above the returned grids, e.g. "Bold capitals"')
     args = parser.parse_args()
 
+    glyphs = NUMERALS if "numeral" in args.face.lower() else ALPHABET
     image = Image.open(args.png).convert("1")
-    expected_width = COLUMNS * CELL_WIDTH
+    expected_width = len(glyphs) * CELL_WIDTH
     expected_height = CELL_HEIGHT
     if image.size != (expected_width, expected_height):
         raise ValueError(f"Expected an exact {expected_width}×{expected_height} PNG, got {image.width}×{image.height}")
@@ -33,7 +35,7 @@ def main() -> None:
     pixels = image.load()
     use_capital_labels = "capital" in args.face.lower()
     print(f"## {args.face}\n\n```text")
-    for index, glyph in enumerate(ALPHABET):
+    for index, glyph in enumerate(glyphs):
         cell_x = index * CELL_WIDTH
         cell_y = 0
         # Column 6 is the separator; trim black columns only inside 0..5.

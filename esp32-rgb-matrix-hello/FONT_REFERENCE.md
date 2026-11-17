@@ -132,6 +132,36 @@ Y xxooxx/oxxxxo/ooxxoo/ooxxoo/ooxxoo/ooxxoo/ooxxoo
 Z xxxxx/oooxx/ooxxo/oxxoo/xxooo/xxooo/xxxxx
 ```
 
+## Normal numerals
+
+```text
+0 oxxxo/xooox/xooxx/xoxox/xxoox/xooox/oxxxo
+1 oxo/xxo/oxo/oxo/oxo/oxo/xxx
+2 oxxxo/xooox/oooox/oooxo/ooxoo/oxooo/xxxxx
+3 xxxxo/oooox/oooox/oxxxo/oooox/oooox/xxxxo
+4 ooxoo/oxxoo/xoxoo/xooxo/xxxxx/ooxoo/ooxoo
+5 xxxxx/xoooo/xoooo/xxxxo/oooox/oooox/xxxxo
+6 oxxxo/xoooo/xoooo/xxxxo/xooox/xooox/oxxxo
+7 xxxxx/oooox/oooxo/ooxoo/oxooo/oxooo/oxooo
+8 oxxxo/xooox/xooox/oxxxo/xooox/xooox/oxxxo
+9 oxxxo/xooox/xooox/oxxxx/oooox/oooox/oxxxo
+```
+
+## Skinny numerals
+
+```text
+0 ooxxo/xooxo/xooxo/xoxxo/xxoxo/xooxo/ooxxo
+1 oxo/xxo/oxo/oxo/oxo/oxo/xxx
+2 oxxxo/xooox/oooox/oooxo/ooxoo/oxooo/xxxxx
+3 xxxxo/oooox/oooox/oxxxo/oooox/oooox/xxxxo
+4 ooxoo/oxxoo/xoxoo/xooxo/xxxxx/ooxoo/ooxoo
+5 xxxxx/xoooo/xoooo/xxxxo/oooox/oooox/xxxxo
+6 oxxxo/xoooo/xoooo/xxxxo/xooox/xooox/oxxxo
+7 xxxxx/oooox/oooxo/ooxoo/oxooo/oxooo/oxooo
+8 oxxxo/xooox/xooox/oxxxo/xooox/xooox/oxxxo
+9 oxxxo/xooox/xooox/oxxxx/oooox/oooox/oxxxo
+```
+
 ## How to send a correction
 
 Reply with the exact face and letter plus its pixels. For example:
@@ -155,12 +185,15 @@ the grid; the grid is the authoritative version.
 ## Pixel-perfect PNG round trip
 
 The two scripts in `tools/` make one exact 182×7px black-and-white image for
-each alphabet face (26 glyph cells on one row). Each cell is 7×7px: six
+each alphabet face (26 glyph cells on one row), or one exact 70×7px image for
+a numeral face (10 glyph cells on one row). Each cell is 7×7px: six
 editable pixel columns and a required black separator at the right.
 
 ```bash
 python3 tools/font_to_png.py FONT_REFERENCE.md "Bold capitals" bold-capitals.png
 python3 tools/png_to_font.py bold-capitals.png "Bold capitals" > bold-capitals-edited.md
+python3 tools/font_to_png.py FONT_REFERENCE.md "Normal numerals" normal-numerals.png
+python3 tools/png_to_font.py normal-numerals.png "Normal numerals" > normal-numerals-edited.md
 ```
 
 White is on; black is off. Edit only at actual-pixel resolution—no scaling,
