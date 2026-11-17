@@ -7,6 +7,7 @@ const SNAPSHOT_TTL_SECONDS = 120;
 // branding/route enrichment whenever an upstream provider is sluggish.
 const PROVIDER_TIMEOUT_MS = 4000;
 const OPTIONAL_ENRICHMENT_BUDGET_MS = 4500;
+const LIVE_REFRESH_BUDGET_MS = 7000;
 const FLIGHT_STATUS_TTL_SECONDS = 10 * 60;
 const AIRLABS_MONTHLY_REQUEST_CAP = 900;
 const AIRLABS_ROUTE_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60;
@@ -95,7 +96,9 @@ async function flightPayload(device, store, env) {
     return json({ ...cached.payload, displayName: device.name }, 200, { "Cache-Control": "private, max-age=60", "X-Data-Age-Seconds": String(now - cached.fetchedAt) });
   }
   try {
-    const { source, flights } = await liveFlights(device, store, env);
+    const live = await valueWithin(liveFlights(device, store, env), null, LIVE_REFRESH_BUDGET_MS, "live flight refresh");
+    if (!live) throw new Error("Live flight refresh did not finish before the display deadline");
+    const { source, flights } = live;
     const payload = { displayName: device.name, generatedAt: new Date().toISOString(), dataAgeSeconds: 0, source, flights };
     await store.putSnapshot(device.id, payload, now);
     return json(payload, 200, { "Cache-Control": "private, max-age=60", "X-Data-Age-Seconds": "0" });
