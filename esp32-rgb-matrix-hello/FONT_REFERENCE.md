@@ -139,7 +139,7 @@ Z xxxxx/oooxx/ooxxo/oxxoo/xxooo/xxooo/xxxxx
 1 oxo/xxo/oxo/oxo/oxo/oxo/xxx
 2 oxxxo/xooox/oooox/oooxo/ooxoo/oxooo/xxxxx
 3 xxxxo/oooox/oooox/oxxxo/oooox/oooox/xxxxo
-4 ooxoo/oxxoo/xoxoo/xooxo/xxxxx/ooxoo/ooxoo
+4 oooxo/ooxxo/oxoxo/xooxo/xxxxx/oooxo/oooxo
 5 xxxxx/xoooo/xoooo/xxxxo/oooox/oooox/xxxxo
 6 oxxxo/xoooo/xoooo/xxxxo/xooox/xooox/oxxxo
 7 xxxxx/oooox/oooxo/ooxoo/oxooo/oxooo/oxooo
@@ -150,16 +150,16 @@ Z xxxxx/oooxx/ooxxo/oxxoo/xxooo/xxooo/xxxxx
 ## Skinny numerals
 
 ```text
-0 ooxxo/xooxo/xooxo/xoxxo/xxoxo/xooxo/ooxxo
+0 oxxo/xoox/xoox/xoxx/xxox/xoox/oxxo
 1 oxo/xxo/oxo/oxo/oxo/oxo/xxx
-2 oxxxo/xooox/oooox/oooxo/ooxoo/oxooo/xxxxx
-3 xxxxo/oooox/oooox/oxxxo/oooox/oooox/xxxxo
-4 ooxoo/oxxoo/xoxoo/xooxo/xxxxx/ooxoo/ooxoo
-5 xxxxx/xoooo/xoooo/xxxxo/oooox/oooox/xxxxo
-6 oxxxo/xoooo/xoooo/xxxxo/xooox/xooox/oxxxo
-7 xxxxx/oooox/oooxo/ooxoo/oxooo/oxooo/oxooo
-8 oxxxo/xooox/xooox/oxxxo/xooox/xooox/oxxxo
-9 oxxxo/xooox/xooox/oxxxx/oooox/oooox/oxxxo
+2 oxxo/xoox/ooox/ooxo/oxoo/xooo/xxxx
+3 xxxo/ooox/ooox/oxxo/ooox/ooox/xxxo
+4 ooxo/oxxo/xoxo/xoxo/xxxx/ooxo/ooxo
+5 xxxx/xooo/xooo/xxxo/ooox/ooox/xxxo
+6 oxxo/xooo/xooo/xxxo/xoox/xoox/oxxo
+7 xxxx/ooox/ooxo/oxoo/oxoo/oxoo/oxoo
+8 oxxo/xoox/xoox/oxxo/xoox/xoox/oxxo
+9 oxxo/xoox/xoox/oxxx/ooox/ooox/oxxo
 ```
 
 ## How to send a correction
