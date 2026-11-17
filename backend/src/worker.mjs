@@ -689,8 +689,20 @@ async function openSkyFlights(device, store, env) {
   const longitudeDelta = device.radiusKm / (111.32 * Math.max(.1, Math.cos(device.latitude * Math.PI / 180)));
   const params = new URLSearchParams({ lamin: String(device.latitude - latitudeDelta), lamax: String(device.latitude + latitudeDelta), lomin: String(device.longitude - longitudeDelta), lomax: String(device.longitude + longitudeDelta) });
   const headers = {};
-  if (env.OPEN_SKY_CLIENT_ID && env.OPEN_SKY_CLIENT_SECRET) headers.Authorization = `Bearer ${await getOpenSkyToken(env, fetcher)}`;
-  const response = await fetchProvider(fetcher, `https://opensky-network.org/api/states/all?${params}`, { headers });
+  if (env.OPEN_SKY_CLIENT_ID && env.OPEN_SKY_CLIENT_SECRET) {
+    try {
+      headers.Authorization = `Bearer ${await getOpenSkyToken(env, fetcher)}`;
+    } catch (error) {
+      // OpenSky's public read endpoint remains useful during an OAuth outage.
+      // Never let optional credentials turn a working fallback into no data.
+      console.log("OpenSky OAuth unavailable; trying public feed", error instanceof Error ? error.message : String(error));
+    }
+  }
+  let response = await fetchProvider(fetcher, `https://opensky-network.org/api/states/all?${params}`, { headers });
+  if (!response.ok && headers.Authorization) {
+    console.log(`OpenSky authenticated feed returned ${response.status}; retrying public feed`);
+    response = await fetchProvider(fetcher, `https://opensky-network.org/api/states/all?${params}`);
+  }
   if (!response.ok) throw new Error(`OpenSky returned ${response.status}`);
   const data = await response.json();
   const aircraft = Array.isArray(data.states) ? data.states : [];
