@@ -86,31 +86,46 @@ function mapSearchArea(url) {
 
 async function flightPayload(device, store, env) {
   const now = unix();
+  const firmware = firmwareRelease(env);
+  const firmwareVersion = firmware?.version ?? 0;
   const debugPack = selectedDebugPack(device.debugMode);
   if (debugPack) {
-    const payload = { displayName: device.name, generatedAt: new Date().toISOString(), dataAgeSeconds: 0, source: `debug:${debugPack.id}`, flights: debugFlights(debugPack) };
+    const payload = { displayName: device.name, generatedAt: new Date().toISOString(), dataAgeSeconds: 0, source: `debug:${debugPack.id}`, firmwareVersion, firmware, flights: debugFlights(debugPack) };
     return json(payload, 200, { "Cache-Control": "no-store", "X-Data-Age-Seconds": "0" });
   }
   const cached = await store.getSnapshot(device.id);
   if (cached && cached.fetchedAt + SNAPSHOT_TTL_SECONDS > now) {
-    return json({ ...cached.payload, displayName: device.name }, 200, { "Cache-Control": "private, max-age=60", "X-Data-Age-Seconds": String(now - cached.fetchedAt) });
+    return json({ ...cached.payload, displayName: device.name, firmwareVersion, firmware }, 200, { "Cache-Control": "private, max-age=60", "X-Data-Age-Seconds": String(now - cached.fetchedAt) });
   }
   try {
     const live = await valueWithin(liveFlights(device, store, env), null, LIVE_REFRESH_BUDGET_MS, "live flight refresh");
     if (!live) throw new Error("Live flight refresh did not finish before the display deadline");
     const { source, flights } = live;
-    const payload = { displayName: device.name, generatedAt: new Date().toISOString(), dataAgeSeconds: 0, source, flights };
+    const payload = { displayName: device.name, generatedAt: new Date().toISOString(), dataAgeSeconds: 0, source, firmwareVersion, firmware, flights };
     await store.putSnapshot(device.id, payload, now);
     return json(payload, 200, { "Cache-Control": "private, max-age=60", "X-Data-Age-Seconds": "0" });
   } catch (error) {
     // A stale snapshot is much more useful to a display than an error during a provider hiccup.
     if (cached) {
-      const payload = { ...cached.payload, displayName: device.name, dataAgeSeconds: now - cached.fetchedAt, stale: true };
+      const payload = { ...cached.payload, displayName: device.name, firmwareVersion, firmware, dataAgeSeconds: now - cached.fetchedAt, stale: true };
       return json(payload, 200, { "Cache-Control": "no-store", "X-Data-Age-Seconds": String(now - cached.fetchedAt), "Warning": "110 - Response is stale" });
     }
     console.log("OpenSky request failed", error instanceof Error ? error.message : String(error));
     return json({ error: "Live flight data is temporarily unavailable. Try again shortly." }, 503, { "Cache-Control": "no-store" });
   }
+}
+
+function firmwareRelease(env) {
+  // These values are written by the deployment workflow as Worker secrets,
+  // rather than accepted from the public GitHub release. A device gets a
+  // manifest only after authenticating with its own API key.
+  const version = Number(env.FIRMWARE_RELEASE_VERSION);
+  const url = typeof env.FIRMWARE_RELEASE_URL === "string" ? env.FIRMWARE_RELEASE_URL : "";
+  const sha256 = typeof env.FIRMWARE_RELEASE_SHA256 === "string" ? env.FIRMWARE_RELEASE_SHA256.toLowerCase() : "";
+  if (!Number.isSafeInteger(version) || version <= 0 ||
+      !/^https:\/\/github\.com\/CameronHildebrandt\/plane-display\/releases\/download\//.test(url) ||
+      !/^[a-f0-9]{64}$/.test(sha256)) return null;
+  return { version, url, sha256 };
 }
 
 async function createPairing(request, store, url) {

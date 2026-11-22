@@ -1,15 +1,14 @@
-name: Test and deploy Winglet
+name: Release and deploy Winglet
 
 on:
   push:
     branches: [main]
-    paths:
-      - "backend/**"
-      - ".github/workflows/deploy.yml"
   workflow_dispatch:
 
+# The workflow token creates immutable release assets. Cloudflare credentials
+# remain repository secrets and are never embedded in the firmware.
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: plane-display-production
@@ -28,13 +27,52 @@ jobs:
           node-version: 22
       - run: npm test
 
-  deploy:
+  firmware-release:
     needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      url: ${{ steps.release.outputs.url }}
+      sha256: ${{ steps.release.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Build versioned firmware
+        working-directory: esp32-rgb-matrix-hello
+        env:
+          PLANE_DISPLAY_RELEASE_VERSION: ${{ github.run_number }}
+        run: |
+          python -m pip install --upgrade platformio
+          pio run -e waveshare_esp32_s3_rgb_matrix_ota
+          cp .pio/build/waveshare_esp32_s3_rgb_matrix_ota/firmware.bin firmware.bin
+          sha256sum firmware.bin > firmware.bin.sha256
+      - name: Publish immutable GitHub release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.run_number }}
+          REPOSITORY: ${{ github.repository }}
+        working-directory: esp32-rgb-matrix-hello
+        run: |
+          tag="firmware-${VERSION}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" firmware.bin firmware.bin.sha256 --clobber
+          else
+            gh release create "$tag" firmware.bin firmware.bin.sha256 --title "Firmware ${VERSION}" --notes "Automated firmware release for commit ${GITHUB_SHA}."
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "url=https://github.com/${REPOSITORY}/releases/download/${tag}/firmware.bin" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(cut -d ' ' -f1 firmware.bin.sha256)" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: firmware-release
     runs-on: ubuntu-latest
     environment: production
     steps:
       - uses: actions/checkout@v6
-      - name: Apply migrations and deploy Worker
+      - name: Publish verified release manifest and deploy Worker
         uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -43,4 +81,7 @@ jobs:
           wranglerVersion: "4"
           command: |
             d1 migrations apply plane-display --remote
+            printf %s '${{ needs.firmware-release.outputs.version }}' | wrangler secret put FIRMWARE_RELEASE_VERSION
+            printf %s '${{ needs.firmware-release.outputs.url }}' | wrangler secret put FIRMWARE_RELEASE_URL
+            printf %s '${{ needs.firmware-release.outputs.sha256 }}' | wrangler secret put FIRMWARE_RELEASE_SHA256
             deploy

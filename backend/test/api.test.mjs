@@ -34,6 +34,23 @@ test("device fetches cached flight-data contract", async () => {
   assert.equal(body.flights[0].flightProgressEstimated, true);
 });
 
+test("flight data carries only a validated authenticated firmware manifest", async () => {
+  const { store, key } = await setup();
+  const release = {
+    FIRMWARE_RELEASE_VERSION: "42",
+    FIRMWARE_RELEASE_URL: "https://github.com/CameronHildebrandt/plane-display/releases/download/firmware-42/firmware.bin",
+    FIRMWARE_RELEASE_SHA256: "a".repeat(64)
+  };
+  const response = await handle(request("/flightdata", { headers: { "X-Device-Key": key } }), store, { ...liveSource, ...release });
+  const body = await response.json();
+  assert.equal(body.firmwareVersion, 42);
+  assert.deepEqual(body.firmware, {
+    version: 42,
+    url: release.FIRMWARE_RELEASE_URL,
+    sha256: release.FIRMWARE_RELEASE_SHA256
+  });
+});
+
 test("AirLabs published routes override routeset and are reused for a week", async () => {
   const { store, key } = await setup();
   // Keep this test aircraft close to the provider route while retaining the

@@ -8,10 +8,15 @@
 #include <Update.h>
 #include <WebServer.h>
 #include <WiFiClientSecure.h>
+#include <Wire.h>
+#include <Adafruit_SHTC3.h>
+#include <Adafruit_Sensor.h>
 #include <esp_system.h>
 #include <esp_wifi.h>
+#include <mbedtls/sha256.h>
 #include <time.h>
 #include <WiFiManager.h>
+#include <Matter.h>
 #include "airport_cities.h"
 #include "aircraft_sprites.h"
 #include "air_canada_logo_32.h"
@@ -50,12 +55,22 @@
 #define LED_PLANE_DEVICE_KEY ""
 #endif
 
+#ifndef LED_PLANE_FIRMWARE_VERSION
+#define LED_PLANE_FIRMWARE_VERSION 0
+#endif
+
 namespace {
 
 constexpr uint16_t kPanelWidth = 64;
 constexpr uint16_t kPanelHeight = 64;
 constexpr uint8_t kPanelChain = 2;
 constexpr uint8_t kBootButtonPin = 0;
+// These pins and the SHTC3 are built into the Waveshare ESP32-S3-RGB-Matrix
+// board; they are not an optional external add-on.
+constexpr uint8_t kSensorSdaPin = 47;
+constexpr uint8_t kSensorSclPin = 48;
+constexpr unsigned long kEnvironmentalRefreshMillis = 5000;
+constexpr size_t kMaxFirmwareImageBytes = 10UL * 1024UL * 1024UL;
 constexpr uint8_t kMaxRoutableFlights = 20;
 constexpr unsigned long kFlightRotationMillis = 20000;
 constexpr unsigned long kIndicatorTransitionMillis = 2000;
@@ -124,7 +139,44 @@ unsigned long nextFlightPollMillis = 0;
 unsigned long nextRefreshDebugRedrawMillis = 0;
 String pairingUrl;
 unsigned long pairingUrlRefreshMillis = 0;
+enum class DisplayPage : uint8_t {
+  Flight,
+  ConfigureQr,
+  MatterQr,
+};
+
+DisplayPage activePage = DisplayPage::Flight;
 bool showingPairingQr = false;
+bool matterStarted = false;
+bool matterDisplayEnabled = true;
+uint8_t matterBrightness = 255;
+bool localUpdaterEnabled = false;
+volatile bool matterStateChangePending = false;
+volatile bool matterRequestedEnabled = true;
+volatile uint8_t matterRequestedBrightness = 255;
+String matterOnboardingPayload;
+MatterDimmableLight matterDisplayLight;
+MatterTemperatureSensor matterTemperature;
+MatterHumiditySensor matterHumidity;
+Adafruit_SHTC3 environmentalSensor;
+bool environmentalSensorReady = false;
+unsigned long nextEnvironmentalRefreshMillis = 0;
+
+struct FirmwareRelease {
+  uint32_t version = 0;
+  char url[256] = {};
+  char sha256[65] = {};
+};
+
+FirmwareRelease pendingFirmwareRelease;
+volatile bool firmwareUpdateInProgress = false;
+volatile bool firmwareUpdateFinished = false;
+volatile bool firmwareUpdateSucceeded = false;
+unsigned long firmwareRetryAfterMillis = 0;
+
+bool showingFlightPage() {
+  return activePage == DisplayPage::Flight;
+}
 bool pairingQrLoadingPainted = false;
 int pairingQrRequestStatus = 0;
 bool pairingQrRetryPending = false;
@@ -1681,7 +1733,7 @@ int16_t rotationIndicatorPipOffset(uint8_t index) {
 }
 
 void drawRotationIndicator() {
-  if (routeCount == 0 || showingPairingQr) return;
+  if (routeCount == 0 || !showingFlightPage()) return;
   constexpr int16_t x = 1;
   // Row 62 is intentionally left dark: it separates this display-progress
   // bundle from the route-progress tracker on the final row (63).
@@ -2329,7 +2381,7 @@ void drawCurrentRoute() {
 // important for a one-aircraft queue: previously that card was intentionally
 // kept as an immutable snapshot forever.
 void redrawActiveRouteData() {
-  if (routeCount == 0 || showingPairingQr) return;
+  if (routeCount == 0 || !showingFlightPage()) return;
   const uint16_t black = matrix.color565(0, 0, 0);
   const uint16_t primaryWhite = matrix.color565(255, 255, 255);
   const Route& route = routes[routeIndex];
@@ -2866,6 +2918,111 @@ bool beginBackendRequest(HTTPClient& request, WiFiClientSecure& secureClient,
   return request.begin(url);
 }
 
+bool isSecureFirmwareUrl(const char* value) {
+  if (!value || strncmp(value, "https://github.com/", 19) != 0) return false;
+  // Releases are immutable, versioned assets. Accept only our repository's
+  // direct release path; HTTPClient may then follow GitHub's signed CDN
+  // redirect while TLS remains verified at every hop.
+  return strstr(value, "/CameronHildebrandt/plane-display/releases/download/") != nullptr;
+}
+
+bool isSha256(const char* value) {
+  if (!value || strlen(value) != 64) return false;
+  for (const char* cursor = value; *cursor; ++cursor) {
+    if (!isxdigit(static_cast<unsigned char>(*cursor))) return false;
+  }
+  return true;
+}
+
+void fetchFirmwareUpdateTask(void*) {
+  const FirmwareRelease release = pendingFirmwareRelease;
+  bool succeeded = false;
+  HTTPClient request;
+  WiFiClientSecure secureClient;
+  if (!isSecureFirmwareUrl(release.url) || !isSha256(release.sha256) ||
+      !beginBackendRequest(request, secureClient, release.url)) {
+    Serial.println("Firmware update rejected: invalid authenticated manifest.");
+  } else {
+    request.setConnectTimeout(10000);
+    request.setTimeout(15000);
+    request.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    const int status = request.GET();
+    const int contentLength = request.getSize();
+    if (status != HTTP_CODE_OK || contentLength <= 0 ||
+        static_cast<size_t>(contentLength) > kMaxFirmwareImageBytes ||
+        !Update.begin(static_cast<size_t>(contentLength))) {
+      Serial.printf("Firmware update rejected: HTTP %d, length %d\n", status, contentLength);
+    } else {
+      mbedtls_sha256_context hash;
+      mbedtls_sha256_init(&hash);
+      mbedtls_sha256_starts(&hash, 0);
+      const bool hashStarted = true;
+      WiFiClient* stream = request.getStreamPtr();
+      uint8_t buffer[1024];
+      size_t received = 0;
+      bool writeOk = hashStarted;
+      while (writeOk && received < static_cast<size_t>(contentLength)) {
+        const size_t available = stream->available();
+        if (available == 0) {
+          if (!request.connected()) break;
+          delay(1);
+          continue;
+        }
+        const size_t requested = available < static_cast<int>(sizeof(buffer)) ?
+            static_cast<size_t>(available) : sizeof(buffer);
+        const size_t count = stream->readBytes(buffer, requested);
+        if (count == 0 || Update.write(buffer, count) != count) {
+          writeOk = false;
+          break;
+        }
+        mbedtls_sha256_update(&hash, buffer, count);
+        received += count;
+      }
+      uint8_t digest[32] = {};
+      if (hashStarted) mbedtls_sha256_finish(&hash, digest);
+      mbedtls_sha256_free(&hash);
+      char actualSha256[65] = {};
+      for (uint8_t index = 0; index < sizeof(digest); ++index) {
+        snprintf(actualSha256 + index * 2, sizeof(actualSha256) - index * 2, "%02x", digest[index]);
+      }
+      if (writeOk && received == static_cast<size_t>(contentLength) &&
+          strcasecmp(actualSha256, release.sha256) == 0 && Update.end(true)) {
+        succeeded = true;
+        Serial.printf("Verified firmware release %lu; restarting.\n", static_cast<unsigned long>(release.version));
+      } else {
+        Update.abort();
+        Serial.printf("Firmware hash or image validation failed for release %lu.\n",
+                      static_cast<unsigned long>(release.version));
+      }
+    }
+    request.end();
+  }
+  firmwareUpdateSucceeded = succeeded;
+  firmwareUpdateFinished = true;
+  firmwareUpdateInProgress = false;
+  vTaskDelete(nullptr);
+}
+
+void considerFirmwareRelease(JsonObject manifest) {
+  const uint32_t version = manifest["version"] | 0U;
+  const char* url = manifest["url"] | "";
+  const char* sha256 = manifest["sha256"] | "";
+  if (version <= LED_PLANE_FIRMWARE_VERSION || firmwareUpdateInProgress || millis() < firmwareRetryAfterMillis ||
+      !isSecureFirmwareUrl(url) || !isSha256(sha256)) {
+    return;
+  }
+  pendingFirmwareRelease.version = version;
+  strlcpy(pendingFirmwareRelease.url, url, sizeof(pendingFirmwareRelease.url));
+  strlcpy(pendingFirmwareRelease.sha256, sha256, sizeof(pendingFirmwareRelease.sha256));
+  firmwareUpdateInProgress = true;
+  Serial.printf("Firmware release %lu is available (current %lu).\n",
+                static_cast<unsigned long>(version), static_cast<unsigned long>(LED_PLANE_FIRMWARE_VERSION));
+  if (xTaskCreatePinnedToCore(fetchFirmwareUpdateTask, "firmware-update", 12288, nullptr, 1, nullptr, 0) != pdPASS) {
+    firmwareUpdateInProgress = false;
+    Serial.println("Could not start firmware update task.");
+  }
+}
+
 String pairingEndpoint() {
   String endpoint(LED_PLANE_BACKEND_URL);
   const int finalSlash = endpoint.lastIndexOf('/');
@@ -2928,6 +3085,45 @@ void drawPairingQrLabels() {
   drawCityText(firstInstruction, 32 - cityTextWidth(firstInstruction) / 2, 34, 0, 64, dimWhite);
   drawCityText(secondInstruction, 32 - cityTextWidth(secondInstruction) / 2, 42, 0, 64, dimWhite);
   drawCityText(thirdInstruction, 32 - cityTextWidth(thirdInstruction) / 2, 50, 0, 64, dimWhite);
+}
+
+void drawMatterQrLabels() {
+  const uint16_t white = matrix.color565(255, 255, 255);
+  const uint16_t dimWhite = matrix.color565(135, 135, 135);
+  drawMinecraftBoldTextCentered("Matter", 32, 22, white);
+  drawCityText("Scan to add", 32 - cityTextWidth("Scan to add") / 2, 38, 0, 64, dimWhite);
+  drawCityText("to Home Assistant", 32 - cityTextWidth("to Home Assistant") / 2, 46, 0, 64, dimWhite);
+}
+
+String matterPayloadFromOnboardingUrl(const String& onboardingUrl) {
+  const int marker = onboardingUrl.indexOf("data=");
+  if (marker < 0) return onboardingUrl;
+  String payload = onboardingUrl.substring(marker + 5);
+  const int separator = payload.indexOf('&');
+  if (separator >= 0) payload.remove(separator);
+  return payload;
+}
+
+void drawMatterQr() {
+  constexpr uint8_t kQrVersion = 2;
+  uint8_t qrBuffer[qrcode_getBufferSize(kQrVersion)];
+  QRCode qr;
+  const uint16_t black = matrix.color565(0, 0, 0);
+  const uint16_t white = matrix.color565(255, 255, 255);
+  matrix.fillScreen(black);
+  drawMatterQrLabels();
+  if (matterOnboardingPayload.isEmpty()) {
+    drawCityText("Starting", 32 - cityTextWidth("Starting") / 2, 54, 0, 64, white);
+    return;
+  }
+  qrcode_initText(&qr, qrBuffer, kQrVersion, ECC_LOW, matterOnboardingPayload.c_str());
+  const int16_t left = 48 - qr.size / 2;
+  const int16_t top = (matrix.height() - qr.size) / 2;
+  for (uint8_t y = 0; y < qr.size; ++y) {
+    for (uint8_t x = 0; x < qr.size; ++x) {
+      if (qrcode_getModule(&qr, x, y)) matrix.drawPixel(left + x, top + y, white);
+    }
+  }
 }
 
 void drawPairingQr(const String& url) {
@@ -3331,6 +3527,7 @@ void processFetchedFlightResponse() {
   }
 
   cacheBootDisplayName(payload["displayName"] | "");
+  considerFirmwareRelease(payload["firmware"].as<JsonObject>());
 
   // HTTP success plus valid JSON is the moment a refresh becomes observable
   // to the display. Record it before reconciling the queue so the orange
@@ -3449,7 +3646,7 @@ void fetchFlightsTask(void*) {
 }
 
 bool fetchAndDrawFirstFlight() {
-  if (strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(activeDeviceKey()) == 0 ||
+  if (!matterDisplayEnabled || strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(activeDeviceKey()) == 0 ||
       WiFi.status() != WL_CONNECTED || flightFetchInProgress || flightFetchFinished) {
     return false;
   }
@@ -3467,15 +3664,104 @@ bool fetchAndDrawFirstFlight() {
   return true;
 }
 
+bool applyMatterDisplayState(bool enabled, uint8_t brightness) {
+  matterDisplayEnabled = enabled;
+  matterBrightness = brightness;
+  matrix.setBrightness8(brightness);
+
+  Preferences preferences;
+  preferences.begin("led-plane", false);
+  preferences.putBool("matter-on", enabled);
+  preferences.putUChar("matter-bright", brightness);
+  preferences.end();
+
+  if (!enabled) {
+    matrix.fillScreen(matrix.color565(0, 0, 0));
+    return true;
+  }
+
+  if (activePage == DisplayPage::ConfigureQr) {
+    fetchAndDrawPairingQr();
+  } else if (activePage == DisplayPage::MatterQr) {
+    drawMatterQr();
+  } else if (routeCount > 0) {
+    drawCurrentRoute();
+  } else {
+    drawNoPlanes();
+  }
+  nextFlightPollMillis = millis();
+  return true;
+}
+
+void initializeEnvironmentalSensor() {
+  Wire.begin(kSensorSdaPin, kSensorSclPin);
+  environmentalSensorReady = environmentalSensor.begin(&Wire);
+  if (environmentalSensorReady) {
+    Serial.println("Onboard SHTC3 temperature/humidity sensor ready.");
+  } else {
+    Serial.println("Onboard SHTC3 not found; Matter sensors will await a retry.");
+  }
+}
+
+void refreshEnvironmentalMeasurements() {
+  if (!environmentalSensorReady) {
+    environmentalSensorReady = environmentalSensor.begin(&Wire);
+    return;
+  }
+  sensors_event_t humidityEvent;
+  sensors_event_t temperatureEvent;
+  if (!environmentalSensor.getEvent(&humidityEvent, &temperatureEvent)) {
+    environmentalSensorReady = false;
+    Serial.println("SHTC3 read failed; will retry.");
+    return;
+  }
+  matterTemperature.setTemperature(temperatureEvent.temperature);
+  matterHumidity.setHumidity(humidityEvent.relative_humidity);
+}
+
+void startMatter() {
+  Matter.setVendorName("Plane Display");
+  Matter.setProductName("Flight Display");
+  Matter.setDeviceName(bootDisplayName);
+  Matter.selectNetwork(MATTER_NETWORK_WIFI);
+
+  matterDisplayLight.begin(matterDisplayEnabled, matterBrightness);
+  // These two endpoint types map directly to Home Assistant's Matter
+  // temperature and humidity entities. They are updated from the board's
+  // onboard SHTC3 every five seconds after Matter has started.
+  matterTemperature.begin(0.0);
+  matterHumidity.begin(0.0);
+  matterDisplayLight.onChange([](bool enabled, uint8_t brightness) {
+    // Matter invokes this from its own task. The HUB75 framebuffer and NVS are
+    // owned by loop(), so defer physical work until the next display frame.
+    matterRequestedEnabled = enabled;
+    matterRequestedBrightness = brightness;
+    matterStateChangePending = true;
+    return true;
+  });
+  Matter.begin();
+  matterStarted = true;
+  refreshEnvironmentalMeasurements();
+  nextEnvironmentalRefreshMillis = millis() + kEnvironmentalRefreshMillis;
+  matterOnboardingPayload = matterPayloadFromOnboardingUrl(Matter.getOnboardingQRCodeUrl());
+  Serial.printf("Matter QR payload: %s\n", matterOnboardingPayload.c_str());
+}
+
 void handleBootButton() {
   // On the Waveshare board the BOOT button is GPIO 0 and reads LOW when held.
   const bool pressed = digitalRead(kBootButtonPin) == LOW;
   if (pressed && !bootButtonWasPressed && millis() - lastBootButtonPressMillis > 300) {
     lastBootButtonPressMillis = millis();
-    showingPairingQr = !showingPairingQr;
-    if (showingPairingQr) {
+    activePage = static_cast<DisplayPage>((static_cast<uint8_t>(activePage) + 1) % 3);
+    showingPairingQr = activePage == DisplayPage::ConfigureQr;
+    if (!matterDisplayEnabled) return;
+    if (activePage == DisplayPage::ConfigureQr) {
       Serial.println("Display mode: pairing QR");
       fetchAndDrawPairingQr();
+    } else if (activePage == DisplayPage::MatterQr) {
+      Serial.println("Display mode: Matter QR");
+      pairingQrRetryPending = false;
+      drawMatterQr();
     } else {
       Serial.println("Display mode: flight route");
       pairingQrRetryPending = false;
@@ -3509,6 +3795,8 @@ void loadDisplayPreferences() {
     preferences.putString("device-key", persistedDeviceKey);
   }
   hideUnknownRoutes = preferences.getBool("hide-unknown-routes", false);
+  matterDisplayEnabled = preferences.getBool("matter-on", true);
+  matterBrightness = preferences.getUChar("matter-bright", 255);
   const String savedName = preferences.getString("display-name", "PLANE DISPLAY");
   strlcpy(bootDisplayName, savedName.c_str(), sizeof(bootDisplayName));
   uint32_t setupUuid = preferences.getULong("setup-uuid", 0);
@@ -3639,6 +3927,7 @@ void enableLocalUpdater() {
         }
       });
   updateServer.begin();
+  localUpdaterEnabled = true;
 }
 
 void saveWifiCredentials() {
@@ -3701,6 +3990,19 @@ bool joinNetworkViaSetupPortal() {
 }
 
 void connectWifiAndEnableLocalUpdater() {
+  // Matter owns Wi-Fi network commissioning. On an S3 the Home Assistant
+  // companion app can send SSID/password over BLE, so never block that flow
+  // behind the older captive portal. Previously saved station credentials are
+  // still restored by the Wi-Fi driver when Matter starts.
+  if (matterStarted) {
+    if (WiFi.status() == WL_CONNECTED) {
+      synchronizeClock();
+      enableLocalUpdater();
+    } else {
+      Serial.println("Waiting for Matter Wi-Fi commissioning.");
+    }
+    return;
+  }
   WiFi.mode(WIFI_STA);
   // Matrix refresh plus Wi-Fi power saving can make OTA acknowledgements late.
   // Keep Wi-Fi awake and allow plenty of time for a local network transfer.
@@ -3746,6 +4048,11 @@ void connectWifiAndEnableLocalUpdater() {
 void monitorWifiConnectivity() {
   if (WiFi.status() == WL_CONNECTED) {
     wifiOfflineSinceMillis = 0;
+    if (matterStarted && !localUpdaterEnabled) {
+      synchronizeClock();
+      enableLocalUpdater();
+      nextFlightPollMillis = millis();
+    }
     return;
   }
   if (wifiOfflineSinceMillis == 0) {
@@ -3753,6 +4060,15 @@ void monitorWifiConnectivity() {
     return;
   }
   if (networkSetupPortalActive || millis() - wifiOfflineSinceMillis < kWifiOfflinePortalMillis) return;
+
+  if (matterStarted) {
+    // Keep the Matter BLE commissioning service responsive. The Matter QR
+    // page remains available from the button; opening WiFiManager here would
+    // monopolize the radio and prevent HA from supplying fresh credentials.
+    Serial.println("Wi-Fi unavailable; waiting for Matter commissioning.");
+    wifiOfflineSinceMillis = millis();
+    return;
+  }
 
   Serial.println("Wi-Fi has been unavailable for one minute; opening setup portal.");
   if (joinNetworkViaSetupPortal()) {
@@ -3775,6 +4091,8 @@ void setup() {
   pinMode(kBootButtonPin, INPUT_PULLUP);
   loadDisplayPreferences();
   playBootAnimation();
+  initializeEnvironmentalSensor();
+  startMatter();
   connectWifiAndEnableLocalUpdater();
   // A powered-off board may have been moved or renamed. Synchronize its tiny
   // settings payload before asking the comparatively slow flight providers.
@@ -3784,9 +4102,23 @@ void setup() {
 
 void loop() {
   // HUB75 DMA refresh runs independently; handle local web update traffic here.
-  updateServer.handleClient();
+  if (localUpdaterEnabled) updateServer.handleClient();
   monitorWifiConnectivity();
   if (networkSetupPortalActive) return;
+  if (matterStateChangePending) {
+    matterStateChangePending = false;
+    applyMatterDisplayState(matterRequestedEnabled, matterRequestedBrightness);
+  }
+  if (matterStarted && millis() >= nextEnvironmentalRefreshMillis) {
+    refreshEnvironmentalMeasurements();
+    nextEnvironmentalRefreshMillis = millis() + kEnvironmentalRefreshMillis;
+  }
+  if (!matterDisplayEnabled) {
+    // Matter continues to run, but a disabled display is electrically dark and
+    // deliberately makes no backend/configuration requests.
+    handleBootButton();
+    return;
+  }
   handleBootButton();
   updatePairingQrRequest();
   processDeviceConfigResponse();
@@ -3800,17 +4132,27 @@ void loop() {
     shouldRestart = true;
   }
   processFetchedFlightResponse();
+  if (firmwareUpdateFinished) {
+    firmwareUpdateFinished = false;
+    if (firmwareUpdateSucceeded) {
+      // The image was fully written and its SHA-256 matched the authenticated
+      // release manifest. Reboot only from loop(), never from the network task.
+      shouldRestart = true;
+    } else {
+      firmwareRetryAfterMillis = millis() + 10UL * 60UL * 1000UL;
+    }
+  }
   const bool transitionWasActive = letterTransitionActive;
   // If the only card disappeared during its scene, honour the full scene
   // duration before falling back to the idle animation.
-  if (!showingPairingQr && routeCount == 1 && routes[0].pendingRemoval &&
+  if (showingFlightPage() && routeCount == 1 && routes[0].pendingRemoval &&
       !letterTransitionActive && !routeToIdleTransitionActive && !idleToRouteTransitionActive &&
       !bootToRouteTransitionActive &&
       millis() >= nextFlightRotationMillis) {
     routeToIdleTransitionActive = true;
     routeToIdleTransitionStartMillis = millis();
   }
-  if (!showingPairingQr && routeCount > 1 && !letterTransitionActive &&
+  if (showingFlightPage() && routeCount > 1 && !letterTransitionActive &&
       !routeToIdleTransitionActive && !idleToRouteTransitionActive && !bootToRouteTransitionActive &&
       millis() >= nextFlightRotationMillis) {
     letterTransitionRouteIndex = (routeIndex + 1) % routeCount;
@@ -3842,7 +4184,7 @@ void loop() {
     // Do not let a blocking network refresh erase the exit/enter frames. When
     // a refresh lands on a scene boundary, hold it until the new card has had
     // its initial marquee pause.
-    if (!showingPairingQr && (letterTransitionActive || transitionWasActive)) {
+    if (showingFlightPage() && (letterTransitionActive || transitionWasActive)) {
       if (letterTransitionActive) flightRefreshDeferred = true;
       else nextFlightPollMillis = millis() + 2000;
     } else {
@@ -3850,17 +4192,18 @@ void loop() {
       // A completed response is normally held for the end of an animation;
       // retrying in one second means it is processed and the next request can
       // begin promptly instead of the panel appearing frozen.
-      const bool started = showingPairingQr ? fetchAndDrawPairingQr() : fetchAndDrawFirstFlight();
+      const bool started = activePage == DisplayPage::ConfigureQr ? fetchAndDrawPairingQr() :
+          (showingFlightPage() ? fetchAndDrawFirstFlight() : false);
       nextFlightPollMillis = millis() + (started ? 60000 : 1000);
     }
   }
-  if (!showingPairingQr && routeCount > 0 && !letterTransitionActive &&
+  if (showingFlightPage() && routeCount > 0 && !letterTransitionActive &&
       !idleToRouteTransitionActive && !routeToIdleTransitionActive && !bootToRouteTransitionActive &&
       millis() >= nextRouteAnimationMillis) {
     refreshActiveMarquees(routes[routeIndex]);
     nextRouteAnimationMillis = millis() + 75;
   }
-  if (!showingPairingQr && routeCount > 0 && !idleToRouteTransitionActive &&
+  if (showingFlightPage() && routeCount > 0 && !idleToRouteTransitionActive &&
       !routeToIdleTransitionActive && !bootToRouteTransitionActive && millis() >= nextRotationIndicatorMillis) {
     if (routeProgressAnimationActive) {
       const RouteProgressFrame progress = animatedRouteProgress();
@@ -3872,7 +4215,7 @@ void loop() {
     // not need the extra redraws.
     nextRotationIndicatorMillis = millis() + (routeProgressAnimationActive ? 30 : 50);
   }
-  if (showingNoPlanes && !showingPairingQr && millis() >= nextNoPlanesAnimationMillis) {
+  if (showingNoPlanes && showingFlightPage() && millis() >= nextNoPlanesAnimationMillis) {
     advanceNoPlanesAnimation();
     nextNoPlanesAnimationMillis = millis() + kNoPlanesAnimationStepMillis;
   }
