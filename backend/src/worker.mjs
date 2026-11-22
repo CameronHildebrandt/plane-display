@@ -1,6 +1,10 @@
+import { generateAuthenticationOptions, generateRegistrationOptions, verifyAuthenticationResponse, verifyRegistrationResponse } from "@simplewebauthn/server";
+
 const encoder = new TextEncoder();
 const PAIRING_TTL_SECONDS = 5 * 60;
 const SESSION_TTL_SECONDS = 90 * 24 * 60 * 60;
+const ADMIN_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
+const WEBAUTHN_CHALLENGE_TTL_SECONDS = 5 * 60;
 const SNAPSHOT_TTL_SECONDS = 120;
 // The ESP32 abandons a slow refresh after twelve seconds. Leave it a generous
 // margin for TLS and JSON parsing: live positions must win over optional
@@ -32,6 +36,16 @@ export async function handle(request, store, env = {}) {
   if (path === "/api/device/pairing" && request.method === "POST") return createPairing(request, store, url);
   if (path === "/api/device/config" && request.method === "GET") return deviceConfig(request, store);
   if (path === "/api/device/rotate" && request.method === "POST") return rotateDeviceKey(request, store);
+  if (path === "/admin/api/setup/options" && request.method === "POST") return adminRegistrationOptions(request, store, env, url);
+  if (path === "/admin/api/setup/verify" && request.method === "POST") return adminRegistrationVerify(request, store, env, url);
+  if (path === "/admin/api/login/options" && request.method === "POST") return adminLoginOptions(request, store, url);
+  if (path === "/admin/api/login/verify" && request.method === "POST") return adminLoginVerify(request, store, url);
+  if (path === "/admin/api/logout" && request.method === "POST") return adminLogout(request, store);
+  if (path === "/admin/api/fleet" && request.method === "GET") return adminFleet(request, store);
+  if (path.startsWith("/admin/api/displays/") && request.method === "PUT") return adminSaveDisplay(request, store, path.slice("/admin/api/displays/".length));
+  if (path === "/admin/api/special-flights" && request.method === "GET") return adminTrackedFlights(request, store);
+  if (path === "/admin/api/special-flights" && request.method === "POST") return adminAddTrackedFlight(request, store, env);
+  if (path.startsWith("/admin/api/special-flights/") && request.method === "DELETE") return adminRemoveTrackedFlight(request, store, path.slice("/admin/api/special-flights/".length));
   if (path.startsWith("/pair/") && request.method === "GET") return claimPairing(request, store, path.slice(6), url);
   if (path === "/api/settings" && request.method === "GET") return getSettings(request, store);
   if (path === "/api/settings/flights" && request.method === "GET") return settingsFlights(request, store, env, url);
@@ -43,6 +57,7 @@ export async function handle(request, store, env = {}) {
   if (path === "/api/settings/request-key-rotation" && request.method === "POST") return requestRotation(request, store);
   if (path === "/api/session" && request.method === "DELETE") return logout(request, store);
   if (path === "/settings" && request.method === "GET" && env.ASSETS) return env.ASSETS.fetch(new Request(new URL("/", request.url), request));
+  if (path === "/admin" && request.method === "GET" && env.ASSETS) return env.ASSETS.fetch(new Request(new URL("/admin.html", request.url), request));
   if (path === "/display" && request.method === "GET" && env.ASSETS) return env.ASSETS.fetch(new Request(new URL("/display.html", request.url), request));
   if (env.ASSETS) return env.ASSETS.fetch(request);
   return json({ error: "Not found" }, 404);
@@ -51,6 +66,11 @@ export async function handle(request, store, env = {}) {
 async function flightData(request, store, env) {
   const device = await authenticateDevice(request, store);
   if (!device) return json({ error: "Device authentication required" }, 401);
+  const reportedFirmwareVersion = Number(request.headers.get("X-Firmware-Version"));
+  if (Number.isSafeInteger(reportedFirmwareVersion) && reportedFirmwareVersion >= 0) {
+    await store.noteDeviceCheckin(device.id, reportedFirmwareVersion, unix());
+    device.lastFirmwareVersion = reportedFirmwareVersion;
+  }
   if (!take(`flight:${device.id}`, 70, 60)) return json({ error: "Slow down" }, 429);
   return flightPayload(device, store, env);
 }
@@ -86,7 +106,7 @@ function mapSearchArea(url) {
 
 async function flightPayload(device, store, env) {
   const now = unix();
-  const firmware = firmwareRelease(env);
+  const firmware = firmwareRelease(env, device.firmwareChannel);
   const firmwareVersion = firmware?.version ?? 0;
   const debugPack = selectedDebugPack(device.debugMode);
   if (debugPack) {
@@ -115,13 +135,18 @@ async function flightPayload(device, store, env) {
   }
 }
 
-function firmwareRelease(env) {
+function firmwareRelease(env, channel = "stable") {
   // These values are written by the deployment workflow as Worker secrets,
   // rather than accepted from the public GitHub release. A device gets a
   // manifest only after authenticating with its own API key.
-  const version = Number(env.FIRMWARE_RELEASE_VERSION);
-  const url = typeof env.FIRMWARE_RELEASE_URL === "string" ? env.FIRMWARE_RELEASE_URL : "";
-  const sha256 = typeof env.FIRMWARE_RELEASE_SHA256 === "string" ? env.FIRMWARE_RELEASE_SHA256.toLowerCase() : "";
+  // A display on the local channel is deliberately invisible to cloud OTA.
+  // It can be iterated via USB/LAN without ever exposing an unfinished build
+  // to the rest of the fleet. Preview is a separately signed prerelease.
+  if (channel === "local") return null;
+  const prefix = channel === "preview" ? "FIRMWARE_PREVIEW" : "FIRMWARE_RELEASE";
+  const version = Number(env[`${prefix}_VERSION`]);
+  const url = typeof env[`${prefix}_URL`] === "string" ? env[`${prefix}_URL`] : "";
+  const sha256 = typeof env[`${prefix}_SHA256`] === "string" ? env[`${prefix}_SHA256`].toLowerCase() : "";
   if (!Number.isSafeInteger(version) || version <= 0 ||
       !/^https:\/\/github\.com\/CameronHildebrandt\/plane-display\/releases\/download\//.test(url) ||
       !/^[a-f0-9]{64}$/.test(sha256)) return null;
@@ -176,6 +201,117 @@ async function deviceConfig(request, store) {
   // Settings edits must be visible as soon as a display exits its QR screen.
   // Do not allow an intermediary cache to replay an old name or location.
   return json({ name: device.name, latitude: device.latitude, longitude: device.longitude, radiusKm: device.radiusKm, includeGrounded: Boolean(device.includeGrounded), hideIncompleteData: Boolean(device.hideIncompleteData), debugPack: selectedDebugPack(device.debugMode)?.id || null, rotateKey: Boolean(device.rotationRequested) }, 200, { "Cache-Control": "no-store" });
+}
+
+// Fleet administration is intentionally separate from a display-pairing
+// session. Pairing controls one display; a passkey controls the whole fleet.
+function passkeyRp(url) { return { id: url.hostname, origin: url.origin }; }
+async function adminRegistrationOptions(request, store, env, url) {
+  let body; try { body = await request.json(); } catch { return json({ error: "Expected JSON" }, 400); }
+  if (await store.countAdminPasskeys()) return json({ error: "Fleet admin is already enrolled. Sign in with your passkey." }, 409);
+  if (!env.ADMIN_SETUP_TOKEN || body.bootstrapToken !== env.ADMIN_SETUP_TOKEN) return json({ error: "A valid one-time setup link is required." }, 403);
+  const rp = passkeyRp(url);
+  const options = await generateRegistrationOptions({
+    rpName: "Plane Display Fleet",
+    rpID: rp.id,
+    userName: "fleet-admin",
+    userDisplayName: "Fleet administrator",
+    attestationType: "none",
+    authenticatorSelection: { residentKey: "required", userVerification: "required" },
+  });
+  await store.createWebauthnChallenge(options.challenge, "registration", unix() + WEBAUTHN_CHALLENGE_TTL_SECONDS);
+  return json({ options });
+}
+async function adminRegistrationVerify(request, store, env, url) {
+  let body; try { body = await request.json(); } catch { return json({ error: "Expected JSON" }, 400); }
+  if (await store.countAdminPasskeys()) return json({ error: "Fleet admin is already enrolled." }, 409);
+  if (!env.ADMIN_SETUP_TOKEN || body.bootstrapToken !== env.ADMIN_SETUP_TOKEN) return json({ error: "A valid one-time setup link is required." }, 403);
+  const challenge = await store.consumeWebauthnChallenge(body.challenge, "registration", unix());
+  if (!challenge || !body.credential) return json({ error: "This enrolment request expired. Start again." }, 400);
+  try {
+    const rp = passkeyRp(url);
+    const result = await verifyRegistrationResponse({ response: body.credential, expectedChallenge: challenge, expectedOrigin: rp.origin, expectedRPID: rp.id, requireUserVerification: true });
+    if (!result.verified || !result.registrationInfo) return json({ error: "The passkey could not be verified." }, 400);
+    const credential = result.registrationInfo.credential;
+    await store.addAdminPasskey({ credentialId: credential.id, publicKey: base64url(credential.publicKey), counter: credential.counter, transports: credential.transports || [], createdAt: unix(), lastUsedAt: null });
+    return createAdminSession(store, url, credential.id);
+  } catch (error) {
+    console.log("Passkey enrolment failed", error instanceof Error ? error.message : String(error));
+    return json({ error: "The passkey could not be verified." }, 400);
+  }
+}
+async function adminLoginOptions(_request, store, url) {
+  const credentials = await store.getAdminPasskeys();
+  if (!credentials.length) return json({ error: "Fleet admin has not been enrolled yet." }, 428);
+  const options = await generateAuthenticationOptions({ rpID: passkeyRp(url).id, userVerification: "required", allowCredentials: credentials.map(entry => ({ id: entry.credentialId, transports: entry.transports })) });
+  await store.createWebauthnChallenge(options.challenge, "authentication", unix() + WEBAUTHN_CHALLENGE_TTL_SECONDS);
+  return json({ options });
+}
+async function adminLoginVerify(request, store, _url) {
+  let body; try { body = await request.json(); } catch { return json({ error: "Expected JSON" }, 400); }
+  const challenge = await store.consumeWebauthnChallenge(body.challenge, "authentication", unix());
+  if (!challenge || !body.credential?.id) return json({ error: "This sign-in request expired. Start again." }, 400);
+  const credential = await store.getAdminPasskey(body.credential.id);
+  if (!credential) return json({ error: "This passkey is not registered for the fleet." }, 401);
+  try {
+    const url = new URL(request.url), rp = passkeyRp(url);
+    const result = await verifyAuthenticationResponse({ response: body.credential, expectedChallenge: challenge, expectedOrigin: rp.origin, expectedRPID: rp.id, credential: { id: credential.credentialId, publicKey: fromBase64url(credential.publicKey), counter: credential.counter, transports: credential.transports }, requireUserVerification: true });
+    if (!result.verified) return json({ error: "The passkey could not be verified." }, 401);
+    await store.updateAdminPasskeyCounter(credential.credentialId, result.authenticationInfo.newCounter, unix());
+    return createAdminSession(store, url, credential.credentialId);
+  } catch (error) {
+    console.log("Passkey authentication failed", error instanceof Error ? error.message : String(error));
+    return json({ error: "The passkey could not be verified." }, 401);
+  }
+}
+async function createAdminSession(store, url, credentialId) {
+  const token = randomToken();
+  await store.createAdminSession(await hash(token), credentialId, unix() + ADMIN_SESSION_TTL_SECONDS, unix());
+  return json({ ok: true }, 200, { "Set-Cookie": adminSessionCookie(token, url.protocol === "https:") });
+}
+async function requireAdmin(request, store) {
+  const token = cookie(request, "plane_admin_session");
+  return token && isToken(token) ? store.findAdminSession(await hash(token), unix()) : null;
+}
+async function adminLogout(request, store) {
+  const token = cookie(request, "plane_admin_session");
+  if (token && isToken(token)) await store.deleteAdminSession(await hash(token));
+  return json({ ok: true }, 200, { "Set-Cookie": "plane_admin_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0" });
+}
+async function adminFleet(request, store) {
+  if (!await requireAdmin(request, store)) return json({ error: "Passkey authentication required." }, 401);
+  const [devices, trackedFlights] = await Promise.all([store.listDevices(), store.getTrackedFlights(null)]);
+  return json({ devices: devices.map(publicFleetDevice), specialFlights: trackedFlights.map(publicTrackedFlight) }, 200, { "Cache-Control": "no-store" });
+}
+async function adminSaveDisplay(request, store, id) {
+  if (!await requireAdmin(request, store)) return json({ error: "Passkey authentication required." }, 401);
+  let body; try { body = await request.json(); } catch { return json({ error: "Expected JSON" }, 400); }
+  const firmwareChannel = ["stable", "preview", "local"].includes(body.firmwareChannel) ? body.firmwareChannel : null;
+  if (!firmwareChannel) return json({ error: "Choose stable, preview, or local development." }, 422);
+  const device = await store.setFirmwareChannel(id, firmwareChannel, unix());
+  return device ? json({ device: publicFleetDevice(device) }) : json({ error: "Display not found." }, 404);
+}
+async function adminTrackedFlights(request, store) { return adminFleet(request, store); }
+async function adminAddTrackedFlight(request, store) {
+  if (!await requireAdmin(request, store)) return json({ error: "Passkey authentication required." }, 401);
+  let body; try { body = await request.json(); } catch { return json({ error: "Expected JSON" }, 400); }
+  const identifierType = body.identifierType === "tailNumber" ? "tailNumber" : "flightNumber";
+  const identifier = identifierType === "tailNumber" ? cleanTailNumber(body.identifier) : cleanFlightNumber(body.identifier);
+  const title = cleanTrackedTitle(body.title), flightDate = cleanDate(body.flightDate);
+  if (!identifier || !title || !flightDate || !body.deviceId) return json({ error: "Choose a display, title, identifier, and date." }, 422);
+  if (!await store.getDevice(body.deviceId)) return json({ error: "Display not found." }, 404);
+  const entry = { id: crypto.randomUUID(), deviceId: body.deviceId, flightNumber: identifier, identifierType, statusIdentifier: identifierType === "flightNumber" ? cleanFlightNumber(body.statusIdentifier) || identifier : null, title, flightDate, createdAt: unix() };
+  await store.addTrackedFlight(entry);
+  await store.deleteAllSnapshots();
+  return json({ trackedFlight: publicTrackedFlight(entry) }, 201);
+}
+async function adminRemoveTrackedFlight(request, store, id) {
+  if (!await requireAdmin(request, store)) return json({ error: "Passkey authentication required." }, 401);
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return json({ error: "Special flight not found." }, 404);
+  const removed = await store.deleteTrackedFlightAny(id);
+  if (!removed) return json({ error: "Special flight not found." }, 404);
+  await Promise.all([store.deleteAllSnapshots(), store.deleteFlightStatus(id)]);
+  return json({ ok: true });
 }
 
 async function rotateDeviceKey(request, store) {
@@ -815,6 +951,7 @@ function convert(value, factor) { const n = numberOrNull(value); return n === nu
 function round(value, decimals) { const n = 10 ** decimals; return Math.round(value * n) / n; }
 function haversineKm(lat1, lon1, lat2, lon2) { const rad = Math.PI / 180, a = Math.sin((lat2 - lat1) * rad / 2) ** 2 + Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin((lon2 - lon1) * rad / 2) ** 2; return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)); }
 function publicDevice(d) { return { id: d.id, name: d.name, latitude: d.latitude, longitude: d.longitude, radiusKm: d.radiusKm, includeGrounded: Boolean(d.includeGrounded), hideIncompleteData: Boolean(d.hideIncompleteData), debugPack: selectedDebugPack(d.debugMode)?.id || null, rotationRequested: Boolean(d.rotationRequested) }; }
+function publicFleetDevice(d) { return { ...publicDevice(d), firmwareChannel: d.firmwareChannel || "stable", createdAt: d.createdAt || null, updatedAt: d.updatedAt || null, lastFirmwareVersion: d.lastFirmwareVersion || 0, lastSeenAt: d.lastSeenAt || null }; }
 async function getTrackedFlights(request, store) {
   const device = await authenticateSession(request, store);
   return device ? json({ trackedFlights: await store.getTrackedFlights(device.id) }) : json({ error: "Unauthorized" }, 401);
@@ -898,6 +1035,8 @@ function cleanName(value) { return typeof value === "string" ? value.trim().slic
 function json(value, status = 200, headers = {}) { return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json; charset=utf-8", ...headers } }); }
 function unix() { return Math.floor(Date.now() / 1000); }
 function randomToken() { const bytes = crypto.getRandomValues(new Uint8Array(32)); return btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", ""); }
+function base64url(bytes) { return btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", ""); }
+function fromBase64url(value) { const padded = value.replaceAll("-", "+").replaceAll("_", "/").padEnd(Math.ceil(value.length / 4) * 4, "="); return Uint8Array.from(atob(padded), char => char.charCodeAt(0)); }
 function isToken(value) { return typeof value === "string" && /^[A-Za-z0-9_-]{40,}$/.test(value); }
 export async function hash(value) { const bytes = await crypto.subtle.digest("SHA-256", encoder.encode(value)); return `sha256:${[...new Uint8Array(bytes)].map(b => b.toString(16).padStart(2, "0")).join("")}`; }
 // D1 remains the authority. This cap only makes abuse expensive for an attacker, not the database.
@@ -905,10 +1044,15 @@ function take(key, cap, periodSeconds) { const now = unix(), item = memoryLimits
 function clientIp(request) { return request.headers.get("CF-Connecting-IP") || request.headers.get("X-Forwarded-For") || "local"; }
 function cookie(request, name) { return request.headers.get("Cookie")?.split(";").map(v => v.trim()).find(v => v.startsWith(`${name}=`))?.slice(name.length + 1) || null; }
 function sessionCookie(token, secure) { return `plane_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_SECONDS}${secure ? "; Secure" : ""}`; }
+function adminSessionCookie(token, secure) { return `plane_admin_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${ADMIN_SESSION_TTL_SECONDS}${secure ? "; Secure" : ""}`; }
 
 export class D1Store {
   constructor(db) { this.db = db; }
   async findDeviceByKeyHash(keyHash, now) { return deviceRow(await this.db.prepare("SELECT * FROM devices WHERE api_key_hash = ? OR (previous_api_key_hash = ? AND previous_key_expires_at > ?)").bind(keyHash, keyHash, now).first()); }
+  async getDevice(id) { return deviceRow(await this.db.prepare("SELECT * FROM devices WHERE id=?").bind(id).first()); }
+  async listDevices() { const { results } = await this.db.prepare("SELECT * FROM devices ORDER BY name COLLATE NOCASE, id").all(); return results.map(deviceRow); }
+  async setFirmwareChannel(id, channel, now) { await this.db.prepare("UPDATE devices SET firmware_channel=?, updated_at=? WHERE id=?").bind(channel, now, id).run(); return this.getDevice(id); }
+  async noteDeviceCheckin(id, version, now) { await this.db.prepare("UPDATE devices SET last_firmware_version=?, last_seen_at=? WHERE id=?").bind(version, now, id).run(); }
   async getSnapshot(id) { const r = await this.db.prepare("SELECT payload_json, fetched_at FROM flight_snapshots WHERE device_id = ?").bind(id).first(); return r && { payload: JSON.parse(r.payload_json), fetchedAt: r.fetched_at }; }
   async putSnapshot(id, payload, now) { await this.db.prepare("INSERT INTO flight_snapshots (device_id, payload_json, fetched_at) VALUES (?, ?, ?) ON CONFLICT(device_id) DO UPDATE SET payload_json=excluded.payload_json, fetched_at=excluded.fetched_at").bind(id, JSON.stringify(payload), now).run(); }
   async deleteSnapshot(id) { await this.db.prepare("DELETE FROM flight_snapshots WHERE device_id = ?").bind(id).run(); }
@@ -921,6 +1065,16 @@ export class D1Store {
   async requestRotation(id, now) { await this.db.prepare("UPDATE devices SET rotation_requested=1, updated_at=? WHERE id=?").bind(now, id).run(); }
   async rotateKey(id, next, prior, expires, now) { await this.db.prepare("UPDATE devices SET api_key_hash=?, previous_api_key_hash=?, previous_key_expires_at=?, rotation_requested=0, updated_at=? WHERE id=?").bind(next, prior, expires, now, id).run(); }
   async deleteSession(h) { await this.db.prepare("DELETE FROM sessions WHERE token_hash=?").bind(h).run(); }
+  async countAdminPasskeys() { const row = await this.db.prepare("SELECT COUNT(*) AS count FROM admin_passkeys").first(); return Number(row?.count || 0); }
+  async getAdminPasskeys() { const { results } = await this.db.prepare("SELECT * FROM admin_passkeys ORDER BY created_at").all(); return results.map(adminPasskeyRow); }
+  async getAdminPasskey(id) { return adminPasskeyRow(await this.db.prepare("SELECT * FROM admin_passkeys WHERE credential_id=?").bind(id).first()); }
+  async addAdminPasskey(entry) { await this.db.prepare("INSERT INTO admin_passkeys (credential_id, public_key, counter, transports_json, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?)").bind(entry.credentialId, entry.publicKey, entry.counter, JSON.stringify(entry.transports), entry.createdAt, entry.lastUsedAt).run(); }
+  async updateAdminPasskeyCounter(id, counter, now) { await this.db.prepare("UPDATE admin_passkeys SET counter=?, last_used_at=? WHERE credential_id=?").bind(counter, now, id).run(); }
+  async createWebauthnChallenge(challenge, kind, expiresAt) { await this.db.prepare("INSERT INTO admin_webauthn_challenges (challenge, kind, expires_at) VALUES (?, ?, ?)").bind(challenge, kind, expiresAt).run(); }
+  async consumeWebauthnChallenge(challenge, kind, now) { const row = await this.db.prepare("DELETE FROM admin_webauthn_challenges WHERE challenge=? AND kind=? AND expires_at>? RETURNING challenge").bind(challenge, kind, now).first(); return row?.challenge || null; }
+  async createAdminSession(h, credentialId, expires, now) { await this.db.prepare("INSERT INTO admin_sessions (token_hash, credential_id, expires_at, created_at) VALUES (?, ?, ?, ?)").bind(h, credentialId, expires, now).run(); }
+  async findAdminSession(h, now) { return this.db.prepare("SELECT credential_id FROM admin_sessions WHERE token_hash=? AND expires_at>? ").bind(h, now).first(); }
+  async deleteAdminSession(h) { await this.db.prepare("DELETE FROM admin_sessions WHERE token_hash=?").bind(h).run(); }
   async getAirline(code) { const r = await this.db.prepare("SELECT name, country, fetched_at FROM airline_cache WHERE icao_code=?").bind(code).first(); return r && { name: r.name, country: r.country, fetchedAt: r.fetched_at }; }
   async putAirline(code, airline) { await this.db.prepare("INSERT INTO airline_cache (icao_code, name, country, fetched_at) VALUES (?, ?, ?, ?) ON CONFLICT(icao_code) DO UPDATE SET name=excluded.name, country=excluded.country, fetched_at=excluded.fetched_at").bind(code, airline.name, airline.country, airline.fetchedAt).run(); }
   async getAircraft(icao24) { const r = await this.db.prepare("SELECT type_code, type_name, manufacturer, owner_code, owner_name, owner_country, identity_version, fetched_at FROM aircraft_cache WHERE icao24=?").bind(icao24).first(); return r && { typeCode: r.type_code, typeName: r.type_name, manufacturer: r.manufacturer, ownerCode: r.owner_code, ownerName: r.owner_name, ownerCountry: r.owner_country, identityVersion: r.identity_version, fetchedAt: r.fetched_at }; }
@@ -935,6 +1089,7 @@ export class D1Store {
   }
   async addTrackedFlight(entry) { await this.db.prepare("INSERT INTO tracked_flights (id, device_id, flight_number, identifier_type, status_identifier, title, flight_date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(entry.id, entry.deviceId, entry.flightNumber, entry.identifierType, entry.statusIdentifier, entry.title, entry.flightDate, entry.createdAt).run(); }
   async deleteTrackedFlight(deviceId, id) { const result = await this.db.prepare("DELETE FROM tracked_flights WHERE id=? AND device_id=?").bind(id, deviceId).run(); return result.meta.changes > 0; }
+  async deleteTrackedFlightAny(id) { const result = await this.db.prepare("DELETE FROM tracked_flights WHERE id=?").bind(id).run(); return result.meta.changes > 0; }
   async getFlightStatus(id) { const r = await this.db.prepare("SELECT payload_json, fetched_at FROM flight_status_cache WHERE tracked_flight_id=?").bind(id).first(); return r && { payload: JSON.parse(r.payload_json), fetchedAt: r.fetched_at }; }
   async putFlightStatus(id, status) { await this.db.prepare("INSERT INTO flight_status_cache (tracked_flight_id, payload_json, fetched_at) VALUES (?, ?, ?) ON CONFLICT(tracked_flight_id) DO UPDATE SET payload_json=excluded.payload_json, fetched_at=excluded.fetched_at").bind(id, JSON.stringify(status.payload), status.fetchedAt).run(); }
   async deleteFlightStatus(id) { await this.db.prepare("DELETE FROM flight_status_cache WHERE tracked_flight_id=?").bind(id).run(); }
@@ -947,5 +1102,6 @@ function trackedFlightRow(row) { const identifierType = row.identifier_type || "
 
 function deviceRow(row) {
   if (!row) return null;
-  return { id: row.id, name: row.name, apiKeyHash: row.api_key_hash, latitude: row.latitude, longitude: row.longitude, radiusKm: row.radius_km, includeGrounded: row.include_grounded, hideIncompleteData: row.hide_incomplete_data, debugMode: row.debug_mode, rotationRequested: row.rotation_requested };
+  return { id: row.id, name: row.name, apiKeyHash: row.api_key_hash, latitude: row.latitude, longitude: row.longitude, radiusKm: row.radius_km, includeGrounded: row.include_grounded, hideIncompleteData: row.hide_incomplete_data, debugMode: row.debug_mode, rotationRequested: row.rotation_requested, firmwareChannel: row.firmware_channel || "stable", createdAt: row.created_at, updatedAt: row.updated_at, lastSeenAt: row.last_seen_at, lastFirmwareVersion: row.last_firmware_version || 0 };
 }
+function adminPasskeyRow(row) { return row && { credentialId: row.credential_id, publicKey: row.public_key, counter: row.counter, transports: JSON.parse(row.transports_json || "[]"), createdAt: row.created_at, lastUsedAt: row.last_used_at }; }

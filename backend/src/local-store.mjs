@@ -1,6 +1,10 @@
 export class LocalStore {
-  constructor(device) { this.devices = new Map([[device.id, device]]); this.pairings = new Map(); this.sessions = new Map(); this.snapshots = new Map(); this.airlines = new Map(); this.aircraft = new Map(); this.trackedFlights = new Map(); this.flightStatuses = new Map(); this.flightRoutes = new Map(); this.providerUsage = new Map(); }
+  constructor(device) { this.devices = new Map([[device.id, { firmwareChannel: "stable", lastFirmwareVersion: 0, ...device }]]); this.pairings = new Map(); this.sessions = new Map(); this.snapshots = new Map(); this.airlines = new Map(); this.aircraft = new Map(); this.trackedFlights = new Map(); this.flightStatuses = new Map(); this.flightRoutes = new Map(); this.providerUsage = new Map(); this.adminPasskeys = new Map(); this.adminChallenges = new Map(); this.adminSessions = new Map(); }
   async findDeviceByKeyHash(keyHash, now) { return [...this.devices.values()].find(d => d.apiKeyHash === keyHash || (d.previousApiKeyHash === keyHash && d.previousKeyExpiresAt > now)) || null; }
+  async getDevice(id) { return this.devices.get(id) || null; }
+  async listDevices() { return [...this.devices.values()].sort((a, b) => a.name.localeCompare(b.name)); }
+  async setFirmwareChannel(id, firmwareChannel) { const device = this.devices.get(id); if (!device) return null; device.firmwareChannel = firmwareChannel; return device; }
+  async noteDeviceCheckin(id, version, now) { const device = this.devices.get(id); if (device) Object.assign(device, { lastFirmwareVersion: version, lastSeenAt: now }); }
   async getSnapshot(id) { return this.snapshots.get(id) || null; }
   async putSnapshot(id, payload, fetchedAt) { this.snapshots.set(id, { payload, fetchedAt }); }
   async deleteSnapshot(id) { this.snapshots.delete(id); }
@@ -13,6 +17,16 @@ export class LocalStore {
   async requestRotation(id) { this.devices.get(id).rotationRequested = true; }
   async rotateKey(id, nextKeyHash, priorKeyHash, previousKeyExpiresAt) { Object.assign(this.devices.get(id), { apiKeyHash: nextKeyHash, previousApiKeyHash: priorKeyHash, previousKeyExpiresAt, rotationRequested: false }); }
   async deleteSession(tokenHash) { this.sessions.delete(tokenHash); }
+  async countAdminPasskeys() { return this.adminPasskeys.size; }
+  async getAdminPasskeys() { return [...this.adminPasskeys.values()]; }
+  async getAdminPasskey(id) { return this.adminPasskeys.get(id) || null; }
+  async addAdminPasskey(entry) { this.adminPasskeys.set(entry.credentialId, entry); }
+  async updateAdminPasskeyCounter(id, counter, now) { const entry = this.adminPasskeys.get(id); if (entry) Object.assign(entry, { counter, lastUsedAt: now }); }
+  async createWebauthnChallenge(challenge, kind, expiresAt) { this.adminChallenges.set(challenge, { kind, expiresAt }); }
+  async consumeWebauthnChallenge(challenge, kind, now) { const entry = this.adminChallenges.get(challenge); this.adminChallenges.delete(challenge); return entry?.kind === kind && entry.expiresAt > now ? challenge : null; }
+  async createAdminSession(tokenHash, credentialId, expiresAt) { this.adminSessions.set(tokenHash, { credentialId, expiresAt }); }
+  async findAdminSession(tokenHash, now) { const entry = this.adminSessions.get(tokenHash); return entry?.expiresAt > now ? entry : null; }
+  async deleteAdminSession(tokenHash) { this.adminSessions.delete(tokenHash); }
   async getAirline(code) { return this.airlines.get(code) || null; }
   async putAirline(code, airline) { this.airlines.set(code, airline); }
   async getAircraft(icao24) { return this.aircraft.get(icao24) || null; }
@@ -20,6 +34,7 @@ export class LocalStore {
   async getTrackedFlights(deviceId, flightDate) { return [...this.trackedFlights.values()].filter(entry => (!deviceId || entry.deviceId === deviceId) && (!flightDate || entry.flightDate === flightDate)).map(entry => ({ ...entry, identifier: entry.identifier || entry.flightNumber, identifierType: entry.identifierType || "flightNumber" })); }
   async addTrackedFlight(entry) { this.trackedFlights.set(entry.id, entry); }
   async deleteTrackedFlight(deviceId, id) { const entry = this.trackedFlights.get(id); if (entry?.deviceId !== deviceId) return false; this.trackedFlights.delete(id); return true; }
+  async deleteTrackedFlightAny(id) { return this.trackedFlights.delete(id); }
   async getFlightStatus(id) { return this.flightStatuses.get(id) || null; }
   async putFlightStatus(id, status) { this.flightStatuses.set(id, status); }
   async deleteFlightStatus(id) { this.flightStatuses.delete(id); }

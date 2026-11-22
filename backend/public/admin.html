@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Plane Display Fleet</title><link rel="stylesheet" href="/admin.css">
+</head>
+<body>
+  <main class="shell">
+    <header><div><p class="eyebrow">PLANE DISPLAY</p><h1>Fleet control</h1></div><button id="signOut" class="quiet" hidden>Sign out</button></header>
+    <section id="auth" class="auth card" hidden>
+      <p class="eyebrow">PASSKEY ONLY</p><h2 id="authTitle">Secure fleet access</h2><p id="authDescription">Use your passkey to manage every display.</p><button id="passkeyButton" class="primary">Continue with passkey</button><p id="authMessage" class="message"></p>
+    </section>
+    <section id="console" hidden>
+      <div class="overview"><div class="card"><p class="eyebrow">DISPLAYS</p><strong id="displayCount">—</strong><span>managed screens</span></div><div class="card"><p class="eyebrow">SPECIAL FLIGHTS</p><strong id="specialCount">—</strong><span>fleet-wide overrides</span></div><div class="card"><p class="eyebrow">UPDATES</p><strong id="channelCount">—</strong><span>stable channel</span></div></div>
+      <section class="section"><div class="sectionHeading"><div><p class="eyebrow">FLEET</p><h2>Your displays</h2></div><button id="refresh" class="quiet">Refresh</button></div><div id="displays" class="displays"></div></section>
+      <section class="section card flightCard"><div><p class="eyebrow">FLEET-WIDE PRIORITY</p><h2>Add a special flight</h2><p>While active, a special flight takes over every display.</p></div><form id="flightForm"><label>Display owner<select id="flightDevice" required></select></label><label>Flight or tail number<input id="flightIdentifier" required placeholder="KLM676 or C-GLUN" autocapitalize="characters"></label><label>Type<select id="flightType"><option value="flightNumber">Flight</option><option value="tailNumber">Tail number</option></select></label><label>Display name<input id="flightTitle" required placeholder="Special flight" maxlength="80"></label><label>Date<input id="flightDate" required type="date"></label><button class="primary" type="submit">Add special flight</button><p id="flightMessage" class="message"></p></form><div id="specialFlights" class="specialFlights"></div></section>
+    </section>
+  </main><script type="module" src="/admin.js"></script>
+</body>
+</html>

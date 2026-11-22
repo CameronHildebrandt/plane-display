@@ -3639,6 +3639,7 @@ void fetchFlightsTask(void*) {
       request.setConnectTimeout(8000);
       request.setTimeout(12000);
       request.addHeader("X-Device-Key", activeDeviceKey());
+      request.addHeader("X-Firmware-Version", String(LED_PLANE_FIRMWARE_VERSION));
       status = request.GET();
       if (status == HTTP_CODE_OK) {
         const String response = request.getString();

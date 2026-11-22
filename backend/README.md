@@ -91,6 +91,25 @@ Do not put the Worker on a paid usage plan unless you deliberately want paid ove
 
 The repository includes `.github/workflows/deploy.yml`. It tests every push to `main`, then applies remaining D1 migrations and deploys the Worker. It intentionally uses GitHub Actions rather than Cloudflare's Git integration, so the GitHub account can remain connected to a different Cloudflare account.
 
+## Fleet administration and firmware channels
+
+Open `/admin` to manage the fleet. The first enrolment uses a one-time setup
+secret (`ADMIN_SETUP_TOKEN`) in a fragment URL such as
+`https://your-worker.example/admin#the-secret`; after that, fleet access is
+passkey-only. The fragment is never sent to the server as part of a page URL.
+
+Each display has one firmware channel:
+
+- **Stable** receives releases created automatically when `main` changes.
+- **Preview** receives only a manually dispatched **Preview** release from the
+  GitHub Actions workflow.
+- **Local** never receives a cloud OTA manifest. Use USB or a LAN upload while
+  iterating on this display; it cannot accidentally update another display.
+
+Set one test board to Local for day-to-day development. When you want to test a
+candidate OTA, switch it to Preview, run the workflow manually with the Preview
+channel, and promote the same reviewed commit by merging it to `main`.
+
 Create a GitHub environment named `production` and add these environment secrets there:
 
 - `CLOUDFLARE_ACCOUNT_ID`: the Cloudflare account ID that owns this Worker and D1 database.

@@ -49,6 +49,25 @@ test("flight data carries only a validated authenticated firmware manifest", asy
     url: release.FIRMWARE_RELEASE_URL,
     sha256: release.FIRMWARE_RELEASE_SHA256
   });
+
+  const { store: localStore, key: localKey } = await setup();
+  localStore.devices.get("test").firmwareChannel = "local";
+  const localResponse = await handle(request("/flightdata", { headers: { "X-Device-Key": localKey, "X-Firmware-Version": "17" } }), localStore, { ...liveSource, ...release });
+  const localBody = await localResponse.json();
+  assert.equal(localBody.firmware, null);
+  assert.equal(localStore.devices.get("test").lastFirmwareVersion, 17);
+});
+
+test("fleet admin sign-in starts with a registered passkey and does not expose fleet data anonymously", async () => {
+  const { store } = await setup();
+  await store.addAdminPasskey({ credentialId: "credential-test", publicKey: "AQID", counter: 0, transports: [], createdAt: 1, lastUsedAt: null });
+  const optionsResponse = await handle(request("/admin/api/login/options", { method: "POST", body: "{}" }), store, {});
+  assert.equal(optionsResponse.status, 200);
+  const { options } = await optionsResponse.json();
+  assert.equal(typeof options.challenge, "string");
+  assert.equal(options.rpId, "local.test");
+  const fleetResponse = await handle(request("/admin/api/fleet"), store, {});
+  assert.equal(fleetResponse.status, 401);
 });
 
 test("AirLabs published routes override routeset and are reused for a week", async () => {

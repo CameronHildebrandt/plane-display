@@ -4,6 +4,13 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      channel:
+        description: "Release channel"
+        required: true
+        default: stable
+        type: choice
+        options: [stable, preview]
 
 # The workflow token creates immutable release assets. Cloudflare credentials
 # remain repository secrets and are never embedded in the firmware.
@@ -25,6 +32,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
+      - run: npm ci
       - run: npm test
 
   firmware-release:
@@ -34,6 +42,7 @@ jobs:
       version: ${{ steps.release.outputs.version }}
       url: ${{ steps.release.outputs.url }}
       sha256: ${{ steps.release.outputs.sha256 }}
+      channel: ${{ steps.release.outputs.channel }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -54,17 +63,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ github.run_number }}
           REPOSITORY: ${{ github.repository }}
+          CHANNEL: ${{ inputs.channel || 'stable' }}
         working-directory: esp32-rgb-matrix-hello
         run: |
           tag="firmware-${VERSION}"
+          if [ "$CHANNEL" = "preview" ]; then tag="firmware-preview-${VERSION}"; fi
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" firmware.bin firmware.bin.sha256 --clobber
           else
-            gh release create "$tag" firmware.bin firmware.bin.sha256 --title "Firmware ${VERSION}" --notes "Automated firmware release for commit ${GITHUB_SHA}."
+            gh release create "$tag" firmware.bin firmware.bin.sha256 --title "Firmware ${VERSION} (${CHANNEL})" --notes "Automated ${CHANNEL} firmware release for commit ${GITHUB_SHA}."
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "url=https://github.com/${REPOSITORY}/releases/download/${tag}/firmware.bin" >> "$GITHUB_OUTPUT"
           echo "sha256=$(cut -d ' ' -f1 firmware.bin.sha256)" >> "$GITHUB_OUTPUT"
+          echo "channel=${CHANNEL}" >> "$GITHUB_OUTPUT"
 
   deploy:
     needs: firmware-release
@@ -72,6 +84,12 @@ jobs:
     environment: production
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install Worker dependencies
+        working-directory: backend
+        run: npm ci
       - name: Publish verified release manifest and deploy Worker
         uses: cloudflare/wrangler-action@v4
         with:
@@ -81,7 +99,13 @@ jobs:
           wranglerVersion: "4"
           command: |
             d1 migrations apply plane-display --remote
-            printf %s '${{ needs.firmware-release.outputs.version }}' | wrangler secret put FIRMWARE_RELEASE_VERSION
-            printf %s '${{ needs.firmware-release.outputs.url }}' | wrangler secret put FIRMWARE_RELEASE_URL
-            printf %s '${{ needs.firmware-release.outputs.sha256 }}' | wrangler secret put FIRMWARE_RELEASE_SHA256
+            if [ '${{ needs.firmware-release.outputs.channel }}' = 'preview' ]; then
+              printf %s '${{ needs.firmware-release.outputs.version }}' | wrangler secret put FIRMWARE_PREVIEW_VERSION
+              printf %s '${{ needs.firmware-release.outputs.url }}' | wrangler secret put FIRMWARE_PREVIEW_URL
+              printf %s '${{ needs.firmware-release.outputs.sha256 }}' | wrangler secret put FIRMWARE_PREVIEW_SHA256
+            else
+              printf %s '${{ needs.firmware-release.outputs.version }}' | wrangler secret put FIRMWARE_RELEASE_VERSION
+              printf %s '${{ needs.firmware-release.outputs.url }}' | wrangler secret put FIRMWARE_RELEASE_URL
+              printf %s '${{ needs.firmware-release.outputs.sha256 }}' | wrangler secret put FIRMWARE_RELEASE_SHA256
+            fi
             deploy
