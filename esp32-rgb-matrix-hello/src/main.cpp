@@ -3101,7 +3101,25 @@ String matterPayloadFromOnboardingUrl(const String& onboardingUrl) {
   String payload = onboardingUrl.substring(marker + 5);
   const int separator = payload.indexOf('&');
   if (separator >= 0) payload.remove(separator);
-  return payload;
+  // Arduino's Matter API returns a helper URL whose `data` query parameter is
+  // percent encoded (for example MT%3A...). Home Assistant expects the native
+  // Matter payload itself, beginning with MT:, inside the QR modules.
+  String decoded;
+  decoded.reserve(payload.length());
+  for (size_t index = 0; index < payload.length(); ++index) {
+    if (payload[index] == '%' && index + 2 < payload.length()) {
+      const char digits[] = {payload[index + 1], payload[index + 2], '\0'};
+      char* end = nullptr;
+      const long value = strtol(digits, &end, 16);
+      if (end != digits && *end == '\0') {
+        decoded += static_cast<char>(value);
+        index += 2;
+        continue;
+      }
+    }
+    decoded += payload[index] == '+' ? ' ' : payload[index];
+  }
+  return decoded;
 }
 
 void drawMatterQr() {
@@ -4083,16 +4101,21 @@ void monitorWifiConnectivity() {
 void setup() {
   Serial.begin(115200);
   Serial.printf("Boot reset reason: %d\n", static_cast<int>(esp_reset_reason()));
+  pinMode(kBootButtonPin, INPUT_PULLUP);
+  loadDisplayPreferences();
+
+  // Matter's BLE commissioning stack needs a contiguous chunk of internal
+  // memory. HUB75 DMA allocation is also internal-memory hungry, so bring up
+  // Matter first and only allocate the display buffers once BLE is established.
+  initializeEnvironmentalSensor();
+  startMatter();
+
   matrix.begin();
   // Keep the first panel test deliberately dim; raise only after the external
   // 5 V panel supply is verified.
   matrix.setBrightness8(255);
   lastDisplayMaintenanceWipeMillis = millis();
-  pinMode(kBootButtonPin, INPUT_PULLUP);
-  loadDisplayPreferences();
   playBootAnimation();
-  initializeEnvironmentalSensor();
-  startMatter();
   connectWifiAndEnableLocalUpdater();
   // A powered-off board may have been moved or renamed. Synchronize its tiny
   // settings payload before asking the comparatively slow flight providers.
