@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <meta name="theme-color" content="#e7ebea">
+    <meta name="theme-color" content="#181818">
     <title>Plane Display</title>
     <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.0/dist/maplibre-gl.css">
     <link rel="stylesheet" href="/app.css">
@@ -18,12 +18,14 @@
       <span id="planeStatus" role="status" aria-live="polite" hidden></span>
     </div>
     <main>
-      <section id="welcome" class="card">
-        <div class="mark">✦</div>
-        <p class="eyebrow">LED PLANE DISPLAY</p>
-        <h1>Your sky, on display.</h1>
-        <p>Press the display’s setup button, then scan its one-time QR code. The link works once and expires after five minutes.</p>
-        <button id="passkeyLogin" class="ghost passkey-login" type="button">Sign in with passkey</button>
+      <section id="welcome" class="card welcome-card">
+        <div class="brand-lockup" aria-label="Plane Display">
+          <div class="mark" aria-hidden="true">✦</div>
+          <p class="eyebrow">PLANE DISPLAY</p>
+        </div>
+        <h1>Set up or manage a display</h1>
+        <p class="setup-copy">New display? Press its setup button, then scan the QR code shown on the panel. Once you’re in, add a passkey so you can come back here anytime.</p>
+        <button id="passkeyLogin" class="passkey-login" type="button">Sign in with a passkey</button>
         <button id="demo" hidden>Try the local demo</button>
       </section>
       <section id="settings" class="bottom-sheet" hidden>
