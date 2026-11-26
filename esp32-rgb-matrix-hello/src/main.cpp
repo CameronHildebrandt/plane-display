@@ -3773,7 +3773,18 @@ void handleBootButton() {
     lastBootButtonPressMillis = millis();
     activePage = static_cast<DisplayPage>((static_cast<uint8_t>(activePage) + 1) % 3);
     showingPairingQr = activePage == DisplayPage::ConfigureQr;
-    if (!matterDisplayEnabled) return;
+    // Matter's On/Off endpoint is allowed to blank the normal flight display,
+    // but it must never lock the owner out of commissioning. In particular, a
+    // persisted "off" value from a previous Matter fabric used to make the
+    // panel black and also prevented the BOOT button from ever reaching this
+    // recovery QR screen.
+    if (!matterDisplayEnabled) {
+      if (activePage == DisplayPage::MatterQr) {
+        matrix.setBrightness8(255);
+        drawMatterQr();
+      }
+      return;
+    }
     if (activePage == DisplayPage::ConfigureQr) {
       Serial.println("Display mode: pairing QR");
       fetchAndDrawPairingQr();
