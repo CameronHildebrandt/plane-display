@@ -90,22 +90,26 @@ jobs:
       - name: Install Worker dependencies
         working-directory: backend
         run: npm ci
+      # wrangler-action treats every line in `command` as a Wrangler subcommand,
+      # so conditional shell must live in a regular run step.
       - name: Publish verified release manifest and deploy Worker
-        uses: cloudflare/wrangler-action@v4
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: backend
-          wranglerVersion: "4"
-          command: |
-            d1 migrations apply plane-display --remote
-            if [ '${{ needs.firmware-release.outputs.channel }}' = 'preview' ]; then
-              printf %s '${{ needs.firmware-release.outputs.version }}' | wrangler secret put FIRMWARE_PREVIEW_VERSION
-              printf %s '${{ needs.firmware-release.outputs.url }}' | wrangler secret put FIRMWARE_PREVIEW_URL
-              printf %s '${{ needs.firmware-release.outputs.sha256 }}' | wrangler secret put FIRMWARE_PREVIEW_SHA256
-            else
-              printf %s '${{ needs.firmware-release.outputs.version }}' | wrangler secret put FIRMWARE_RELEASE_VERSION
-              printf %s '${{ needs.firmware-release.outputs.url }}' | wrangler secret put FIRMWARE_RELEASE_URL
-              printf %s '${{ needs.firmware-release.outputs.sha256 }}' | wrangler secret put FIRMWARE_RELEASE_SHA256
-            fi
-            deploy
+        working-directory: backend
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          RELEASE_CHANNEL: ${{ needs.firmware-release.outputs.channel }}
+          RELEASE_VERSION: ${{ needs.firmware-release.outputs.version }}
+          RELEASE_URL: ${{ needs.firmware-release.outputs.url }}
+          RELEASE_SHA256: ${{ needs.firmware-release.outputs.sha256 }}
+        run: |
+          npx --yes wrangler@4 d1 migrations apply plane-display --remote
+          if [ "$RELEASE_CHANNEL" = 'preview' ]; then
+            printf %s "$RELEASE_VERSION" | npx --yes wrangler@4 secret put FIRMWARE_PREVIEW_VERSION
+            printf %s "$RELEASE_URL" | npx --yes wrangler@4 secret put FIRMWARE_PREVIEW_URL
+            printf %s "$RELEASE_SHA256" | npx --yes wrangler@4 secret put FIRMWARE_PREVIEW_SHA256
+          else
+            printf %s "$RELEASE_VERSION" | npx --yes wrangler@4 secret put FIRMWARE_RELEASE_VERSION
+            printf %s "$RELEASE_URL" | npx --yes wrangler@4 secret put FIRMWARE_RELEASE_URL
+            printf %s "$RELEASE_SHA256" | npx --yes wrangler@4 secret put FIRMWARE_RELEASE_SHA256
+          fi
+          npx --yes wrangler@4 deploy
