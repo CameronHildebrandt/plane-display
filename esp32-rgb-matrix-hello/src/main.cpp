@@ -131,6 +131,7 @@ HUB75_I2S_CFG makeMatrixConfig() {
 HUB75_I2S_CFG matrixConfig = makeMatrixConfig();
 MatrixPanel_I2S_DMA matrix(matrixConfig);
 WebServer updateServer(80);
+WiFiManager manualSetupWifiManager;
 bool shouldRestart = false;
 char setupAccessPoint[32] = "Plane Display ----";
 unsigned long wifiOfflineSinceMillis = 0;
@@ -143,6 +144,7 @@ enum class DisplayPage : uint8_t {
   Flight,
   ConfigureQr,
   MatterQr,
+  NetworkSetupQr,
 };
 
 DisplayPage activePage = DisplayPage::Flight;
@@ -161,6 +163,9 @@ MatterHumiditySensor matterHumidity;
 Adafruit_SHTC3 environmentalSensor;
 bool environmentalSensorReady = false;
 unsigned long nextEnvironmentalRefreshMillis = 0;
+
+void startManualNetworkSetupPortal();
+void stopManualNetworkSetupPortal();
 
 struct FirmwareRelease {
   uint32_t version = 0;
@@ -3771,8 +3776,18 @@ void handleBootButton() {
   const bool pressed = digitalRead(kBootButtonPin) == LOW;
   if (pressed && !bootButtonWasPressed && millis() - lastBootButtonPressMillis > 300) {
     lastBootButtonPressMillis = millis();
-    activePage = static_cast<DisplayPage>((static_cast<uint8_t>(activePage) + 1) % 3);
-    showingPairingQr = activePage == DisplayPage::ConfigureQr;
+    const bool online = WiFi.status() == WL_CONNECTED;
+    // The button is deliberately a two-page navigator. Connected displays
+    // switch only between the useful flight and configuration pages; an
+    // uncommissioned/offline display switches only between its two ways to
+    // gain a network: Matter and the familiar local Wi-Fi setup portal.
+    if (online) {
+      activePage = activePage == DisplayPage::Flight ? DisplayPage::ConfigureQr : DisplayPage::Flight;
+    } else {
+      activePage = activePage == DisplayPage::MatterQr ? DisplayPage::NetworkSetupQr : DisplayPage::MatterQr;
+    }
+    showingPairingQr = online && activePage == DisplayPage::ConfigureQr;
+    if (activePage == DisplayPage::MatterQr) stopManualNetworkSetupPortal();
     // Matter's On/Off endpoint is allowed to blank the normal flight display,
     // but it must never lock the owner out of commissioning. In particular, a
     // persisted "off" value from a previous Matter fabric used to make the
@@ -3782,6 +3797,9 @@ void handleBootButton() {
       if (activePage == DisplayPage::MatterQr) {
         matrix.setBrightness8(255);
         drawMatterQr();
+      } else if (activePage == DisplayPage::NetworkSetupQr) {
+        matrix.setBrightness8(255);
+        drawNetworkOfflineScreen();
       }
       return;
     }
@@ -3792,6 +3810,10 @@ void handleBootButton() {
       Serial.println("Display mode: Matter QR");
       pairingQrRetryPending = false;
       drawMatterQr();
+    } else if (activePage == DisplayPage::NetworkSetupQr) {
+      Serial.println("Display mode: Wi-Fi setup QR");
+      pairingQrRetryPending = false;
+      startManualNetworkSetupPortal();
     } else {
       Serial.println("Display mode: flight route");
       pairingQrRetryPending = false;
@@ -3995,6 +4017,30 @@ void networkSetupPortalStarted(WiFiManager*) {
   Serial.printf("Wi-Fi setup portal: %s\n", setupAccessPoint);
 }
 
+void startManualNetworkSetupPortal() {
+  if (networkSetupPortalActive) return;
+  // The portal exists only while its QR page is selected. This leaves the
+  // other offline page free for Matter BLE commissioning.
+  manualSetupWifiManager.setConfigPortalBlocking(false);
+  manualSetupWifiManager.setTitle("Plane Display");
+  manualSetupWifiManager.setDarkMode(true);
+  manualSetupWifiManager.setShowInfoErase(false);
+  manualSetupWifiManager.setShowInfoUpdate(false);
+  manualSetupWifiManager.setCustomHeadElement(kPortalHead);
+  manualSetupWifiManager.setCustomMenuHTML(kPortalMenu);
+  manualSetupWifiManager.setMenu(kPortalMenuItems, 1);
+  manualSetupWifiManager.setAPCallback(networkSetupPortalStarted);
+  networkSetupPortalActive = true;
+  manualSetupWifiManager.startConfigPortal(setupAccessPoint);
+  drawNetworkOfflineScreen();
+}
+
+void stopManualNetworkSetupPortal() {
+  if (!networkSetupPortalActive) return;
+  manualSetupWifiManager.stopConfigPortal();
+  networkSetupPortalActive = false;
+}
+
 bool joinNetworkViaSetupPortal() {
   WiFiManager wifiManager;
   wifiManager.setConfigPortalBlocking(true);
@@ -4077,11 +4123,19 @@ void connectWifiAndEnableLocalUpdater() {
 
 void monitorWifiConnectivity() {
   if (WiFi.status() == WL_CONNECTED) {
+    if (networkSetupPortalActive) {
+      stopManualNetworkSetupPortal();
+      saveWifiCredentials();
+    }
     wifiOfflineSinceMillis = 0;
     if (matterStarted && !localUpdaterEnabled) {
       synchronizeClock();
       enableLocalUpdater();
       nextFlightPollMillis = millis();
+      if (activePage == DisplayPage::MatterQr || activePage == DisplayPage::NetworkSetupQr) {
+        activePage = DisplayPage::Flight;
+        drawNoPlanes();
+      }
     }
     return;
   }
@@ -4129,6 +4183,10 @@ void setup() {
   lastDisplayMaintenanceWipeMillis = millis();
   playBootAnimation();
   connectWifiAndEnableLocalUpdater();
+  if (WiFi.status() != WL_CONNECTED) {
+    activePage = DisplayPage::MatterQr;
+    drawMatterQr();
+  }
   // A powered-off board may have been moved or renamed. Synchronize its tiny
   // settings payload before asking the comparatively slow flight providers.
   requestDeviceConfigRefresh();
@@ -4139,7 +4197,11 @@ void loop() {
   // HUB75 DMA refresh runs independently; handle local web update traffic here.
   if (localUpdaterEnabled) updateServer.handleClient();
   monitorWifiConnectivity();
-  if (networkSetupPortalActive) return;
+  if (networkSetupPortalActive) {
+    manualSetupWifiManager.process();
+    handleBootButton();
+    return;
+  }
   if (matterStateChangePending) {
     matterStateChangePending = false;
     applyMatterDisplayState(matterRequestedEnabled, matterRequestedBrightness);

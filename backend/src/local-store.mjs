@@ -1,5 +1,5 @@
 export class LocalStore {
-  constructor(device) { this.devices = new Map([[device.id, { firmwareChannel: "stable", lastFirmwareVersion: 0, ...device }]]); this.pairings = new Map(); this.sessions = new Map(); this.snapshots = new Map(); this.airlines = new Map(); this.aircraft = new Map(); this.trackedFlights = new Map(); this.flightStatuses = new Map(); this.flightRoutes = new Map(); this.providerUsage = new Map(); this.adminPasskeys = new Map(); this.adminChallenges = new Map(); this.adminSessions = new Map(); }
+  constructor(device) { this.devices = new Map([[device.id, { firmwareChannel: "stable", lastFirmwareVersion: 0, ...device }]]); this.pairings = new Map(); this.sessions = new Map(); this.snapshots = new Map(); this.airlines = new Map(); this.aircraft = new Map(); this.trackedFlights = new Map(); this.flightStatuses = new Map(); this.flightRoutes = new Map(); this.providerUsage = new Map(); this.devicePasskeys = new Map(); this.deviceChallenges = new Map(); this.adminPasskeys = new Map(); this.adminChallenges = new Map(); this.adminSessions = new Map(); }
   async findDeviceByKeyHash(keyHash, now) { return [...this.devices.values()].find(d => d.apiKeyHash === keyHash || (d.previousApiKeyHash === keyHash && d.previousKeyExpiresAt > now)) || null; }
   async getDevice(id) { return this.devices.get(id) || null; }
   async listDevices() { return [...this.devices.values()].sort((a, b) => a.name.localeCompare(b.name)); }
@@ -17,6 +17,13 @@ export class LocalStore {
   async requestRotation(id) { this.devices.get(id).rotationRequested = true; }
   async rotateKey(id, nextKeyHash, priorKeyHash, previousKeyExpiresAt) { Object.assign(this.devices.get(id), { apiKeyHash: nextKeyHash, previousApiKeyHash: priorKeyHash, previousKeyExpiresAt, rotationRequested: false }); }
   async deleteSession(tokenHash) { this.sessions.delete(tokenHash); }
+  async countDevicePasskeys() { return this.devicePasskeys.size; }
+  async getDevicePasskeys(deviceId) { return [...this.devicePasskeys.values()].filter(entry => entry.deviceId === deviceId); }
+  async getDevicePasskey(id) { return this.devicePasskeys.get(id) || null; }
+  async addDevicePasskey(entry) { this.devicePasskeys.set(entry.credentialId, entry); }
+  async updateDevicePasskeyCounter(id, counter, now) { const entry = this.devicePasskeys.get(id); if (entry) Object.assign(entry, { counter, lastUsedAt: now }); }
+  async createDeviceWebauthnChallenge(challenge, deviceId, kind, expiresAt) { this.deviceChallenges.set(challenge, { deviceId, kind, expiresAt }); }
+  async consumeDeviceWebauthnChallenge(challenge, kind, now) { const entry = this.deviceChallenges.get(challenge); this.deviceChallenges.delete(challenge); return entry?.kind === kind && entry.expiresAt > now ? { deviceId: entry.deviceId } : null; }
   async countAdminPasskeys() { return this.adminPasskeys.size; }
   async getAdminPasskeys() { return [...this.adminPasskeys.values()]; }
   async getAdminPasskey(id) { return this.adminPasskeys.get(id) || null; }

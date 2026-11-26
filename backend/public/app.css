@@ -20,6 +20,7 @@ main { position: relative; z-index: 2; height: 100%; pointer-events: none; }
 .card, .bottom-sheet { pointer-events: auto; }
 .card { position: absolute; top: 50%; left: 50%; width: min(420px, calc(100% - 32px)); padding: 30px; transform: translate(-50%, -50%); background: rgb(255 255 255 / .95); border: 1px solid #d5dddb; border-radius: 22px; box-shadow: 0 22px 60px rgb(24 39 38 / .14); }
 .mark { display: grid; width: 44px; height: 44px; margin-bottom: 20px; place-items: center; color: #fff; background: #177e70; border-radius: 14px; }
+.passkey-login { margin-top: 18px; }
 .eyebrow { margin: 0 0 6px; color: #4c6965; font-size: 11px; font-weight: 800; letter-spacing: .13em; }
 h1, h2, h3, p { margin-top: 0; }
 h1 { margin-bottom: 10px; font-size: clamp(23px, 6vw, 30px); letter-spacing: -.04em; line-height: 1.05; }
@@ -60,6 +61,7 @@ hr { height: 1px; margin: 25px 0; background: #dbe4e1; border: 0; }
 .danger { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
 .danger h2 { margin-bottom: 5px; font-size: 15px; }
 .danger p { max-width: 330px; margin: 0; font-size: 12px; }
+.passkey-access h2 { color: #15584e; }
 .danger .ghost { flex: 0 0 auto; }
 .tracked-flights h2 { margin-bottom: 5px; }
 .tracked-help { margin: 0 0 16px; font-size: 12px; }

@@ -23,6 +23,7 @@
         <p class="eyebrow">LED PLANE DISPLAY</p>
         <h1>Your sky, on display.</h1>
         <p>Press the display’s setup button, then scan its one-time QR code. The link works once and expires after five minutes.</p>
+        <button id="passkeyLogin" class="ghost passkey-login" type="button">Sign in with passkey</button>
         <button id="demo" hidden>Try the local demo</button>
       </section>
       <section id="settings" class="bottom-sheet" hidden>
@@ -49,6 +50,8 @@
             </fieldset>
             <button type="submit">Save display settings</button>
           </form>
+          <hr>
+          <div class="danger passkey-access"><div><h2>Passkey access</h2><p>Add this display to a passkey so you can return to its settings later without scanning a QR code again.</p></div><button class="ghost" id="addPasskey" type="button">Add passkey</button></div>
           <hr>
           <div class="danger"><div><h2>Rotate device key</h2><p>Use this if you think the display’s network key was copied. The display will replace it at its next check-in.</p></div><button class="ghost" id="rotate" type="button">Request rotation</button></div>
         </section>

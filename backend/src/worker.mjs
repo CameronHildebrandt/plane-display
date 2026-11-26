@@ -48,6 +48,10 @@ export async function handle(request, store, env = {}) {
   if (path.startsWith("/admin/api/special-flights/") && request.method === "DELETE") return adminRemoveTrackedFlight(request, store, path.slice("/admin/api/special-flights/".length));
   if (path.startsWith("/pair/") && request.method === "GET") return claimPairing(request, store, path.slice(6), url);
   if (path === "/api/settings" && request.method === "GET") return getSettings(request, store);
+  if (path === "/api/settings/passkeys/options" && request.method === "POST") return devicePasskeyRegistrationOptions(request, store, url);
+  if (path === "/api/settings/passkeys/verify" && request.method === "POST") return devicePasskeyRegistrationVerify(request, store, url);
+  if (path === "/api/settings/passkeys/login/options" && request.method === "POST") return devicePasskeyLoginOptions(store, url);
+  if (path === "/api/settings/passkeys/login/verify" && request.method === "POST") return devicePasskeyLoginVerify(request, store, url);
   if (path === "/api/settings/flights" && request.method === "GET") return settingsFlights(request, store, env, url);
   if (path === "/api/settings/tracked-flights" && request.method === "GET") return getTrackedFlights(request, store);
   if (path === "/api/settings/tracked-flights/resolve" && request.method === "POST") return resolveTrackedFlight(request, store, env);
@@ -201,6 +205,70 @@ async function deviceConfig(request, store) {
   // Settings edits must be visible as soon as a display exits its QR screen.
   // Do not allow an intermediary cache to replay an old name or location.
   return json({ name: device.name, latitude: device.latitude, longitude: device.longitude, radiusKm: device.radiusKm, includeGrounded: Boolean(device.includeGrounded), hideIncompleteData: Boolean(device.hideIncompleteData), debugPack: selectedDebugPack(device.debugMode)?.id || null, rotateKey: Boolean(device.rotationRequested) }, 200, { "Cache-Control": "no-store" });
+}
+
+// A display owner can add a passkey only from an already-paired configuration
+// session. The resulting credential signs into that one display, never the
+// fleet-admin console or another owner's display.
+async function devicePasskeyRegistrationOptions(request, store, url) {
+  const device = await authenticateSession(request, store);
+  if (!device) return json({ error: "Pair this browser from the display QR code first." }, 401);
+  const entries = await store.getDevicePasskeys(device.id);
+  const rp = passkeyRp(url);
+  const options = await generateRegistrationOptions({
+    rpName: "Plane Display",
+    rpID: rp.id,
+    userName: `display-${device.id}`,
+    userDisplayName: device.name,
+    attestationType: "none",
+    excludeCredentials: entries.map(entry => ({ id: entry.credentialId, transports: entry.transports })),
+    authenticatorSelection: { residentKey: "required", userVerification: "required" },
+  });
+  await store.createDeviceWebauthnChallenge(options.challenge, device.id, "registration", unix() + WEBAUTHN_CHALLENGE_TTL_SECONDS);
+  return json({ options });
+}
+async function devicePasskeyRegistrationVerify(request, store, url) {
+  const device = await authenticateSession(request, store);
+  if (!device) return json({ error: "Pair this browser from the display QR code first." }, 401);
+  let body; try { body = await request.json(); } catch { return json({ error: "Expected JSON" }, 400); }
+  const challenge = await store.consumeDeviceWebauthnChallenge(body.challenge, "registration", unix());
+  if (challenge?.deviceId !== device.id || !body.credential) return json({ error: "This passkey request expired. Start again." }, 400);
+  try {
+    const rp = passkeyRp(url);
+    const result = await verifyRegistrationResponse({ response: body.credential, expectedChallenge: body.challenge, expectedOrigin: rp.origin, expectedRPID: rp.id, requireUserVerification: true });
+    if (!result.verified || !result.registrationInfo) return json({ error: "The passkey could not be verified." }, 400);
+    const credential = result.registrationInfo.credential;
+    await store.addDevicePasskey({ credentialId: credential.id, deviceId: device.id, publicKey: base64url(credential.publicKey), counter: credential.counter, transports: credential.transports || [], createdAt: unix(), lastUsedAt: null });
+    return json({ ok: true });
+  } catch (error) {
+    console.log("Display passkey enrolment failed", error instanceof Error ? error.message : String(error));
+    return json({ error: "The passkey could not be verified." }, 400);
+  }
+}
+async function devicePasskeyLoginOptions(store, url) {
+  if (!await store.countDevicePasskeys()) return json({ error: "No display-owner passkey has been enrolled yet." }, 428);
+  const options = await generateAuthenticationOptions({ rpID: passkeyRp(url).id, userVerification: "required" });
+  await store.createDeviceWebauthnChallenge(options.challenge, null, "authentication", unix() + WEBAUTHN_CHALLENGE_TTL_SECONDS);
+  return json({ options });
+}
+async function devicePasskeyLoginVerify(request, store, url) {
+  let body; try { body = await request.json(); } catch { return json({ error: "Expected JSON" }, 400); }
+  const challenge = await store.consumeDeviceWebauthnChallenge(body.challenge, "authentication", unix());
+  if (!challenge || challenge.deviceId !== null || !body.credential?.id) return json({ error: "This sign-in request expired. Start again." }, 400);
+  const credential = await store.getDevicePasskey(body.credential.id);
+  if (!credential) return json({ error: "This passkey is not registered for a display." }, 401);
+  try {
+    const rp = passkeyRp(url);
+    const result = await verifyAuthenticationResponse({ response: body.credential, expectedChallenge: body.challenge, expectedOrigin: rp.origin, expectedRPID: rp.id, credential: { id: credential.credentialId, publicKey: fromBase64url(credential.publicKey), counter: credential.counter, transports: credential.transports }, requireUserVerification: true });
+    if (!result.verified) return json({ error: "The passkey could not be verified." }, 401);
+    await store.updateDevicePasskeyCounter(credential.credentialId, result.authenticationInfo.newCounter, unix());
+    const token = randomToken();
+    await store.createSession(await hash(token), credential.deviceId, unix() + SESSION_TTL_SECONDS, unix());
+    return json({ ok: true }, 200, { "Set-Cookie": sessionCookie(token, url.protocol === "https:") });
+  } catch (error) {
+    console.log("Display passkey authentication failed", error instanceof Error ? error.message : String(error));
+    return json({ error: "The passkey could not be verified." }, 401);
+  }
 }
 
 // Fleet administration is intentionally separate from a display-pairing
@@ -1065,6 +1133,13 @@ export class D1Store {
   async requestRotation(id, now) { await this.db.prepare("UPDATE devices SET rotation_requested=1, updated_at=? WHERE id=?").bind(now, id).run(); }
   async rotateKey(id, next, prior, expires, now) { await this.db.prepare("UPDATE devices SET api_key_hash=?, previous_api_key_hash=?, previous_key_expires_at=?, rotation_requested=0, updated_at=? WHERE id=?").bind(next, prior, expires, now, id).run(); }
   async deleteSession(h) { await this.db.prepare("DELETE FROM sessions WHERE token_hash=?").bind(h).run(); }
+  async countDevicePasskeys() { const row = await this.db.prepare("SELECT COUNT(*) AS count FROM device_passkeys").first(); return Number(row?.count || 0); }
+  async getDevicePasskeys(deviceId) { const { results } = await this.db.prepare("SELECT * FROM device_passkeys WHERE device_id=? ORDER BY created_at").bind(deviceId).all(); return results.map(devicePasskeyRow); }
+  async getDevicePasskey(id) { return devicePasskeyRow(await this.db.prepare("SELECT * FROM device_passkeys WHERE credential_id=?").bind(id).first()); }
+  async addDevicePasskey(entry) { await this.db.prepare("INSERT INTO device_passkeys (credential_id, device_id, public_key, counter, transports_json, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(entry.credentialId, entry.deviceId, entry.publicKey, entry.counter, JSON.stringify(entry.transports), entry.createdAt, entry.lastUsedAt).run(); }
+  async updateDevicePasskeyCounter(id, counter, now) { await this.db.prepare("UPDATE device_passkeys SET counter=?, last_used_at=? WHERE credential_id=?").bind(counter, now, id).run(); }
+  async createDeviceWebauthnChallenge(challenge, deviceId, kind, expiresAt) { await this.db.prepare("INSERT INTO device_webauthn_challenges (challenge, device_id, kind, expires_at) VALUES (?, ?, ?, ?)").bind(challenge, deviceId, kind, expiresAt).run(); }
+  async consumeDeviceWebauthnChallenge(challenge, kind, now) { const row = await this.db.prepare("DELETE FROM device_webauthn_challenges WHERE challenge=? AND kind=? AND expires_at>? RETURNING device_id").bind(challenge, kind, now).first(); return row ? { deviceId: row.device_id } : null; }
   async countAdminPasskeys() { const row = await this.db.prepare("SELECT COUNT(*) AS count FROM admin_passkeys").first(); return Number(row?.count || 0); }
   async getAdminPasskeys() { const { results } = await this.db.prepare("SELECT * FROM admin_passkeys ORDER BY created_at").all(); return results.map(adminPasskeyRow); }
   async getAdminPasskey(id) { return adminPasskeyRow(await this.db.prepare("SELECT * FROM admin_passkeys WHERE credential_id=?").bind(id).first()); }
@@ -1105,3 +1180,4 @@ function deviceRow(row) {
   return { id: row.id, name: row.name, apiKeyHash: row.api_key_hash, latitude: row.latitude, longitude: row.longitude, radiusKm: row.radius_km, includeGrounded: row.include_grounded, hideIncompleteData: row.hide_incomplete_data, debugMode: row.debug_mode, rotationRequested: row.rotation_requested, firmwareChannel: row.firmware_channel || "stable", createdAt: row.created_at, updatedAt: row.updated_at, lastSeenAt: row.last_seen_at, lastFirmwareVersion: row.last_firmware_version || 0 };
 }
 function adminPasskeyRow(row) { return row && { credentialId: row.credential_id, publicKey: row.public_key, counter: row.counter, transports: JSON.parse(row.transports_json || "[]"), createdAt: row.created_at, lastUsedAt: row.last_used_at }; }
+function devicePasskeyRow(row) { return row && { credentialId: row.credential_id, deviceId: row.device_id, publicKey: row.public_key, counter: row.counter, transports: JSON.parse(row.transports_json || "[]"), createdAt: row.created_at, lastUsedAt: row.last_used_at }; }

@@ -13,6 +13,15 @@ let flightResolveTimer;
 let resolvedFlight = null;
 
 const number = name => Number(form.elements[name].value);
+const passkeyBytes = value => {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
+  return Uint8Array.from(atob(padded), character => character.charCodeAt(0));
+};
+const passkeyBase64 = value => btoa(String.fromCharCode(...new Uint8Array(value))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+function registrationOptions(json) { return { ...json, challenge: passkeyBytes(json.challenge), user: { ...json.user, id: passkeyBytes(json.user.id) }, excludeCredentials: (json.excludeCredentials || []).map(entry => ({ ...entry, id: passkeyBytes(entry.id) })) }; }
+function authenticationOptions(json) { return { ...json, challenge: passkeyBytes(json.challenge), allowCredentials: (json.allowCredentials || []).map(entry => ({ ...entry, id: passkeyBytes(entry.id) })) }; }
+function passkeyRegistrationResponse(credential) { const response = credential.response; return { id: credential.id, rawId: passkeyBase64(credential.rawId), type: credential.type, response: { clientDataJSON: passkeyBase64(response.clientDataJSON), attestationObject: passkeyBase64(response.attestationObject), transports: response.getTransports?.() || [] }, clientExtensionResults: credential.getClientExtensionResults() }; }
+function passkeyAuthenticationResponse(credential) { const response = credential.response; return { id: credential.id, rawId: passkeyBase64(credential.rawId), type: credential.type, response: { clientDataJSON: passkeyBase64(response.clientDataJSON), authenticatorData: passkeyBase64(response.authenticatorData), signature: passkeyBase64(response.signature), userHandle: response.userHandle ? passkeyBase64(response.userHandle) : undefined }, clientExtensionResults: credential.getClientExtensionResults() }; }
 const trackingFeature = () => ({
   type: "Feature",
   properties: {},
@@ -361,6 +370,36 @@ $("#rotate").addEventListener("click", async () => {
   const response = await fetch("/api/settings/request-key-rotation", { method: "POST" });
   const result = await response.json();
   showToast(response.ok ? "Key rotation requested." : "Couldn’t request key rotation.", response.ok ? "success" : "error");
+});
+$("#addPasskey").addEventListener("click", async () => {
+  const button = $("#addPasskey");
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/settings/passkeys/options", { method: "POST" });
+    const { options, error } = await response.json();
+    if (!response.ok) throw new Error(error || "Couldn’t start passkey setup.");
+    const credential = await navigator.credentials.create({ publicKey: registrationOptions(options) });
+    const verified = await fetch("/api/settings/passkeys/verify", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ challenge: options.challenge, credential: passkeyRegistrationResponse(credential) }) });
+    if (!verified.ok) throw new Error((await verified.json()).error || "Couldn’t save the passkey.");
+    showToast("Passkey added for this display.");
+  } catch (error) {
+    showToast(error.message || "Couldn’t add passkey.", "error");
+  } finally { button.disabled = false; }
+});
+$("#passkeyLogin").addEventListener("click", async () => {
+  const button = $("#passkeyLogin");
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/settings/passkeys/login/options", { method: "POST" });
+    const { options, error } = await response.json();
+    if (!response.ok) throw new Error(error || "No passkey is available yet. Scan the display QR code once to add one.");
+    const credential = await navigator.credentials.get({ publicKey: authenticationOptions(options) });
+    const verified = await fetch("/api/settings/passkeys/login/verify", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ challenge: options.challenge, credential: passkeyAuthenticationResponse(credential) }) });
+    if (!verified.ok) throw new Error((await verified.json()).error || "Couldn’t sign in.");
+    await load();
+  } catch (error) {
+    showToast(error.message || "Couldn’t sign in with passkey.", "error");
+  } finally { button.disabled = false; }
 });
 if (window.__LOCAL_DEMO__) {
   const demo = $("#demo");

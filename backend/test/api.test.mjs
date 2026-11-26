@@ -70,6 +70,18 @@ test("fleet admin sign-in starts with a registered passkey and does not expose f
   assert.equal(fleetResponse.status, 401);
 });
 
+test("a paired display owner can begin passkey enrolment without gaining fleet access", async () => {
+  const { store } = await setup();
+  const session = "owner-session-123456789012345678901234567890123";
+  await store.createSession(await hash(session), "test", Math.floor(Date.now() / 1000) + 60, Math.floor(Date.now() / 1000));
+  const response = await handle(request("/api/settings/passkeys/options", { method: "POST", headers: { Cookie: `plane_session=${session}` } }), store, {});
+  assert.equal(response.status, 200);
+  const { options } = await response.json();
+  assert.equal(options.rp.id, "local.test");
+  const login = await handle(request("/api/settings/passkeys/login/options", { method: "POST" }), store, {});
+  assert.equal(login.status, 428);
+});
+
 test("AirLabs published routes override routeset and are reused for a week", async () => {
   const { store, key } = await setup();
   // Keep this test aircraft close to the provider route while retaining the
