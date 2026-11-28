@@ -59,6 +59,14 @@
 #define LED_PLANE_FIRMWARE_VERSION 0
 #endif
 
+// Troubleshooting switch: leave the Matter code and its commissioning state
+// intact, but do not start its background stack while measuring display
+// timing. Re-enable with -D LED_PLANE_ENABLE_MATTER=1 once the renderer is
+// verified in isolation.
+#ifndef LED_PLANE_ENABLE_MATTER
+#define LED_PLANE_ENABLE_MATTER 0
+#endif
+
 namespace {
 
 constexpr uint16_t kPanelWidth = 64;
@@ -74,6 +82,15 @@ constexpr size_t kMaxFirmwareImageBytes = 10UL * 1024UL * 1024UL;
 constexpr uint8_t kMaxRoutableFlights = 20;
 constexpr unsigned long kFlightRotationMillis = 20000;
 constexpr unsigned long kIndicatorTransitionMillis = 2000;
+// The HUB75 DMA engine presents pixels independently of loop(). Rendering the
+// same in-between frame thousands of times per second only steals PSRAM bus
+// time from that engine (and from Matter). A steady 30 fps is substantially
+// smoother on the physical panel than an unbounded redraw loop.
+constexpr unsigned long kTransitionFrameMillis = 33;
+constexpr bool kMatterRuntimeEnabled = LED_PLANE_ENABLE_MATTER != 0;
+// Do not begin a TLS exchange close enough to a card handoff that it could
+// still be sharing Wi-Fi/PSRAM bandwidth with the animation.
+constexpr unsigned long kNetworkQuietLeadMillis = 5000;
 constexpr unsigned long kDisplayMaintenanceWipeMillis = 60UL * 60UL * 1000UL;
 constexpr unsigned long kNoPlanesAnimationStepMillis = 125;
 constexpr int16_t kNoPlanesSpriteWidth = 33;
@@ -136,6 +153,16 @@ bool shouldRestart = false;
 char setupAccessPoint[32] = "Plane Display ----";
 unsigned long wifiOfflineSinceMillis = 0;
 bool networkSetupPortalActive = false;
+// Matter and the legacy captive portal both reserve substantial Wi-Fi memory.
+// On this no-PSRAM board, switching them live can starve the panel task. Keep
+// each commissioning method in its own small boot mode instead.
+bool bootIntoWifiSetupPortal = false;
+// Matter's factory test setup code is shared by every board built from the
+// same firmware. Give each physical display a stable, private commissioning
+// identity so a home with several Plane Displays cannot pair the wrong one.
+uint32_t matterSetupPasscode = 0;
+uint16_t matterSetupDiscriminator = 0;
+char matterSerialNumber[20] = {};
 unsigned long nextFlightPollMillis = 0;
 unsigned long nextRefreshDebugRedrawMillis = 0;
 String pairingUrl;
@@ -182,6 +209,15 @@ unsigned long firmwareRetryAfterMillis = 0;
 bool showingFlightPage() {
   return activePage == DisplayPage::Flight;
 }
+
+// Matter's connectivity manager can bring the station online before the
+// Arduino WiFi facade updates its status. All backend traffic must use this
+// shared test: otherwise a Matter-provisioned display can navigate to the
+// configuration page but will wait forever without requesting its QR code.
+bool networkIsAvailable() {
+  return WiFi.status() == WL_CONNECTED ||
+         (matterStarted && Matter.isWiFiConnected());
+}
 bool pairingQrLoadingPainted = false;
 int pairingQrRequestStatus = 0;
 bool pairingQrRetryPending = false;
@@ -220,6 +256,7 @@ bool rotationPipTransitionActive = false;
 uint8_t rotationPipFrom = 0;
 uint8_t rotationPipTo = 0;
 unsigned long rotationPipTransitionStartMillis = 0;
+unsigned long nextTransitionFrameMillis = 0;
 unsigned long nextNoPlanesAnimationMillis = 0;
 unsigned long lastDisplayMaintenanceWipeMillis = 0;
 int16_t noPlanesSpriteX = -kNoPlanesSpriteWidth;
@@ -259,6 +296,18 @@ bool routeToIdleTransitionActive = false;
 bool idleToRouteCardDrawn = false;
 unsigned long idleToRouteTransitionStartMillis = 0;
 unsigned long routeToIdleTransitionStartMillis = 0;
+
+bool displayAnimationInProgress() {
+  return letterTransitionActive || idleToRouteTransitionActive ||
+         routeToIdleTransitionActive || bootToRouteTransitionActive;
+}
+
+bool transitionFrameIsDue() {
+  const unsigned long now = millis();
+  if (nextTransitionFrameMillis != 0 && now < nextTransitionFrameMillis) return false;
+  nextTransitionFrameMillis = now + kTransitionFrameMillis;
+  return true;
+}
 
 struct Route {
   char identity[16];
@@ -307,6 +356,19 @@ Route refreshedRoutes[kMaxRoutableFlights];
 Route mergedRoutes[kMaxRoutableFlights];
 uint8_t routeCount = 0;
 uint8_t routeIndex = 0;
+
+bool flightSceneTransitionIsImminent() {
+  if (!showingFlightPage() || routeCount == 0 || nextFlightRotationMillis == 0 ||
+      nextFlightRotationMillis == 0xFFFFFFFFUL) {
+    return false;
+  }
+  const int32_t remaining = static_cast<int32_t>(nextFlightRotationMillis - millis());
+  return remaining >= 0 && remaining <= static_cast<int32_t>(kNetworkQuietLeadMillis);
+}
+
+bool backgroundWorkMayStart() {
+  return !displayAnimationInProgress() && !flightSceneTransitionIsImminent();
+}
 
 // A deliberately blocky 5x7 face: every glyph is exactly seven LEDs high.
 // It keeps airport codes legible while giving the display a Minecraft-like look.
@@ -1507,9 +1569,6 @@ void drawUsMilitaryLogo(int16_t x, int16_t y) {
   }
 }
 
-void drawPlaneSprite(int16_t x, int16_t y, uint16_t color);
-void drawPlaneSpritePointingUp(int16_t x, int16_t y, uint16_t color);
-void drawAircraftFallbackSprite(const char* aircraftType, int16_t x, int16_t y, uint16_t color);
 void drawAircraftPanelSprite(const char* aircraftType, int16_t x, int16_t y, uint16_t color);
 
 // A neutral identity mark for aircraft whose operator is unknown. This is the
@@ -2020,15 +2079,16 @@ void drawRoute(const Route& route, uint8_t position, uint8_t total) {
   drawRouteMarquees(route);
 }
 
-// The fallback library intentionally has only fifteen planform categories.
-// At 33px, engine count, rotor layout, and broad wing geometry communicate
-// more honestly than an over-specific model silhouette.
+// Every source type belongs to one clear, mutually-exclusive silhouette class.
+// The PNG ordering is mirrored by tools/png_to_aircraft_sprites.py.
 enum class AircraftSprite : uint8_t {
+  SingleEnginePrivate,
   SingleEngineProp,
+  TwinEnginePrivate,
   TwinEngineProp,
   FourEngineProp,
   TwinEngineJet,
-  TriEngineJet,
+  TwinEngineJetRearMounted,
   QuadEngineJet,
   SingleRotorHelicopter,
   DualRotorHelicopter,
@@ -2037,18 +2097,51 @@ enum class AircraftSprite : uint8_t {
   Glider,
   B2Dorito,
   FighterJet,
-  GenericPlane,
   Balloon,
+  Unknown = 0xFF,
 };
 
-void drawPlaneSprite(int16_t x, int16_t y, uint16_t color);
-void drawPlaneSpritePointingUp(int16_t x, int16_t y, uint16_t color);
+// The idle scene has its own shuffled playlist. It intentionally stops just
+// before Balloon: balloons remain a recognised aircraft category for live
+// traffic, but are not part of the flying no-planes parade. A shuffle rather
+// than independent random picks means every silhouette gets a turn before a
+// repeat, while the order changes on each new cycle.
+constexpr uint8_t kNoPlanesSpriteCount = static_cast<uint8_t>(AircraftSprite::Balloon);
+uint8_t noPlanesSpriteOrder[kNoPlanesSpriteCount] = {};
+uint8_t noPlanesSpriteOrderIndex = kNoPlanesSpriteCount;
+uint8_t noPlanesLastSprite = 0xFF;
+
+AircraftSprite selectNextNoPlanesAircraftSprite() {
+  if (noPlanesSpriteOrderIndex >= kNoPlanesSpriteCount) {
+    for (uint8_t index = 0; index < kNoPlanesSpriteCount; ++index) {
+      noPlanesSpriteOrder[index] = index;
+    }
+    for (uint8_t index = kNoPlanesSpriteCount - 1; index > 0; --index) {
+      const uint8_t swapIndex = static_cast<uint8_t>(esp_random() % (index + 1));
+      const uint8_t value = noPlanesSpriteOrder[index];
+      noPlanesSpriteOrder[index] = noPlanesSpriteOrder[swapIndex];
+      noPlanesSpriteOrder[swapIndex] = value;
+    }
+    // Do not let the boundary between two independently shuffled playlists
+    // repeat the silhouette that just crossed the screen.
+    if (kNoPlanesSpriteCount > 1 && noPlanesSpriteOrder[0] == noPlanesLastSprite) {
+      const uint8_t value = noPlanesSpriteOrder[0];
+      noPlanesSpriteOrder[0] = noPlanesSpriteOrder[1];
+      noPlanesSpriteOrder[1] = value;
+    }
+    noPlanesSpriteOrderIndex = 0;
+  }
+  const uint8_t sprite = noPlanesSpriteOrder[noPlanesSpriteOrderIndex++];
+  noPlanesLastSprite = sprite;
+  return static_cast<AircraftSprite>(sprite);
+}
 
 bool typeContains(const char* type, const char* needle) {
   return type && strstr(type, needle) != nullptr;
 }
 
 AircraftSprite aircraftSpriteForType(const char* type) {
+  if (!type || !type[0] || strcmp(type, "-----") == 0) return AircraftSprite::Unknown;
   if (typeContains(type, "V22") || typeContains(type, "CV22") || typeContains(type, "MV22")) {
     return AircraftSprite::Osprey;
   }
@@ -2082,6 +2175,12 @@ AircraftSprite aircraftSpriteForType(const char* type) {
       typeContains(type, "A400") || typeContains(type, "AN12") || typeContains(type, "AN22")) {
     return AircraftSprite::FourEngineProp;
   }
+  // Single-engine private jets are deliberately separate from piston/turboprop
+  // singles. The Cirrus Vision Jet is the common example in our airspace.
+  if (typeContains(type, "SF50") || typeContains(type, "EA50") ||
+      typeContains(type, "EA55") || typeContains(type, "HA42")) {
+    return AircraftSprite::SingleEnginePrivate;
+  }
   // Piston singles and single-engine utility props, including the Cessna Caravan.
   if (typeContains(type, "C208") || typeContains(type, "C20") || typeContains(type, "C1") ||
       typeContains(type, "C2") || typeContains(type, "C3") || typeContains(type, "C4") ||
@@ -2095,8 +2194,6 @@ AircraftSprite aircraftSpriteForType(const char* type) {
       typeContains(type, "B190")) {
     return AircraftSprite::TwinEngineProp;
   }
-  if (typeContains(type, "B72") || typeContains(type, "B727") || typeContains(type, "MD1") ||
-      typeContains(type, "DC10") || typeContains(type, "L101")) return AircraftSprite::TriEngineJet;
   // The 747/A340/A380/Il-96 and four-engined freighters retain four nacelles.
   if (typeContains(type, "B74") || typeContains(type, "A34") || typeContains(type, "A38") ||
       typeContains(type, "IL9") || typeContains(type, "IL7") || typeContains(type, "C17") ||
@@ -2104,23 +2201,30 @@ AircraftSprite aircraftSpriteForType(const char* type) {
       typeContains(type, "C5A") || typeContains(type, "C5B") || typeContains(type, "C5M")) {
     return AircraftSprite::QuadEngineJet;
   }
-  // All normal two-engined jets share one swept-wing planform at this scale.
+  // Rear-mounted twins are a distinct planform: regional jets, DC-9/MD-80
+  // family, and the classic trijets which have no dedicated supplied sprite.
+  if (typeContains(type, "B72") || typeContains(type, "B727") || typeContains(type, "MD1") ||
+      typeContains(type, "DC10") || typeContains(type, "L101") || typeContains(type, "MD8") ||
+      typeContains(type, "DC9") || typeContains(type, "E1") || typeContains(type, "E7") ||
+      typeContains(type, "E9") || typeContains(type, "CRJ") || typeContains(type, "ARJ") ||
+      typeContains(type, "SU9") || typeContains(type, "F70") || typeContains(type, "F10") ||
+      typeContains(type, "BAE")) return AircraftSprite::TwinEngineJetRearMounted;
+  // Business twins use their supplied narrow-body private-jet silhouette.
+  if (typeContains(type, "C5") || typeContains(type, "C6") || typeContains(type, "C7") ||
+      typeContains(type, "C68") || typeContains(type, "CL3") || typeContains(type, "CL6") ||
+      typeContains(type, "GLF") || typeContains(type, "LJ") || typeContains(type, "FA") ||
+      typeContains(type, "H25") || typeContains(type, "E35")) return AircraftSprite::TwinEnginePrivate;
+  // All remaining normal two-engined airliners share the swept-wing planform.
   if (typeContains(type, "B77") || typeContains(type, "B78") || typeContains(type, "A33") ||
       typeContains(type, "A35") || typeContains(type, "B73") || typeContains(type, "A31") ||
       typeContains(type, "A32") || typeContains(type, "A21") || typeContains(type, "B75") ||
-      typeContains(type, "B71") || typeContains(type, "MD8") || typeContains(type, "DC9") ||
-      typeContains(type, "E1") || typeContains(type, "E7") || typeContains(type, "E9") ||
-      typeContains(type, "CRJ") || typeContains(type, "ARJ") || typeContains(type, "SU9") ||
-      typeContains(type, "F70") || typeContains(type, "F10") || typeContains(type, "BAE") ||
-      typeContains(type, "C5") || typeContains(type, "C6") || typeContains(type, "C7") ||
-      typeContains(type, "C68") || typeContains(type, "CL3") || typeContains(type, "CL6") ||
-      typeContains(type, "GLF") || typeContains(type, "LJ") || typeContains(type, "FA") ||
-      typeContains(type, "H25") || typeContains(type, "E35")) return AircraftSprite::TwinEngineJet;
-  return AircraftSprite::GenericPlane;
+      typeContains(type, "B71")) return AircraftSprite::TwinEngineJet;
+  return AircraftSprite::Unknown;
 }
 
 void drawAircraftSprite(AircraftSprite sprite, int16_t x, int16_t y, uint16_t color) {
   const uint8_t spriteIndex = static_cast<uint8_t>(sprite);
+  if (spriteIndex >= kAircraftSpriteCount) return;
   for (uint8_t row = 0; row < kAircraftSpriteSize; ++row) {
     const uint64_t pixels = kAircraftSpriteMasks[spriteIndex][row];
     for (uint8_t column = 0; column < kAircraftSpriteSize; ++column) {
@@ -2129,29 +2233,18 @@ void drawAircraftSprite(AircraftSprite sprite, int16_t x, int16_t y, uint16_t co
   }
 }
 
-void drawPlaneSprite(int16_t x, int16_t y, uint16_t color) {
-  // The source PNG is nose-up; rotate it clockwise for the moving no-planes scene.
-  for (uint8_t row = 0; row < kAircraftSpriteSize; ++row) {
-    const uint64_t pixels = kAircraftSpriteMasks[static_cast<uint8_t>(AircraftSprite::GenericPlane)][row];
-    for (uint8_t column = 0; column < kAircraftSpriteSize; ++column) {
-      if (pixels & (1ULL << (32 - column))) matrix.drawPixel(x + 32 - row, y + column, color);
-    }
-  }
-}
-
-void drawPlaneSpritePointingUp(int16_t x, int16_t y, uint16_t color) {
-  drawAircraftSprite(AircraftSprite::GenericPlane, x, y, color);
-}
-
-void drawAircraftFallbackSprite(const char* aircraftType, int16_t x, int16_t y, uint16_t color) {
-  drawAircraftSprite(aircraftSpriteForType(aircraftType), x, y, color);
-}
-
 // Aircraft source sprites are deliberately 33×33, with their nose and tail on
 // the centreline. The upper-right art region bleeds into the display's outer
 // edge, so use every original pixel without resampling or clipping.
 void drawAircraftPanelSprite(const char* aircraftType, int16_t x, int16_t y, uint16_t color) {
-  drawAircraftSprite(aircraftSpriteForType(aircraftType), x, y, color);
+  const AircraftSprite sprite = aircraftSpriteForType(aircraftType);
+  if (sprite == AircraftSprite::Unknown) {
+    // There is no generic-aircraft art anymore. Bad or genuinely unfamiliar
+    // type data gets the neutral globe rather than an invented silhouette.
+    drawUnknownBrandGlobe(x, y);
+    return;
+  }
+  drawAircraftSprite(sprite, x, y, color);
 }
 
 // Fallback badges deliberately stay top-down. The no-planes animation is
@@ -2238,7 +2331,7 @@ void drawNoPlanes() {
   showingNoPlanes = true;
   bootTransitionPending = false;
   noPlanesSpriteX = -kNoPlanesSpriteWidth;
-  noPlanesAircraftSprite = random(0, kAircraftSpriteCount);
+  noPlanesAircraftSprite = static_cast<uint8_t>(selectNextNoPlanesAircraftSprite());
   nextNoPlanesSpriteX = -kNoPlanesSpriteWidth;
   nextNoPlanesAircraftSprite = noPlanesAircraftSprite;
   nextNoPlanesSpriteActive = false;
@@ -2334,10 +2427,7 @@ void advanceNoPlanesAnimation() {
   // Dispatch the next aircraft as soon as this one's nose reaches the right
   // edge. The two silhouettes overlap briefly rather than leaving a dead gap.
   if (!nextNoPlanesSpriteActive && noPlanesSpriteX + 32 >= static_cast<int16_t>(matrix.width() - 1)) {
-    const uint8_t spriteCount = kAircraftSpriteCount;
-    uint8_t sprite = random(0, spriteCount - 1);
-    if (sprite >= noPlanesAircraftSprite) ++sprite;
-    nextNoPlanesAircraftSprite = sprite;
+    nextNoPlanesAircraftSprite = static_cast<uint8_t>(selectNextNoPlanesAircraftSprite());
     nextNoPlanesSpriteX = -kNoPlanesSpriteWidth;
     nextNoPlanesSpriteActive = true;
   }
@@ -3008,24 +3098,33 @@ void fetchFirmwareUpdateTask(void*) {
   vTaskDelete(nullptr);
 }
 
+void maybeStartFirmwareUpdate() {
+  if (pendingFirmwareRelease.version <= LED_PLANE_FIRMWARE_VERSION || firmwareUpdateInProgress ||
+      millis() < firmwareRetryAfterMillis || !backgroundWorkMayStart()) {
+    return;
+  }
+  firmwareUpdateInProgress = true;
+  Serial.printf("Firmware release %lu is available (current %lu).\n",
+                static_cast<unsigned long>(pendingFirmwareRelease.version),
+                static_cast<unsigned long>(LED_PLANE_FIRMWARE_VERSION));
+  if (xTaskCreatePinnedToCore(fetchFirmwareUpdateTask, "firmware-update", 12288, nullptr, 1, nullptr, 0) != pdPASS) {
+    firmwareUpdateInProgress = false;
+    Serial.println("Could not start firmware update task.");
+  }
+}
+
 void considerFirmwareRelease(JsonObject manifest) {
   const uint32_t version = manifest["version"] | 0U;
   const char* url = manifest["url"] | "";
   const char* sha256 = manifest["sha256"] | "";
-  if (version <= LED_PLANE_FIRMWARE_VERSION || firmwareUpdateInProgress || millis() < firmwareRetryAfterMillis ||
+  if (version <= LED_PLANE_FIRMWARE_VERSION || firmwareUpdateInProgress ||
       !isSecureFirmwareUrl(url) || !isSha256(sha256)) {
     return;
   }
   pendingFirmwareRelease.version = version;
   strlcpy(pendingFirmwareRelease.url, url, sizeof(pendingFirmwareRelease.url));
   strlcpy(pendingFirmwareRelease.sha256, sha256, sizeof(pendingFirmwareRelease.sha256));
-  firmwareUpdateInProgress = true;
-  Serial.printf("Firmware release %lu is available (current %lu).\n",
-                static_cast<unsigned long>(version), static_cast<unsigned long>(LED_PLANE_FIRMWARE_VERSION));
-  if (xTaskCreatePinnedToCore(fetchFirmwareUpdateTask, "firmware-update", 12288, nullptr, 1, nullptr, 0) != pdPASS) {
-    firmwareUpdateInProgress = false;
-    Serial.println("Could not start firmware update task.");
-  }
+  maybeStartFirmwareUpdate();
 }
 
 String pairingEndpoint() {
@@ -3140,7 +3239,10 @@ void drawMatterQr() {
     return;
   }
   qrcode_initText(&qr, qrBuffer, kQrVersion, ECC_LOW, matterOnboardingPayload.c_str());
-  const int16_t left = 48 - qr.size / 2;
+  // Reserve the right 64px half for Matter commissioning, matching the other
+  // QR views. Centre the native module grid vertically and within that half so
+  // it can never paint over the instruction text at left.
+  const int16_t left = (matrix.width() / 2) + ((matrix.width() / 2) - qr.size) / 2;
   const int16_t top = (matrix.height() - qr.size) / 2;
   for (uint8_t y = 0; y < qr.size; ++y) {
     for (uint8_t x = 0; x < qr.size; ++x) {
@@ -3187,10 +3289,14 @@ void drawPairingQrLoading() {
       {0, -6}, {3, -5}, {5, -3}, {6, 0}, {5, 3}, {3, 5},
       {0, 6}, {-3, 5}, {-5, 3}, {-6, 0}, {-5, -3}, {-3, -5},
   };
-  // Lead, then a smoothly diminishing tail. The final two LEDs deliberately
-  // settle at 10% brightness rather than disappearing abruptly.
-  constexpr uint8_t kBrightness[] = {255, 210, 170, 135, 105, 80,
-                                     60, 45, 35, 28, 26, 26};
+  // Use an explicit neutral RGB565 palette. At the panel's reduced colour
+  // depth, converting very low 8-bit greys each frame can leave green's extra
+  // RGB565 bit visible as a coloured tail. These are balanced grey entries,
+  // from the white head down to the requested ~10% final pixels.
+  constexpr uint16_t kSpinnerColours[] = {
+      0xFFFF, 0xD6BA, 0xAD55, 0x8410, 0x630C, 0x4A49,
+      0x39C7, 0x2945, 0x2104, 0x18C3, 0x1082, 0x1082,
+  };
   const uint8_t lead = ((millis() - pairingQrSpinnerStartMillis) * 12UL / 2000UL) % 12;
   showingNoPlanes = false;
   if (!pairingQrLoadingPainted) {
@@ -3203,9 +3309,8 @@ void drawPairingQrLoading() {
   matrix.fillRect(centerX - 6, centerY - 6, 13, 13, black);
   for (uint8_t tail = 0; tail < 12; ++tail) {
     const uint8_t index = (lead + 12 - tail) % 12;
-    const uint8_t level = kBrightness[tail];
     matrix.drawPixel(centerX + kRing[index][0], centerY + kRing[index][1],
-                     matrix.color565(level, level, level));
+                     kSpinnerColours[tail]);
   }
 }
 
@@ -3273,7 +3378,7 @@ bool fetchAndDrawPairingQr() {
   pairingQrRetryPending = true;
   drawPairingQrLoading();
   if (strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(activeDeviceKey()) == 0 ||
-      WiFi.status() != WL_CONNECTED || flightFetchInProgress || millis() < pairingQrRetryMillis) {
+      !networkIsAvailable() || flightFetchInProgress || millis() < pairingQrRetryMillis) {
     return true;
   }
 
@@ -3342,7 +3447,7 @@ void requestDeviceConfigRefresh() {
 void maybeStartDeviceConfigRefresh() {
   if (!deviceConfigRefreshPending || deviceConfigFetchInProgress ||
       strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(activeDeviceKey()) == 0 ||
-      WiFi.status() != WL_CONNECTED || flightFetchInProgress || pairingQrFetchInProgress) {
+      !networkIsAvailable() || flightFetchInProgress || pairingQrFetchInProgress) {
     return;
   }
   deviceConfigFetchInProgress = true;
@@ -3521,7 +3626,7 @@ void processFetchedFlightResponse() {
   // animation, leaving an old aircraft in rotation (or reading a stale tail
   // slot). Hold the completed response until the handoff has settled, then
   // reconcile it in one atomic queue update.
-  if (letterTransitionActive || idleToRouteTransitionActive || routeToIdleTransitionActive) {
+  if (displayAnimationInProgress() || flightSceneTransitionIsImminent()) {
     return;
   }
   flightFetchFinished = false;
@@ -3671,7 +3776,7 @@ void fetchFlightsTask(void*) {
 
 bool fetchAndDrawFirstFlight() {
   if (!matterDisplayEnabled || strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(activeDeviceKey()) == 0 ||
-      WiFi.status() != WL_CONNECTED || flightFetchInProgress || flightFetchFinished) {
+      !networkIsAvailable() || flightFetchInProgress || flightFetchFinished) {
     return false;
   }
   flightFetchInProgress = true;
@@ -3744,17 +3849,28 @@ void refreshEnvironmentalMeasurements() {
 }
 
 void startMatter() {
-  Matter.setVendorName("Plane Display");
-  Matter.setProductName("Flight Display");
+  Matter.setVendorName("identi.fly");
+  Matter.setProductName("Plane Display");
   Matter.setDeviceName(bootDisplayName);
-  Matter.selectNetwork(MATTER_NETWORK_WIFI);
+  Matter.setSerialNumber(matterSerialNumber);
+  Matter.setHardwareVersion(1);
+  Matter.setHardwareVersionString("ESP32-S3 RGB Matrix");
+  const bool networkSelected = Matter.selectNetwork(MATTER_NETWORK_WIFI);
+  const bool passcodeSet = Matter.setSetupPasscode(matterSetupPasscode);
+  const bool discriminatorSet = Matter.setSetupDiscriminator(matterSetupDiscriminator);
+  Serial.printf("Matter identity: %s / %s, Wi-Fi=%s, passcode=%s, discriminator=%s\n",
+                matterSerialNumber, bootDisplayName, networkSelected ? "ready" : "FAILED",
+                passcodeSet ? "ready" : "FAILED", discriminatorSet ? "ready" : "FAILED");
 
-  matterDisplayLight.begin(matterDisplayEnabled, matterBrightness);
+  const bool lightStarted = matterDisplayLight.begin(matterDisplayEnabled, matterBrightness);
   // These two endpoint types map directly to Home Assistant's Matter
   // temperature and humidity entities. They are updated from the board's
   // onboard SHTC3 every five seconds after Matter has started.
-  matterTemperature.begin(0.0);
-  matterHumidity.begin(0.0);
+  const bool temperatureStarted = matterTemperature.begin(0.0);
+  const bool humidityStarted = matterHumidity.begin(0.0);
+  Serial.printf("Matter endpoints: display=%s, temperature=%s, humidity=%s\n",
+                lightStarted ? "ready" : "FAILED", temperatureStarted ? "ready" : "FAILED",
+                humidityStarted ? "ready" : "FAILED");
   matterDisplayLight.onChange([](bool enabled, uint8_t brightness) {
     // Matter invokes this from its own task. The HUB75 framebuffer and NVS are
     // owned by loop(), so defer physical work until the next display frame.
@@ -3765,6 +3881,13 @@ void startMatter() {
   });
   Matter.begin();
   matterStarted = true;
+  // The physical display always wakes visibly. Home Assistant may dim or turn
+  // it off afterwards, but a stale LevelControl value must never make a fresh
+  // boot look like a failed panel.
+  matterDisplayEnabled = true;
+  matterBrightness = MatterDimmableLight::MAX_BRIGHTNESS;
+  matterDisplayLight.setOnOff(true);
+  matterDisplayLight.setBrightness(MatterDimmableLight::MAX_BRIGHTNESS);
   refreshEnvironmentalMeasurements();
   nextEnvironmentalRefreshMillis = millis() + kEnvironmentalRefreshMillis;
   matterOnboardingPayload = matterPayloadFromOnboardingUrl(Matter.getOnboardingQRCodeUrl());
@@ -3776,7 +3899,21 @@ void handleBootButton() {
   const bool pressed = digitalRead(kBootButtonPin) == LOW;
   if (pressed && !bootButtonWasPressed && millis() - lastBootButtonPressMillis > 300) {
     lastBootButtonPressMillis = millis();
-    const bool online = WiFi.status() == WL_CONNECTED;
+    // BOOT doubles as a physical recovery control. It must always wake a
+    // Matter-disabled panel at full brightness before changing pages, so a
+    // user can recover the display without Home Assistant or a phone nearby.
+    if (!bootIntoWifiSetupPortal &&
+        (!matterDisplayEnabled || matterBrightness != MatterDimmableLight::MAX_BRIGHTNESS)) {
+      matterDisplayLight.setBrightness(MatterDimmableLight::MAX_BRIGHTNESS);
+      matterDisplayLight.setOnOff(true);
+      applyMatterDisplayState(true, MatterDimmableLight::MAX_BRIGHTNESS);
+      Serial.println("BOOT button restored display power and full brightness.");
+    }
+    // Matter owns Wi-Fi provisioning. Its station state can become usable
+    // before Arduino's WiFi wrapper catches up, and a commissioned display is
+    // never an offline setup device even during that short transition.
+    const bool online = WiFi.status() == WL_CONNECTED ||
+                        (matterStarted && (Matter.isWiFiConnected() || Matter.isDeviceCommissioned()));
     // The button is deliberately a two-page navigator. Connected displays
     // switch only between the useful flight and configuration pages; an
     // uncommissioned/offline display switches only between its two ways to
@@ -3784,7 +3921,18 @@ void handleBootButton() {
     if (online) {
       activePage = activePage == DisplayPage::Flight ? DisplayPage::ConfigureQr : DisplayPage::Flight;
     } else {
-      activePage = activePage == DisplayPage::MatterQr ? DisplayPage::NetworkSetupQr : DisplayPage::MatterQr;
+      // A captive portal cannot coexist safely with Matter's commissioning
+      // stack on this memory-constrained S3. Switch service mode, then reboot
+      // into the requested QR page instead of trying to run both at once.
+      Preferences preferences;
+      preferences.begin("led-plane", false);
+      preferences.putBool("wifi-setup-mode", !bootIntoWifiSetupPortal);
+      preferences.end();
+      Serial.printf("BOOT button switching to %s setup QR.\n",
+                    bootIntoWifiSetupPortal ? "Matter" : "Wi-Fi");
+      delay(80);
+      ESP.restart();
+      return;
     }
     showingPairingQr = online && activePage == DisplayPage::ConfigureQr;
     if (activePage == DisplayPage::MatterQr) stopManualNetworkSetupPortal();
@@ -3849,6 +3997,7 @@ void loadDisplayPreferences() {
   hideUnknownRoutes = preferences.getBool("hide-unknown-routes", false);
   matterDisplayEnabled = preferences.getBool("matter-on", true);
   matterBrightness = preferences.getUChar("matter-bright", 255);
+  bootIntoWifiSetupPortal = preferences.getBool("wifi-setup-mode", false);
   const String savedName = preferences.getString("display-name", "PLANE DISPLAY");
   strlcpy(bootDisplayName, savedName.c_str(), sizeof(bootDisplayName));
   uint32_t setupUuid = preferences.getULong("setup-uuid", 0);
@@ -3860,6 +4009,18 @@ void loadDisplayPreferences() {
   // while still leaving the network easy to recognise in a phone's Wi-Fi list.
   snprintf(setupAccessPoint, sizeof(setupAccessPoint), "Plane Display %04lX",
            static_cast<unsigned long>((setupUuid >> 16) & 0xFFFF));
+  matterSetupPasscode = preferences.getUInt("matter-passcode", 0);
+  if (matterSetupPasscode < 10000000 || matterSetupPasscode > 99999998) {
+    matterSetupPasscode = 10000000 + (esp_random() % 89999999UL);
+    preferences.putUInt("matter-passcode", matterSetupPasscode);
+  }
+  matterSetupDiscriminator = preferences.getUShort("matter-disc", 0xFFFF);
+  if (matterSetupDiscriminator > 4095) {
+    matterSetupDiscriminator = static_cast<uint16_t>(esp_random() & 0x0FFF);
+    preferences.putUShort("matter-disc", matterSetupDiscriminator);
+  }
+  snprintf(matterSerialNumber, sizeof(matterSerialNumber), "PD-%08lX",
+           static_cast<unsigned long>(setupUuid));
   preferences.end();
 }
 
@@ -4071,7 +4232,7 @@ void connectWifiAndEnableLocalUpdater() {
   // behind the older captive portal. Previously saved station credentials are
   // still restored by the Wi-Fi driver when Matter starts.
   if (matterStarted) {
-    if (WiFi.status() == WL_CONNECTED) {
+    if (WiFi.status() == WL_CONNECTED || Matter.isWiFiConnected()) {
       synchronizeClock();
       enableLocalUpdater();
     } else {
@@ -4122,10 +4283,26 @@ void connectWifiAndEnableLocalUpdater() {
 }
 
 void monitorWifiConnectivity() {
-  if (WiFi.status() == WL_CONNECTED) {
+  // Matter owns the station connection during BLE commissioning. Its
+  // connectivity manager becomes authoritative slightly before Arduino's
+  // WiFi.status() is updated, so consult both and leave the pairing QR as
+  // soon as Matter has the network.
+  const bool wifiConnected = WiFi.status() == WL_CONNECTED ||
+                             (matterStarted && Matter.isWiFiConnected());
+  if (wifiConnected) {
     if (networkSetupPortalActive) {
       stopManualNetworkSetupPortal();
       saveWifiCredentials();
+      if (bootIntoWifiSetupPortal) {
+        // Relaunch normally so Matter can receive the freshly saved network
+        // and the board can return to its flight display.
+        Preferences preferences;
+        preferences.begin("led-plane", false);
+        preferences.putBool("wifi-setup-mode", false);
+        preferences.end();
+        ESP.restart();
+        return;
+      }
     }
     wifiOfflineSinceMillis = 0;
     if (matterStarted && !localUpdaterEnabled) {
@@ -4170,20 +4347,43 @@ void setup() {
   pinMode(kBootButtonPin, INPUT_PULLUP);
   loadDisplayPreferences();
 
-  // Matter's BLE commissioning stack needs a contiguous chunk of internal
-  // memory. HUB75 DMA allocation is also internal-memory hungry, so bring up
-  // Matter first and only allocate the display buffers once BLE is established.
   initializeEnvironmentalSensor();
-  startMatter();
-
-  matrix.begin();
+  // Matter must initialize its security and commissioning memory first. The
+  // compact four-bit HUB75 framebuffer below then fits alongside it on this
+  // no-PSRAM ESP32-S3. The captive Wi-Fi flow is intentionally a separate
+  // boot mode: running both commissioning systems at once can reset the board.
+  if (kMatterRuntimeEnabled && !bootIntoWifiSetupPortal) {
+    startMatter();
+  } else if (!kMatterRuntimeEnabled) {
+    Serial.println("Matter runtime temporarily disabled for display-performance testing.");
+  }
+  const uint32_t heapBeforeMatrix = ESP.getFreeHeap();
+  const bool matrixReady = matrix.begin();
+  Serial.printf("HUB75 matrix initialization: %s (free heap %lu -> %lu)\n",
+                matrixReady ? "ready" : "FAILED",
+                static_cast<unsigned long>(heapBeforeMatrix),
+                static_cast<unsigned long>(ESP.getFreeHeap()));
+  if (!matrixReady) {
+    // Keep Matter reachable for recovery; the serial log gives a precise
+    // diagnosis instead of leaving a seemingly dead board unexplained.
+    Serial.println("HUB75 panel is unavailable; Matter remains active for recovery.");
+  }
   // Keep the first panel test deliberately dim; raise only after the external
   // 5 V panel supply is verified.
   matrix.setBrightness8(255);
   lastDisplayMaintenanceWipeMillis = millis();
   playBootAnimation();
-  connectWifiAndEnableLocalUpdater();
-  if (WiFi.status() != WL_CONNECTED) {
+  if (bootIntoWifiSetupPortal) {
+    activePage = DisplayPage::NetworkSetupQr;
+    startManualNetworkSetupPortal();
+  } else {
+    connectWifiAndEnableLocalUpdater();
+  }
+  // A commissioned Matter node can be operational before Arduino's station
+  // wrapper reports WL_CONNECTED. Never put an already-paired display back on
+  // its onboarding screen merely because that mirror is briefly behind.
+  if (kMatterRuntimeEnabled && !bootIntoWifiSetupPortal && !Matter.isDeviceCommissioned() &&
+      WiFi.status() != WL_CONNECTED && !Matter.isWiFiConnected()) {
     activePage = DisplayPage::MatterQr;
     drawMatterQr();
   }
@@ -4194,19 +4394,22 @@ void setup() {
 }
 
 void loop() {
-  // HUB75 DMA refresh runs independently; handle local web update traffic here.
-  if (localUpdaterEnabled) updateServer.handleClient();
-  monitorWifiConnectivity();
+  // During a scene change the matrix owns the CPU/PSRAM budget. Matter keeps
+  // its fabric connection in its own task, while our optional Matter-facing
+  // work and local HTTP traffic wait for the settled card.
+  const bool animationWasActive = displayAnimationInProgress();
+  if (localUpdaterEnabled && !animationWasActive) updateServer.handleClient();
+  if (!animationWasActive) monitorWifiConnectivity();
   if (networkSetupPortalActive) {
     manualSetupWifiManager.process();
     handleBootButton();
     return;
   }
-  if (matterStateChangePending) {
+  if (matterStateChangePending && !animationWasActive) {
     matterStateChangePending = false;
     applyMatterDisplayState(matterRequestedEnabled, matterRequestedBrightness);
   }
-  if (matterStarted && millis() >= nextEnvironmentalRefreshMillis) {
+  if (matterStarted && !animationWasActive && millis() >= nextEnvironmentalRefreshMillis) {
     refreshEnvironmentalMeasurements();
     nextEnvironmentalRefreshMillis = millis() + kEnvironmentalRefreshMillis;
   }
@@ -4217,9 +4420,11 @@ void loop() {
     return;
   }
   handleBootButton();
-  updatePairingQrRequest();
-  processDeviceConfigResponse();
-  maybeStartDeviceConfigRefresh();
+  if (!animationWasActive) {
+    updatePairingQrRequest();
+    processDeviceConfigResponse();
+    if (backgroundWorkMayStart()) maybeStartDeviceConfigRefresh();
+  }
   if (flightFetchInProgress && flightFetchStartedMillis != 0 &&
       millis() - flightFetchStartedMillis > kFlightFetchWatchdogMillis) {
     // Restarting is safer than force-deleting a task while mbedTLS owns its
@@ -4228,8 +4433,8 @@ void loop() {
     Serial.println("Flight fetch watchdog fired; restarting network stack.");
     shouldRestart = true;
   }
-  processFetchedFlightResponse();
-  if (firmwareUpdateFinished) {
+  if (!animationWasActive) processFetchedFlightResponse();
+  if (firmwareUpdateFinished && !animationWasActive) {
     firmwareUpdateFinished = false;
     if (firmwareUpdateSucceeded) {
       // The image was fully written and its SHA-256 matched the authenticated
@@ -4239,7 +4444,7 @@ void loop() {
       firmwareRetryAfterMillis = millis() + 10UL * 60UL * 1000UL;
     }
   }
-  const bool transitionWasActive = letterTransitionActive;
+  const bool transitionWasActive = displayAnimationInProgress();
   // If the only card disappeared during its scene, honour the full scene
   // duration before falling back to the idle animation.
   if (showingFlightPage() && routeCount == 1 && routes[0].pendingRemoval &&
@@ -4273,17 +4478,28 @@ void loop() {
     // Do not start another scene while this one is gracefully winding down.
     nextFlightRotationMillis = 0xFFFFFFFFUL;
   }
-  if (letterTransitionActive) updateLetterTransition();
-  if (bootToRouteTransitionActive) updateBootToRouteTransition();
-  if (idleToRouteTransitionActive) updateIdleToRouteTransition();
-  if (routeToIdleTransitionActive) updateRouteToIdleTransition();
+  // Present animation frames at a stable 30 fps cadence. In particular, do not keep
+  // clearing and repainting the PSRAM framebuffer between visible frames;
+  // that was the source of the dropped-frame look once Matter was enabled.
+  if (displayAnimationInProgress() && transitionFrameIsDue()) {
+    if (letterTransitionActive) updateLetterTransition();
+    if (bootToRouteTransitionActive) updateBootToRouteTransition();
+    if (idleToRouteTransitionActive) updateIdleToRouteTransition();
+    if (routeToIdleTransitionActive) updateRouteToIdleTransition();
+  }
+  if (!displayAnimationInProgress()) nextTransitionFrameMillis = 0;
+  maybeStartFirmwareUpdate();
   if (!deviceConfigRefreshPending && !deviceConfigFetchInProgress && millis() >= nextFlightPollMillis) {
     // Do not let a blocking network refresh erase the exit/enter frames. When
     // a refresh lands on a scene boundary, hold it until the new card has had
     // its initial marquee pause.
-    if (showingFlightPage() && (letterTransitionActive || transitionWasActive)) {
-      if (letterTransitionActive) flightRefreshDeferred = true;
+    if (showingFlightPage() && (displayAnimationInProgress() || transitionWasActive)) {
+      if (displayAnimationInProgress()) flightRefreshDeferred = true;
       else nextFlightPollMillis = millis() + 2000;
+    } else if (!backgroundWorkMayStart()) {
+      // Give a soon-to-start card change a full quiet window. The next scene
+      // is a much better time for a TLS request than its final few frames.
+      nextFlightPollMillis = nextFlightRotationMillis + kLetterTransitionMillis + 2000;
     } else {
       // Never turn a temporarily unavailable fetch slot into a lost minute.
       // A completed response is normally held for the end of an animation;

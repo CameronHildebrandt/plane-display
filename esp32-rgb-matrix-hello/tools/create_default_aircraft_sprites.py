@@ -12,11 +12,11 @@ from PIL import Image
 
 SIZE = 33
 CATEGORIES = [
-    "single_engine_prop", "twin_engine_prop", "four_engine_prop",
-    "twin_engine_jet", "tri_engine_jet", "quad_engine_jet",
+    "single_engine_private", "single_engine_prop", "twin_engine_private",
+    "twin_engine_prop", "four_engine_prop", "twin_engine_jet",
+    "twin_engine_jet_rear_mounted", "quad_engine_jet",
     "single_rotor_helicopter", "dual_rotor_helicopter", "stratofortress",
-    "osprey", "glider", "b2_dorito", "fighter_jet", "generic_plane",
-    "balloon",
+    "osprey", "glider", "b2_dorito", "fighter_jet", "balloon",
 ]
 
 
@@ -212,16 +212,20 @@ def balloon(canvas):
 
 def make(category):
     canvas = Canvas()
-    if category == "single_engine_prop":
+    if category == "single_engine_private":
+        jet(canvas, 1)
+    elif category == "single_engine_prop":
         prop(canvas, 1)
+    elif category == "twin_engine_private":
+        jet(canvas, 2)
     elif category == "twin_engine_prop":
         prop(canvas, 2)
     elif category == "four_engine_prop":
         prop(canvas, 4)
     elif category == "twin_engine_jet":
         jet(canvas, 2)
-    elif category == "tri_engine_jet":
-        jet(canvas, 3)
+    elif category == "twin_engine_jet_rear_mounted":
+        jet(canvas, 2)
     elif category == "quad_engine_jet":
         jet(canvas, 4)
     elif category == "single_rotor_helicopter":
@@ -238,8 +242,6 @@ def make(category):
         b2_dorito(canvas)
     elif category == "fighter_jet":
         fighter_jet(canvas)
-    elif category == "generic_plane":
-        generic_747(canvas)
     elif category == "balloon":
         balloon(canvas)
     return canvas
