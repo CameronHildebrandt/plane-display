@@ -124,6 +124,10 @@ HUB75_I2S_CFG::i2s_pins kHub75Pins = {
 HUB75_I2S_CFG makeMatrixConfig() {
   HUB75_I2S_CFG config(kPanelWidth, kPanelHeight, kPanelChain, kHub75Pins);
   config.driver = HUB75_I2S_CFG::FM6126A;
+  // Matter's BLE/Wi-Fi stack and a 128×64 HUB75 framebuffer both need DMA-capable
+  // internal RAM on this no-PSRAM S3. Four colour planes leave enough contiguous
+  // headroom for both stacks; it is still more than enough for our pixel-art UI.
+  config.setPixelColorDepthBits(4);
   config.clkphase = false;
   return config;
 }
@@ -136,6 +140,16 @@ bool shouldRestart = false;
 char setupAccessPoint[32] = "Plane Display ----";
 unsigned long wifiOfflineSinceMillis = 0;
 bool networkSetupPortalActive = false;
+// Matter and the legacy captive portal both reserve substantial Wi-Fi memory.
+// On this no-PSRAM board, switching them live can starve the panel task. Keep
+// each commissioning method in its own small boot mode instead.
+bool bootIntoWifiSetupPortal = false;
+// Matter's factory test setup code is shared by every board built from the
+// same firmware. Give each physical display a stable, private commissioning
+// identity so a home with several Plane Displays cannot pair the wrong one.
+uint32_t matterSetupPasscode = 0;
+uint16_t matterSetupDiscriminator = 0;
+char matterSerialNumber[20] = {};
 unsigned long nextFlightPollMillis = 0;
 unsigned long nextRefreshDebugRedrawMillis = 0;
 String pairingUrl;
@@ -1507,9 +1521,6 @@ void drawUsMilitaryLogo(int16_t x, int16_t y) {
   }
 }
 
-void drawPlaneSprite(int16_t x, int16_t y, uint16_t color);
-void drawPlaneSpritePointingUp(int16_t x, int16_t y, uint16_t color);
-void drawAircraftFallbackSprite(const char* aircraftType, int16_t x, int16_t y, uint16_t color);
 void drawAircraftPanelSprite(const char* aircraftType, int16_t x, int16_t y, uint16_t color);
 
 // A neutral identity mark for aircraft whose operator is unknown. This is the
@@ -2020,15 +2031,16 @@ void drawRoute(const Route& route, uint8_t position, uint8_t total) {
   drawRouteMarquees(route);
 }
 
-// The fallback library intentionally has only fifteen planform categories.
-// At 33px, engine count, rotor layout, and broad wing geometry communicate
-// more honestly than an over-specific model silhouette.
+// Every source type belongs to one clear, mutually-exclusive silhouette class.
+// The PNG ordering is mirrored by tools/png_to_aircraft_sprites.py.
 enum class AircraftSprite : uint8_t {
+  SingleEnginePrivate,
   SingleEngineProp,
+  TwinEnginePrivate,
   TwinEngineProp,
   FourEngineProp,
   TwinEngineJet,
-  TriEngineJet,
+  TwinEngineJetRearMounted,
   QuadEngineJet,
   SingleRotorHelicopter,
   DualRotorHelicopter,
@@ -2037,18 +2049,16 @@ enum class AircraftSprite : uint8_t {
   Glider,
   B2Dorito,
   FighterJet,
-  GenericPlane,
   Balloon,
+  Unknown = 0xFF,
 };
-
-void drawPlaneSprite(int16_t x, int16_t y, uint16_t color);
-void drawPlaneSpritePointingUp(int16_t x, int16_t y, uint16_t color);
 
 bool typeContains(const char* type, const char* needle) {
   return type && strstr(type, needle) != nullptr;
 }
 
 AircraftSprite aircraftSpriteForType(const char* type) {
+  if (!type || !type[0] || strcmp(type, "-----") == 0) return AircraftSprite::Unknown;
   if (typeContains(type, "V22") || typeContains(type, "CV22") || typeContains(type, "MV22")) {
     return AircraftSprite::Osprey;
   }
@@ -2082,6 +2092,12 @@ AircraftSprite aircraftSpriteForType(const char* type) {
       typeContains(type, "A400") || typeContains(type, "AN12") || typeContains(type, "AN22")) {
     return AircraftSprite::FourEngineProp;
   }
+  // Single-engine private jets are deliberately separate from piston/turboprop
+  // singles. The Cirrus Vision Jet is the common example in our airspace.
+  if (typeContains(type, "SF50") || typeContains(type, "EA50") ||
+      typeContains(type, "EA55") || typeContains(type, "HA42")) {
+    return AircraftSprite::SingleEnginePrivate;
+  }
   // Piston singles and single-engine utility props, including the Cessna Caravan.
   if (typeContains(type, "C208") || typeContains(type, "C20") || typeContains(type, "C1") ||
       typeContains(type, "C2") || typeContains(type, "C3") || typeContains(type, "C4") ||
@@ -2095,8 +2111,6 @@ AircraftSprite aircraftSpriteForType(const char* type) {
       typeContains(type, "B190")) {
     return AircraftSprite::TwinEngineProp;
   }
-  if (typeContains(type, "B72") || typeContains(type, "B727") || typeContains(type, "MD1") ||
-      typeContains(type, "DC10") || typeContains(type, "L101")) return AircraftSprite::TriEngineJet;
   // The 747/A340/A380/Il-96 and four-engined freighters retain four nacelles.
   if (typeContains(type, "B74") || typeContains(type, "A34") || typeContains(type, "A38") ||
       typeContains(type, "IL9") || typeContains(type, "IL7") || typeContains(type, "C17") ||
@@ -2104,23 +2118,30 @@ AircraftSprite aircraftSpriteForType(const char* type) {
       typeContains(type, "C5A") || typeContains(type, "C5B") || typeContains(type, "C5M")) {
     return AircraftSprite::QuadEngineJet;
   }
-  // All normal two-engined jets share one swept-wing planform at this scale.
+  // Rear-mounted twins are a distinct planform: regional jets, DC-9/MD-80
+  // family, and the classic trijets which have no dedicated supplied sprite.
+  if (typeContains(type, "B72") || typeContains(type, "B727") || typeContains(type, "MD1") ||
+      typeContains(type, "DC10") || typeContains(type, "L101") || typeContains(type, "MD8") ||
+      typeContains(type, "DC9") || typeContains(type, "E1") || typeContains(type, "E7") ||
+      typeContains(type, "E9") || typeContains(type, "CRJ") || typeContains(type, "ARJ") ||
+      typeContains(type, "SU9") || typeContains(type, "F70") || typeContains(type, "F10") ||
+      typeContains(type, "BAE")) return AircraftSprite::TwinEngineJetRearMounted;
+  // Business twins use their supplied narrow-body private-jet silhouette.
+  if (typeContains(type, "C5") || typeContains(type, "C6") || typeContains(type, "C7") ||
+      typeContains(type, "C68") || typeContains(type, "CL3") || typeContains(type, "CL6") ||
+      typeContains(type, "GLF") || typeContains(type, "LJ") || typeContains(type, "FA") ||
+      typeContains(type, "H25") || typeContains(type, "E35")) return AircraftSprite::TwinEnginePrivate;
+  // All remaining normal two-engined airliners share the swept-wing planform.
   if (typeContains(type, "B77") || typeContains(type, "B78") || typeContains(type, "A33") ||
       typeContains(type, "A35") || typeContains(type, "B73") || typeContains(type, "A31") ||
       typeContains(type, "A32") || typeContains(type, "A21") || typeContains(type, "B75") ||
-      typeContains(type, "B71") || typeContains(type, "MD8") || typeContains(type, "DC9") ||
-      typeContains(type, "E1") || typeContains(type, "E7") || typeContains(type, "E9") ||
-      typeContains(type, "CRJ") || typeContains(type, "ARJ") || typeContains(type, "SU9") ||
-      typeContains(type, "F70") || typeContains(type, "F10") || typeContains(type, "BAE") ||
-      typeContains(type, "C5") || typeContains(type, "C6") || typeContains(type, "C7") ||
-      typeContains(type, "C68") || typeContains(type, "CL3") || typeContains(type, "CL6") ||
-      typeContains(type, "GLF") || typeContains(type, "LJ") || typeContains(type, "FA") ||
-      typeContains(type, "H25") || typeContains(type, "E35")) return AircraftSprite::TwinEngineJet;
-  return AircraftSprite::GenericPlane;
+      typeContains(type, "B71")) return AircraftSprite::TwinEngineJet;
+  return AircraftSprite::Unknown;
 }
 
 void drawAircraftSprite(AircraftSprite sprite, int16_t x, int16_t y, uint16_t color) {
   const uint8_t spriteIndex = static_cast<uint8_t>(sprite);
+  if (spriteIndex >= kAircraftSpriteCount) return;
   for (uint8_t row = 0; row < kAircraftSpriteSize; ++row) {
     const uint64_t pixels = kAircraftSpriteMasks[spriteIndex][row];
     for (uint8_t column = 0; column < kAircraftSpriteSize; ++column) {
@@ -2129,29 +2150,18 @@ void drawAircraftSprite(AircraftSprite sprite, int16_t x, int16_t y, uint16_t co
   }
 }
 
-void drawPlaneSprite(int16_t x, int16_t y, uint16_t color) {
-  // The source PNG is nose-up; rotate it clockwise for the moving no-planes scene.
-  for (uint8_t row = 0; row < kAircraftSpriteSize; ++row) {
-    const uint64_t pixels = kAircraftSpriteMasks[static_cast<uint8_t>(AircraftSprite::GenericPlane)][row];
-    for (uint8_t column = 0; column < kAircraftSpriteSize; ++column) {
-      if (pixels & (1ULL << (32 - column))) matrix.drawPixel(x + 32 - row, y + column, color);
-    }
-  }
-}
-
-void drawPlaneSpritePointingUp(int16_t x, int16_t y, uint16_t color) {
-  drawAircraftSprite(AircraftSprite::GenericPlane, x, y, color);
-}
-
-void drawAircraftFallbackSprite(const char* aircraftType, int16_t x, int16_t y, uint16_t color) {
-  drawAircraftSprite(aircraftSpriteForType(aircraftType), x, y, color);
-}
-
 // Aircraft source sprites are deliberately 33×33, with their nose and tail on
 // the centreline. The upper-right art region bleeds into the display's outer
 // edge, so use every original pixel without resampling or clipping.
 void drawAircraftPanelSprite(const char* aircraftType, int16_t x, int16_t y, uint16_t color) {
-  drawAircraftSprite(aircraftSpriteForType(aircraftType), x, y, color);
+  const AircraftSprite sprite = aircraftSpriteForType(aircraftType);
+  if (sprite == AircraftSprite::Unknown) {
+    // There is no generic-aircraft art anymore. Bad or genuinely unfamiliar
+    // type data gets the neutral globe rather than an invented silhouette.
+    drawUnknownBrandGlobe(x, y);
+    return;
+  }
+  drawAircraftSprite(sprite, x, y, color);
 }
 
 // Fallback badges deliberately stay top-down. The no-planes animation is
@@ -3140,7 +3150,10 @@ void drawMatterQr() {
     return;
   }
   qrcode_initText(&qr, qrBuffer, kQrVersion, ECC_LOW, matterOnboardingPayload.c_str());
-  const int16_t left = 48 - qr.size / 2;
+  // Reserve the right 64px half for Matter commissioning, matching the other
+  // QR views. Centre the native module grid vertically and within that half so
+  // it can never paint over the instruction text at left.
+  const int16_t left = (matrix.width() / 2) + ((matrix.width() / 2) - qr.size) / 2;
   const int16_t top = (matrix.height() - qr.size) / 2;
   for (uint8_t y = 0; y < qr.size; ++y) {
     for (uint8_t x = 0; x < qr.size; ++x) {
@@ -3744,17 +3757,28 @@ void refreshEnvironmentalMeasurements() {
 }
 
 void startMatter() {
-  Matter.setVendorName("Plane Display");
-  Matter.setProductName("Flight Display");
+  Matter.setVendorName("identi.fly");
+  Matter.setProductName("Plane Display");
   Matter.setDeviceName(bootDisplayName);
-  Matter.selectNetwork(MATTER_NETWORK_WIFI);
+  Matter.setSerialNumber(matterSerialNumber);
+  Matter.setHardwareVersion(1);
+  Matter.setHardwareVersionString("ESP32-S3 RGB Matrix");
+  const bool networkSelected = Matter.selectNetwork(MATTER_NETWORK_WIFI);
+  const bool passcodeSet = Matter.setSetupPasscode(matterSetupPasscode);
+  const bool discriminatorSet = Matter.setSetupDiscriminator(matterSetupDiscriminator);
+  Serial.printf("Matter identity: %s / %s, Wi-Fi=%s, passcode=%s, discriminator=%s\n",
+                matterSerialNumber, bootDisplayName, networkSelected ? "ready" : "FAILED",
+                passcodeSet ? "ready" : "FAILED", discriminatorSet ? "ready" : "FAILED");
 
-  matterDisplayLight.begin(matterDisplayEnabled, matterBrightness);
+  const bool lightStarted = matterDisplayLight.begin(matterDisplayEnabled, matterBrightness);
   // These two endpoint types map directly to Home Assistant's Matter
   // temperature and humidity entities. They are updated from the board's
   // onboard SHTC3 every five seconds after Matter has started.
-  matterTemperature.begin(0.0);
-  matterHumidity.begin(0.0);
+  const bool temperatureStarted = matterTemperature.begin(0.0);
+  const bool humidityStarted = matterHumidity.begin(0.0);
+  Serial.printf("Matter endpoints: display=%s, temperature=%s, humidity=%s\n",
+                lightStarted ? "ready" : "FAILED", temperatureStarted ? "ready" : "FAILED",
+                humidityStarted ? "ready" : "FAILED");
   matterDisplayLight.onChange([](bool enabled, uint8_t brightness) {
     // Matter invokes this from its own task. The HUB75 framebuffer and NVS are
     // owned by loop(), so defer physical work until the next display frame.
@@ -3765,6 +3789,13 @@ void startMatter() {
   });
   Matter.begin();
   matterStarted = true;
+  // The physical display always wakes visibly. Home Assistant may dim or turn
+  // it off afterwards, but a stale LevelControl value must never make a fresh
+  // boot look like a failed panel.
+  matterDisplayEnabled = true;
+  matterBrightness = MatterDimmableLight::MAX_BRIGHTNESS;
+  matterDisplayLight.setOnOff(true);
+  matterDisplayLight.setBrightness(MatterDimmableLight::MAX_BRIGHTNESS);
   refreshEnvironmentalMeasurements();
   nextEnvironmentalRefreshMillis = millis() + kEnvironmentalRefreshMillis;
   matterOnboardingPayload = matterPayloadFromOnboardingUrl(Matter.getOnboardingQRCodeUrl());
@@ -3776,7 +3807,21 @@ void handleBootButton() {
   const bool pressed = digitalRead(kBootButtonPin) == LOW;
   if (pressed && !bootButtonWasPressed && millis() - lastBootButtonPressMillis > 300) {
     lastBootButtonPressMillis = millis();
-    const bool online = WiFi.status() == WL_CONNECTED;
+    // BOOT doubles as a physical recovery control. It must always wake a
+    // Matter-disabled panel at full brightness before changing pages, so a
+    // user can recover the display without Home Assistant or a phone nearby.
+    if (!bootIntoWifiSetupPortal &&
+        (!matterDisplayEnabled || matterBrightness != MatterDimmableLight::MAX_BRIGHTNESS)) {
+      matterDisplayLight.setBrightness(MatterDimmableLight::MAX_BRIGHTNESS);
+      matterDisplayLight.setOnOff(true);
+      applyMatterDisplayState(true, MatterDimmableLight::MAX_BRIGHTNESS);
+      Serial.println("BOOT button restored display power and full brightness.");
+    }
+    // Matter owns Wi-Fi provisioning. Its station state can become usable
+    // before Arduino's WiFi wrapper catches up, and a commissioned display is
+    // never an offline setup device even during that short transition.
+    const bool online = WiFi.status() == WL_CONNECTED ||
+                        (matterStarted && (Matter.isWiFiConnected() || Matter.isDeviceCommissioned()));
     // The button is deliberately a two-page navigator. Connected displays
     // switch only between the useful flight and configuration pages; an
     // uncommissioned/offline display switches only between its two ways to
@@ -3784,7 +3829,18 @@ void handleBootButton() {
     if (online) {
       activePage = activePage == DisplayPage::Flight ? DisplayPage::ConfigureQr : DisplayPage::Flight;
     } else {
-      activePage = activePage == DisplayPage::MatterQr ? DisplayPage::NetworkSetupQr : DisplayPage::MatterQr;
+      // A captive portal cannot coexist safely with Matter's commissioning
+      // stack on this memory-constrained S3. Switch service mode, then reboot
+      // into the requested QR page instead of trying to run both at once.
+      Preferences preferences;
+      preferences.begin("led-plane", false);
+      preferences.putBool("wifi-setup-mode", !bootIntoWifiSetupPortal);
+      preferences.end();
+      Serial.printf("BOOT button switching to %s setup QR.\n",
+                    bootIntoWifiSetupPortal ? "Matter" : "Wi-Fi");
+      delay(80);
+      ESP.restart();
+      return;
     }
     showingPairingQr = online && activePage == DisplayPage::ConfigureQr;
     if (activePage == DisplayPage::MatterQr) stopManualNetworkSetupPortal();
@@ -3849,6 +3905,7 @@ void loadDisplayPreferences() {
   hideUnknownRoutes = preferences.getBool("hide-unknown-routes", false);
   matterDisplayEnabled = preferences.getBool("matter-on", true);
   matterBrightness = preferences.getUChar("matter-bright", 255);
+  bootIntoWifiSetupPortal = preferences.getBool("wifi-setup-mode", false);
   const String savedName = preferences.getString("display-name", "PLANE DISPLAY");
   strlcpy(bootDisplayName, savedName.c_str(), sizeof(bootDisplayName));
   uint32_t setupUuid = preferences.getULong("setup-uuid", 0);
@@ -3860,6 +3917,18 @@ void loadDisplayPreferences() {
   // while still leaving the network easy to recognise in a phone's Wi-Fi list.
   snprintf(setupAccessPoint, sizeof(setupAccessPoint), "Plane Display %04lX",
            static_cast<unsigned long>((setupUuid >> 16) & 0xFFFF));
+  matterSetupPasscode = preferences.getUInt("matter-passcode", 0);
+  if (matterSetupPasscode < 10000000 || matterSetupPasscode > 99999998) {
+    matterSetupPasscode = 10000000 + (esp_random() % 89999999UL);
+    preferences.putUInt("matter-passcode", matterSetupPasscode);
+  }
+  matterSetupDiscriminator = preferences.getUShort("matter-disc", 0xFFFF);
+  if (matterSetupDiscriminator > 4095) {
+    matterSetupDiscriminator = static_cast<uint16_t>(esp_random() & 0x0FFF);
+    preferences.putUShort("matter-disc", matterSetupDiscriminator);
+  }
+  snprintf(matterSerialNumber, sizeof(matterSerialNumber), "PD-%08lX",
+           static_cast<unsigned long>(setupUuid));
   preferences.end();
 }
 
@@ -4071,7 +4140,7 @@ void connectWifiAndEnableLocalUpdater() {
   // behind the older captive portal. Previously saved station credentials are
   // still restored by the Wi-Fi driver when Matter starts.
   if (matterStarted) {
-    if (WiFi.status() == WL_CONNECTED) {
+    if (WiFi.status() == WL_CONNECTED || Matter.isWiFiConnected()) {
       synchronizeClock();
       enableLocalUpdater();
     } else {
@@ -4122,10 +4191,26 @@ void connectWifiAndEnableLocalUpdater() {
 }
 
 void monitorWifiConnectivity() {
-  if (WiFi.status() == WL_CONNECTED) {
+  // Matter owns the station connection during BLE commissioning. Its
+  // connectivity manager becomes authoritative slightly before Arduino's
+  // WiFi.status() is updated, so consult both and leave the pairing QR as
+  // soon as Matter has the network.
+  const bool wifiConnected = WiFi.status() == WL_CONNECTED ||
+                             (matterStarted && Matter.isWiFiConnected());
+  if (wifiConnected) {
     if (networkSetupPortalActive) {
       stopManualNetworkSetupPortal();
       saveWifiCredentials();
+      if (bootIntoWifiSetupPortal) {
+        // Relaunch normally so Matter can receive the freshly saved network
+        // and the board can return to its flight display.
+        Preferences preferences;
+        preferences.begin("led-plane", false);
+        preferences.putBool("wifi-setup-mode", false);
+        preferences.end();
+        ESP.restart();
+        return;
+      }
     }
     wifiOfflineSinceMillis = 0;
     if (matterStarted && !localUpdaterEnabled) {
@@ -4170,20 +4255,39 @@ void setup() {
   pinMode(kBootButtonPin, INPUT_PULLUP);
   loadDisplayPreferences();
 
-  // Matter's BLE commissioning stack needs a contiguous chunk of internal
-  // memory. HUB75 DMA allocation is also internal-memory hungry, so bring up
-  // Matter first and only allocate the display buffers once BLE is established.
   initializeEnvironmentalSensor();
-  startMatter();
-
-  matrix.begin();
+  // Matter must initialize its security and commissioning memory first. The
+  // compact four-bit HUB75 framebuffer below then fits alongside it on this
+  // no-PSRAM ESP32-S3. The captive Wi-Fi flow is intentionally a separate
+  // boot mode: running both commissioning systems at once can reset the board.
+  if (!bootIntoWifiSetupPortal) startMatter();
+  const uint32_t heapBeforeMatrix = ESP.getFreeHeap();
+  const bool matrixReady = matrix.begin();
+  Serial.printf("HUB75 matrix initialization: %s (free heap %lu -> %lu)\n",
+                matrixReady ? "ready" : "FAILED",
+                static_cast<unsigned long>(heapBeforeMatrix),
+                static_cast<unsigned long>(ESP.getFreeHeap()));
+  if (!matrixReady) {
+    // Keep Matter reachable for recovery; the serial log gives a precise
+    // diagnosis instead of leaving a seemingly dead board unexplained.
+    Serial.println("HUB75 panel is unavailable; Matter remains active for recovery.");
+  }
   // Keep the first panel test deliberately dim; raise only after the external
   // 5 V panel supply is verified.
   matrix.setBrightness8(255);
   lastDisplayMaintenanceWipeMillis = millis();
   playBootAnimation();
-  connectWifiAndEnableLocalUpdater();
-  if (WiFi.status() != WL_CONNECTED) {
+  if (bootIntoWifiSetupPortal) {
+    activePage = DisplayPage::NetworkSetupQr;
+    startManualNetworkSetupPortal();
+  } else {
+    connectWifiAndEnableLocalUpdater();
+  }
+  // A commissioned Matter node can be operational before Arduino's station
+  // wrapper reports WL_CONNECTED. Never put an already-paired display back on
+  // its onboarding screen merely because that mirror is briefly behind.
+  if (!bootIntoWifiSetupPortal && !Matter.isDeviceCommissioned() &&
+      WiFi.status() != WL_CONNECTED && !Matter.isWiFiConnected()) {
     activePage = DisplayPage::MatterQr;
     drawMatterQr();
   }

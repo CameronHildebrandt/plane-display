@@ -9,18 +9,18 @@ from PIL import Image
 
 SIZE = 33
 CATEGORIES = [
-    "single_engine_prop", "twin_engine_prop", "four_engine_prop",
-    "twin_engine_jet", "tri_engine_jet", "quad_engine_jet",
+    "single_engine_private", "single_engine_prop", "twin_engine_private",
+    "twin_engine_prop", "four_engine_prop", "twin_engine_jet",
+    "twin_engine_jet_rear_mounted", "quad_engine_jet",
     "single_rotor_helicopter", "dual_rotor_helicopter", "stratofortress",
-    "osprey", "glider", "b2_dorito", "fighter_jet", "generic_plane",
-    "balloon",
+    "osprey", "glider", "b2_dorito", "fighter_jet", "balloon",
 ]
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("header", type=Path, help="Generated include/aircraft_sprites.h")
-    parser.add_argument("output_directory", type=Path, help="Directory for the fifteen 33x33 PNGs")
+    parser.add_argument("output_directory", type=Path, help="Directory for the sixteen 33x33 PNGs")
     args = parser.parse_args()
     values = [int(value, 16) for value in re.findall(r"0x([0-9A-Fa-f]+)ULL", args.header.read_text(encoding="utf-8"))]
     expected = len(CATEGORIES) * SIZE

@@ -18,14 +18,16 @@
       <span id="planeStatus" role="status" aria-live="polite" hidden></span>
     </div>
     <main>
-      <section id="welcome" class="card welcome-card">
+      <section id="welcome" class="welcome">
         <div class="brand-lockup" aria-label="Plane Display">
           <img class="brand-mark" src="/identi-fly.svg" alt="identi.fly">
         </div>
-        <h1>Set up or manage a display</h1>
-        <p class="setup-copy">New display? Press its setup button, then scan the QR code shown on the panel. Once you’re in, add a passkey so you can come back here anytime.</p>
-        <button id="passkeyLogin" class="passkey-login" type="button">Sign in with a passkey</button>
-        <button id="demo" hidden>Try the local demo</button>
+        <div class="card welcome-card">
+          <h1>Set up or manage a display</h1>
+          <p class="setup-copy">New display? Press its setup button, then scan the QR code shown on the panel. Once you’re in, add a passkey so you can come back here anytime.</p>
+          <button id="passkeyLogin" class="passkey-login" type="button">Sign in with a passkey</button>
+          <button id="demo" hidden>Try the local demo</button>
+        </div>
       </section>
       <section id="settings" class="bottom-sheet" hidden>
         <div class="sheet-handle" aria-hidden="true"></div>

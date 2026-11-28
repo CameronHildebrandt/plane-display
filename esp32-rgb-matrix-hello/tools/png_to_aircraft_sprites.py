@@ -13,11 +13,11 @@ from PIL import Image
 
 SIZE = 33
 CATEGORIES = [
-    "single_engine_prop", "twin_engine_prop", "four_engine_prop",
-    "twin_engine_jet", "tri_engine_jet", "quad_engine_jet",
+    "single_engine_private", "single_engine_prop", "twin_engine_private",
+    "twin_engine_prop", "four_engine_prop", "twin_engine_jet",
+    "twin_engine_jet_rear_mounted", "quad_engine_jet",
     "single_rotor_helicopter", "dual_rotor_helicopter", "stratofortress",
-    "osprey", "glider", "b2_dorito", "fighter_jet", "generic_plane",
-    "balloon",
+    "osprey", "glider", "b2_dorito", "fighter_jet", "balloon",
 ]
 
 
@@ -31,7 +31,7 @@ def read_mask(path: Path):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("sprite_directory", type=Path, help="Directory containing the nine named 33x33 PNGs")
+    parser.add_argument("sprite_directory", type=Path, help="Directory containing the named 33x33 category PNGs")
     parser.add_argument("output", type=Path, help="Generated include/aircraft_sprites.h path")
     args = parser.parse_args()
 
