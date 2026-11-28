@@ -73,7 +73,9 @@ constexpr uint16_t kPanelWidth = 64;
 constexpr uint16_t kPanelHeight = 64;
 constexpr uint8_t kPanelChain = 2;
 constexpr uint8_t kBootButtonPin = 0;
-constexpr unsigned long kBootButtonFactoryResetMillis = 10UL * 1000UL;
+constexpr unsigned long kBootButtonResetWarningMillis = 5UL * 1000UL;
+constexpr unsigned long kBootButtonFactoryResetMillis = 15UL * 1000UL;
+constexpr unsigned long kBootButtonResetChevronMillis = 1000;
 // These pins and the SHTC3 are built into the Waveshare ESP32-S3-RGB-Matrix
 // board; they are not an optional external add-on.
 constexpr uint8_t kSensorSdaPin = 47;
@@ -238,6 +240,12 @@ bool bootButtonWasPressed = false;
 unsigned long lastBootButtonPressMillis = 0;
 unsigned long bootButtonPressedMillis = 0;
 bool bootButtonFactoryResetHandled = false;
+enum class ResetHoldVisual : uint8_t { None, Filling, Holding, Clearing };
+ResetHoldVisual resetHoldVisual = ResetHoldVisual::None;
+unsigned long resetHoldVisualStartedMillis = 0;
+float resetHoldChevronProgress = 0.0f;
+bool matterResetPending = false;
+unsigned long matterResetRequestedMillis = 0;
 unsigned long nextFlightRotationMillis = 0;
 unsigned long nextRouteAnimationMillis = 0;
 unsigned long nextRotationIndicatorMillis = 0;
@@ -3907,15 +3915,109 @@ void startMatter() {
   Serial.printf("Matter QR payload: %s\n", matterOnboardingPayload.c_str());
 }
 
+void drawResetHoldMessage() {
+  const uint16_t black = matrix.color565(0, 0, 0);
+  drawMinecraftBoldTextCentered("Keep holding", 32, 2, black);
+  drawMinecraftBoldTextCentered("to reset", 32, 10, black);
+  const char* lines[] = {
+      "You will need to", "re-connect Wi-Fi", "and any smart home", "integrations.",
+      "Configurations", "will persist.",
+  };
+  for (uint8_t index = 0; index < sizeof(lines) / sizeof(lines[0]); ++index) {
+    const int16_t width = cityTextWidth(lines[index]);
+    drawCityText(lines[index], (matrix.width() - width) / 2, 20 + index * 7, 0, matrix.width(), black);
+  }
+}
+
+void redrawPageAfterResetHoldCancelled() {
+  if (activePage == DisplayPage::ConfigureQr) {
+    fetchAndDrawPairingQr();
+  } else if (activePage == DisplayPage::MatterQr) {
+    drawMatterQr();
+  } else if (activePage == DisplayPage::NetworkSetupQr) {
+    drawNetworkOfflineScreen();
+  } else if (routeCount > 0) {
+    drawCurrentRoute();
+  } else {
+    drawNoPlanes();
+  }
+}
+
+void updateResetHoldVisual() {
+  if (resetHoldVisual == ResetHoldVisual::None || resetHoldVisual == ResetHoldVisual::Holding) return;
+  const float progress = min(1.0f, static_cast<float>(millis() - resetHoldVisualStartedMillis) /
+                                       kBootButtonResetChevronMillis);
+  const uint16_t color = resetHoldVisual == ResetHoldVisual::Filling
+                             ? visibleColor(185, 20, 30)
+                             : matrix.color565(0, 0, 0);
+  drawBootChevronLeadingEdge(resetHoldChevronProgress, progress, color);
+  resetHoldChevronProgress = progress;
+  if (progress < 1.0f) return;
+  if (resetHoldVisual == ResetHoldVisual::Filling) {
+    resetHoldVisual = ResetHoldVisual::Holding;
+    drawResetHoldMessage();
+  } else {
+    resetHoldVisual = ResetHoldVisual::None;
+    redrawPageAfterResetHoldCancelled();
+  }
+}
+
+void beginResetHoldCancellation() {
+  resetHoldVisual = ResetHoldVisual::Clearing;
+  resetHoldVisualStartedMillis = millis();
+  resetHoldChevronProgress = 0.0f;
+}
+
+bool canSafelyResetMatter() {
+  // Matter's factory reset posts work to its own task. Do not start that
+  // asynchronous reset while one of our TLS/OTA tasks still owns Wi-Fi,
+  // flash, or heap; doing so can leave the board in a blank half-reset state.
+  return !flightFetchInProgress && !pairingQrFetchInProgress && !deviceConfigFetchInProgress &&
+         !firmwareUpdateInProgress;
+}
+
+void runPendingMatterReset() {
+  if (!matterResetPending || !canSafelyResetMatter()) return;
+  matterResetPending = false;
+  Serial.printf("Starting graceful reset after %lums of quiescence.\n",
+                millis() - matterResetRequestedMillis);
+  if (kMatterRuntimeEnabled && matterStarted) {
+    // ESP-Matter clears only its own NVS namespace and asynchronously restarts
+    // the board. Our display identity/configuration namespace is preserved.
+    Matter.decommission();
+  } else {
+    WiFi.disconnect(true, true);
+    Preferences preferences;
+    preferences.begin("led-plane", false);
+    preferences.putBool("wifi-setup-mode", true);
+    preferences.end();
+    delay(120);
+    ESP.restart();
+  }
+}
+
 void handleBootButton() {
   // On the Waveshare board the BOOT button is GPIO 0 and reads LOW when held.
   const bool pressed = digitalRead(kBootButtonPin) == LOW;
   if (pressed && !bootButtonWasPressed) {
     bootButtonPressedMillis = millis();
     bootButtonFactoryResetHandled = false;
+    resetHoldVisual = ResetHoldVisual::None;
+    resetHoldChevronProgress = 0.0f;
   }
 
-  // A deliberate ten-second hold is a recovery gesture, not a normal page
+  // Once the hold becomes destructive, make that unmistakable before the
+  // reset threshold arrives. The visual uses the same leading-edge-only
+  // chevron renderer as boot, so it does not flash the panel.
+  if (pressed && !bootButtonFactoryResetHandled && resetHoldVisual == ResetHoldVisual::None &&
+      millis() - bootButtonPressedMillis >= kBootButtonResetWarningMillis) {
+    resetHoldVisual = ResetHoldVisual::Filling;
+    resetHoldVisualStartedMillis = millis();
+    resetHoldChevronProgress = 0.0f;
+    Serial.println("BOOT held for 5 seconds; showing reset confirmation.");
+  }
+
+  // A deliberate fifteen-second hold is a recovery gesture, not a normal page
   // switch. Matter's factory reset removes its fabric and commissioned Wi-Fi
   // credentials; keeping our own Preferences intact preserves the display's
   // backend identity, name, and location. The next boot therefore presents a
@@ -3923,22 +4025,22 @@ void handleBootButton() {
   if (pressed && !bootButtonFactoryResetHandled &&
       millis() - bootButtonPressedMillis >= kBootButtonFactoryResetMillis) {
     bootButtonFactoryResetHandled = true;
-    Serial.println("BOOT held for 10 seconds; resetting Matter onboarding.");
+    Serial.println("BOOT held for 15 seconds; resetting Matter onboarding.");
     matrix.fillScreen(matrix.color565(80, 0, 0));
-    if (kMatterRuntimeEnabled && matterStarted) {
-      Matter.decommission();
-    } else {
-      // The same gesture remains useful on a troubleshooting/non-Matter
-      // build: clear only saved Wi-Fi credentials, keep display identity, and
-      // return to the normal Wi-Fi onboarding screen.
-      WiFi.disconnect(true, true);
-      Preferences preferences;
-      preferences.begin("led-plane", false);
-      preferences.putBool("wifi-setup-mode", true);
-      preferences.end();
-      delay(120);
-      ESP.restart();
-    }
+    matterResetPending = true;
+    matterResetRequestedMillis = millis();
+    return;
+  }
+
+  // Releasing after the warning means "cancel", never "short press". Wipe
+  // the red warning with a black chevron first, then redraw the exact page
+  // that was visible before the hold began.
+  if (!pressed && bootButtonWasPressed && !bootButtonFactoryResetHandled &&
+      resetHoldVisual != ResetHoldVisual::None) {
+    beginResetHoldCancellation();
+    bootButtonFactoryResetHandled = true;
+    bootButtonWasPressed = false;
+    Serial.println("BOOT reset hold cancelled.");
     return;
   }
 
@@ -4442,6 +4544,17 @@ void setup() {
 }
 
 void loop() {
+  // Poll the physical recovery control before any normal page/network work so
+  // its warning animation has exclusive ownership of the panel.
+  handleBootButton();
+  if (resetHoldVisual != ResetHoldVisual::None) {
+    updateResetHoldVisual();
+    return;
+  }
+  if (matterResetPending) {
+    runPendingMatterReset();
+    return;
+  }
   // During a scene change the matrix owns the CPU/PSRAM budget. Matter keeps
   // its fabric connection in its own task, while our optional Matter-facing
   // work and local HTTP traffic wait for the settled card.
@@ -4450,7 +4563,6 @@ void loop() {
   if (!animationWasActive) monitorWifiConnectivity();
   if (networkSetupPortalActive) {
     manualSetupWifiManager.process();
-    handleBootButton();
     return;
   }
   if (matterStateChangePending && !animationWasActive) {
@@ -4464,10 +4576,8 @@ void loop() {
   if (!matterDisplayEnabled) {
     // Matter continues to run, but a disabled display is electrically dark and
     // deliberately makes no backend/configuration requests.
-    handleBootButton();
     return;
   }
-  handleBootButton();
   if (!animationWasActive) {
     updatePairingQrRequest();
     processDeviceConfigResponse();
