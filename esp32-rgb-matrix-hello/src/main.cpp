@@ -211,13 +211,11 @@ bool showingFlightPage() {
   return activePage == DisplayPage::Flight;
 }
 
-// Matter's connectivity manager can bring the station online before the
-// Arduino WiFi facade updates its status. All backend traffic must use this
-// shared test: otherwise a Matter-provisioned display can navigate to the
-// configuration page but will wait forever without requesting its QR code.
-bool networkIsAvailable() {
-  return WiFi.status() == WL_CONNECTED ||
-         (matterStarted && Matter.isWiFiConnected());
+// Matter's connectivity manager can report an in-progress commissioned
+// network before Arduino's station facade has an IPv4 route. Backend HTTPS
+// traffic must wait for the actual station link.
+bool backendNetworkIsAvailable() {
+  return WiFi.status() == WL_CONNECTED;
 }
 bool pairingQrLoadingPainted = false;
 int pairingQrRequestStatus = 0;
@@ -3381,7 +3379,7 @@ bool fetchAndDrawPairingQr() {
   pairingQrRetryPending = true;
   drawPairingQrLoading();
   if (strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(activeDeviceKey()) == 0 ||
-      !networkIsAvailable() || flightFetchInProgress || millis() < pairingQrRetryMillis) {
+      !backendNetworkIsAvailable() || flightFetchInProgress || millis() < pairingQrRetryMillis) {
     return true;
   }
 
@@ -3450,7 +3448,7 @@ void requestDeviceConfigRefresh() {
 void maybeStartDeviceConfigRefresh() {
   if (!deviceConfigRefreshPending || deviceConfigFetchInProgress ||
       strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(activeDeviceKey()) == 0 ||
-      !networkIsAvailable() || flightFetchInProgress || pairingQrFetchInProgress) {
+      !backendNetworkIsAvailable() || flightFetchInProgress || pairingQrFetchInProgress) {
     return;
   }
   deviceConfigFetchInProgress = true;
@@ -3640,11 +3638,23 @@ void processFetchedFlightResponse() {
     // minute. Reconnect the station after repeated connection-level errors,
     // then retry soon; ordinary successful polls remain one minute apart.
     if (flightFetchStatus < 0 && consecutiveFlightFetchFailures >= 2) {
-      Serial.println("Refreshing Wi-Fi after repeated flight transport failures.");
-      WiFi.disconnect(false, false);
-      WiFi.reconnect();
+      if (matterStarted) {
+        // Matter owns the station state and already retries a provisioned
+        // network. Calling Arduino WiFi.disconnect()/reconnect() here tears
+        // down that state underneath CHIP, causing a reconnect storm every
+        // five seconds and starving HUB75 scene transitions. Leave recovery
+        // to Matter and back off backend retries until it has settled.
+        Serial.println("Flight transport failed; leaving Wi-Fi recovery to Matter.");
+        nextFlightPollMillis = millis() + 30000;
+      } else {
+        Serial.println("Refreshing Wi-Fi after repeated flight transport failures.");
+        WiFi.disconnect(false, false);
+        WiFi.reconnect();
+      }
     }
-    nextFlightPollMillis = millis() + 5000;
+    if (!matterStarted || consecutiveFlightFetchFailures < 2) {
+      nextFlightPollMillis = millis() + 5000;
+    }
     // A failed refresh must never erase a perfectly good on-screen card.
     if (routeCount == 0 && !showingNoPlanes) showNoPlanesAfterDataFailure();
     return;
@@ -3779,7 +3789,7 @@ void fetchFlightsTask(void*) {
 
 bool fetchAndDrawFirstFlight() {
   if (!matterDisplayEnabled || strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(activeDeviceKey()) == 0 ||
-      !networkIsAvailable() || flightFetchInProgress || flightFetchFinished) {
+      !backendNetworkIsAvailable() || flightFetchInProgress || flightFetchFinished) {
     return false;
   }
   flightFetchInProgress = true;
