@@ -196,6 +196,15 @@ unsigned long firmwareRetryAfterMillis = 0;
 bool showingFlightPage() {
   return activePage == DisplayPage::Flight;
 }
+
+// Matter's connectivity manager can bring the station online before the
+// Arduino WiFi facade updates its status. All backend traffic must use this
+// shared test: otherwise a Matter-provisioned display can navigate to the
+// configuration page but will wait forever without requesting its QR code.
+bool networkIsAvailable() {
+  return WiFi.status() == WL_CONNECTED ||
+         (matterStarted && Matter.isWiFiConnected());
+}
 bool pairingQrLoadingPainted = false;
 int pairingQrRequestStatus = 0;
 bool pairingQrRetryPending = false;
@@ -3200,10 +3209,14 @@ void drawPairingQrLoading() {
       {0, -6}, {3, -5}, {5, -3}, {6, 0}, {5, 3}, {3, 5},
       {0, 6}, {-3, 5}, {-5, 3}, {-6, 0}, {-5, -3}, {-3, -5},
   };
-  // Lead, then a smoothly diminishing tail. The final two LEDs deliberately
-  // settle at 10% brightness rather than disappearing abruptly.
-  constexpr uint8_t kBrightness[] = {255, 210, 170, 135, 105, 80,
-                                     60, 45, 35, 28, 26, 26};
+  // Use an explicit neutral RGB565 palette. At the panel's reduced colour
+  // depth, converting very low 8-bit greys each frame can leave green's extra
+  // RGB565 bit visible as a coloured tail. These are balanced grey entries,
+  // from the white head down to the requested ~10% final pixels.
+  constexpr uint16_t kSpinnerColours[] = {
+      0xFFFF, 0xD6BA, 0xAD55, 0x8410, 0x630C, 0x4A49,
+      0x39C7, 0x2945, 0x2104, 0x18C3, 0x1082, 0x1082,
+  };
   const uint8_t lead = ((millis() - pairingQrSpinnerStartMillis) * 12UL / 2000UL) % 12;
   showingNoPlanes = false;
   if (!pairingQrLoadingPainted) {
@@ -3216,9 +3229,8 @@ void drawPairingQrLoading() {
   matrix.fillRect(centerX - 6, centerY - 6, 13, 13, black);
   for (uint8_t tail = 0; tail < 12; ++tail) {
     const uint8_t index = (lead + 12 - tail) % 12;
-    const uint8_t level = kBrightness[tail];
     matrix.drawPixel(centerX + kRing[index][0], centerY + kRing[index][1],
-                     matrix.color565(level, level, level));
+                     kSpinnerColours[tail]);
   }
 }
 
@@ -3286,7 +3298,7 @@ bool fetchAndDrawPairingQr() {
   pairingQrRetryPending = true;
   drawPairingQrLoading();
   if (strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(activeDeviceKey()) == 0 ||
-      WiFi.status() != WL_CONNECTED || flightFetchInProgress || millis() < pairingQrRetryMillis) {
+      !networkIsAvailable() || flightFetchInProgress || millis() < pairingQrRetryMillis) {
     return true;
   }
 
@@ -3355,7 +3367,7 @@ void requestDeviceConfigRefresh() {
 void maybeStartDeviceConfigRefresh() {
   if (!deviceConfigRefreshPending || deviceConfigFetchInProgress ||
       strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(activeDeviceKey()) == 0 ||
-      WiFi.status() != WL_CONNECTED || flightFetchInProgress || pairingQrFetchInProgress) {
+      !networkIsAvailable() || flightFetchInProgress || pairingQrFetchInProgress) {
     return;
   }
   deviceConfigFetchInProgress = true;
@@ -3684,7 +3696,7 @@ void fetchFlightsTask(void*) {
 
 bool fetchAndDrawFirstFlight() {
   if (!matterDisplayEnabled || strlen(LED_PLANE_BACKEND_URL) == 0 || strlen(activeDeviceKey()) == 0 ||
-      WiFi.status() != WL_CONNECTED || flightFetchInProgress || flightFetchFinished) {
+      !networkIsAvailable() || flightFetchInProgress || flightFetchFinished) {
     return false;
   }
   flightFetchInProgress = true;
