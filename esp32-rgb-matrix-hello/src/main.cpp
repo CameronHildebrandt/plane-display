@@ -59,6 +59,14 @@
 #define LED_PLANE_FIRMWARE_VERSION 0
 #endif
 
+// Troubleshooting switch: leave the Matter code and its commissioning state
+// intact, but do not start its background stack while measuring display
+// timing. Re-enable with -D LED_PLANE_ENABLE_MATTER=1 once the renderer is
+// verified in isolation.
+#ifndef LED_PLANE_ENABLE_MATTER
+#define LED_PLANE_ENABLE_MATTER 0
+#endif
+
 namespace {
 
 constexpr uint16_t kPanelWidth = 64;
@@ -76,9 +84,10 @@ constexpr unsigned long kFlightRotationMillis = 20000;
 constexpr unsigned long kIndicatorTransitionMillis = 2000;
 // The HUB75 DMA engine presents pixels independently of loop(). Rendering the
 // same in-between frame thousands of times per second only steals PSRAM bus
-// time from that engine (and from Matter). A steady 40 fps is substantially
+// time from that engine (and from Matter). A steady 30 fps is substantially
 // smoother on the physical panel than an unbounded redraw loop.
-constexpr unsigned long kTransitionFrameMillis = 25;
+constexpr unsigned long kTransitionFrameMillis = 33;
+constexpr bool kMatterRuntimeEnabled = LED_PLANE_ENABLE_MATTER != 0;
 // Do not begin a TLS exchange close enough to a card handoff that it could
 // still be sharing Wi-Fi/PSRAM bandwidth with the animation.
 constexpr unsigned long kNetworkQuietLeadMillis = 5000;
@@ -4343,7 +4352,11 @@ void setup() {
   // compact four-bit HUB75 framebuffer below then fits alongside it on this
   // no-PSRAM ESP32-S3. The captive Wi-Fi flow is intentionally a separate
   // boot mode: running both commissioning systems at once can reset the board.
-  if (!bootIntoWifiSetupPortal) startMatter();
+  if (kMatterRuntimeEnabled && !bootIntoWifiSetupPortal) {
+    startMatter();
+  } else if (!kMatterRuntimeEnabled) {
+    Serial.println("Matter runtime temporarily disabled for display-performance testing.");
+  }
   const uint32_t heapBeforeMatrix = ESP.getFreeHeap();
   const bool matrixReady = matrix.begin();
   Serial.printf("HUB75 matrix initialization: %s (free heap %lu -> %lu)\n",
@@ -4369,7 +4382,7 @@ void setup() {
   // A commissioned Matter node can be operational before Arduino's station
   // wrapper reports WL_CONNECTED. Never put an already-paired display back on
   // its onboarding screen merely because that mirror is briefly behind.
-  if (!bootIntoWifiSetupPortal && !Matter.isDeviceCommissioned() &&
+  if (kMatterRuntimeEnabled && !bootIntoWifiSetupPortal && !Matter.isDeviceCommissioned() &&
       WiFi.status() != WL_CONNECTED && !Matter.isWiFiConnected()) {
     activePage = DisplayPage::MatterQr;
     drawMatterQr();
@@ -4465,7 +4478,7 @@ void loop() {
     // Do not start another scene while this one is gracefully winding down.
     nextFlightRotationMillis = 0xFFFFFFFFUL;
   }
-  // Present animation frames at a stable cadence. In particular, do not keep
+  // Present animation frames at a stable 30 fps cadence. In particular, do not keep
   // clearing and repainting the PSRAM framebuffer between visible frames;
   // that was the source of the dropped-frame look once Matter was enabled.
   if (displayAnimationInProgress() && transitionFrameIsDue()) {
