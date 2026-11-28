@@ -73,6 +73,7 @@ constexpr uint16_t kPanelWidth = 64;
 constexpr uint16_t kPanelHeight = 64;
 constexpr uint8_t kPanelChain = 2;
 constexpr uint8_t kBootButtonPin = 0;
+constexpr unsigned long kBootButtonFactoryResetMillis = 10UL * 1000UL;
 // These pins and the SHTC3 are built into the Waveshare ESP32-S3-RGB-Matrix
 // board; they are not an optional external add-on.
 constexpr uint8_t kSensorSdaPin = 47;
@@ -237,6 +238,8 @@ volatile int deviceConfigFetchStatus = 0;
 char deviceConfigFetchedName[49] = {};
 bool bootButtonWasPressed = false;
 unsigned long lastBootButtonPressMillis = 0;
+unsigned long bootButtonPressedMillis = 0;
+bool bootButtonFactoryResetHandled = false;
 unsigned long nextFlightRotationMillis = 0;
 unsigned long nextRouteAnimationMillis = 0;
 unsigned long nextRotationIndicatorMillis = 0;
@@ -3897,7 +3900,42 @@ void startMatter() {
 void handleBootButton() {
   // On the Waveshare board the BOOT button is GPIO 0 and reads LOW when held.
   const bool pressed = digitalRead(kBootButtonPin) == LOW;
-  if (pressed && !bootButtonWasPressed && millis() - lastBootButtonPressMillis > 300) {
+  if (pressed && !bootButtonWasPressed) {
+    bootButtonPressedMillis = millis();
+    bootButtonFactoryResetHandled = false;
+  }
+
+  // A deliberate ten-second hold is a recovery gesture, not a normal page
+  // switch. Matter's factory reset removes its fabric and commissioned Wi-Fi
+  // credentials; keeping our own Preferences intact preserves the display's
+  // backend identity, name, and location. The next boot therefore presents a
+  // fresh Matter QR without creating a duplicate display in the fleet.
+  if (pressed && !bootButtonFactoryResetHandled &&
+      millis() - bootButtonPressedMillis >= kBootButtonFactoryResetMillis) {
+    bootButtonFactoryResetHandled = true;
+    Serial.println("BOOT held for 10 seconds; resetting Matter onboarding.");
+    matrix.fillScreen(matrix.color565(80, 0, 0));
+    if (kMatterRuntimeEnabled && matterStarted) {
+      Matter.decommission();
+    } else {
+      // The same gesture remains useful on a troubleshooting/non-Matter
+      // build: clear only saved Wi-Fi credentials, keep display identity, and
+      // return to the normal Wi-Fi onboarding screen.
+      WiFi.disconnect(true, true);
+      Preferences preferences;
+      preferences.begin("led-plane", false);
+      preferences.putBool("wifi-setup-mode", true);
+      preferences.end();
+      delay(120);
+      ESP.restart();
+    }
+    return;
+  }
+
+  // Short presses act when released so a hold can never also navigate to a
+  // different page before its reset threshold is reached.
+  if (!pressed && bootButtonWasPressed && !bootButtonFactoryResetHandled &&
+      millis() - lastBootButtonPressMillis > 300) {
     lastBootButtonPressMillis = millis();
     // BOOT doubles as a physical recovery control. It must always wake a
     // Matter-disabled panel at full brightness before changing pages, so a
