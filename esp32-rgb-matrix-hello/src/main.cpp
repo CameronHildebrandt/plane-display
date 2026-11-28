@@ -74,6 +74,14 @@ constexpr size_t kMaxFirmwareImageBytes = 10UL * 1024UL * 1024UL;
 constexpr uint8_t kMaxRoutableFlights = 20;
 constexpr unsigned long kFlightRotationMillis = 20000;
 constexpr unsigned long kIndicatorTransitionMillis = 2000;
+// The HUB75 DMA engine presents pixels independently of loop(). Rendering the
+// same in-between frame thousands of times per second only steals PSRAM bus
+// time from that engine (and from Matter). A steady 40 fps is substantially
+// smoother on the physical panel than an unbounded redraw loop.
+constexpr unsigned long kTransitionFrameMillis = 25;
+// Do not begin a TLS exchange close enough to a card handoff that it could
+// still be sharing Wi-Fi/PSRAM bandwidth with the animation.
+constexpr unsigned long kNetworkQuietLeadMillis = 5000;
 constexpr unsigned long kDisplayMaintenanceWipeMillis = 60UL * 60UL * 1000UL;
 constexpr unsigned long kNoPlanesAnimationStepMillis = 125;
 constexpr int16_t kNoPlanesSpriteWidth = 33;
@@ -239,6 +247,7 @@ bool rotationPipTransitionActive = false;
 uint8_t rotationPipFrom = 0;
 uint8_t rotationPipTo = 0;
 unsigned long rotationPipTransitionStartMillis = 0;
+unsigned long nextTransitionFrameMillis = 0;
 unsigned long nextNoPlanesAnimationMillis = 0;
 unsigned long lastDisplayMaintenanceWipeMillis = 0;
 int16_t noPlanesSpriteX = -kNoPlanesSpriteWidth;
@@ -278,6 +287,18 @@ bool routeToIdleTransitionActive = false;
 bool idleToRouteCardDrawn = false;
 unsigned long idleToRouteTransitionStartMillis = 0;
 unsigned long routeToIdleTransitionStartMillis = 0;
+
+bool displayAnimationInProgress() {
+  return letterTransitionActive || idleToRouteTransitionActive ||
+         routeToIdleTransitionActive || bootToRouteTransitionActive;
+}
+
+bool transitionFrameIsDue() {
+  const unsigned long now = millis();
+  if (nextTransitionFrameMillis != 0 && now < nextTransitionFrameMillis) return false;
+  nextTransitionFrameMillis = now + kTransitionFrameMillis;
+  return true;
+}
 
 struct Route {
   char identity[16];
@@ -326,6 +347,19 @@ Route refreshedRoutes[kMaxRoutableFlights];
 Route mergedRoutes[kMaxRoutableFlights];
 uint8_t routeCount = 0;
 uint8_t routeIndex = 0;
+
+bool flightSceneTransitionIsImminent() {
+  if (!showingFlightPage() || routeCount == 0 || nextFlightRotationMillis == 0 ||
+      nextFlightRotationMillis == 0xFFFFFFFFUL) {
+    return false;
+  }
+  const int32_t remaining = static_cast<int32_t>(nextFlightRotationMillis - millis());
+  return remaining >= 0 && remaining <= static_cast<int32_t>(kNetworkQuietLeadMillis);
+}
+
+bool backgroundWorkMayStart() {
+  return !displayAnimationInProgress() && !flightSceneTransitionIsImminent();
+}
 
 // A deliberately blocky 5x7 face: every glyph is exactly seven LEDs high.
 // It keeps airport codes legible while giving the display a Minecraft-like look.
@@ -3055,24 +3089,33 @@ void fetchFirmwareUpdateTask(void*) {
   vTaskDelete(nullptr);
 }
 
+void maybeStartFirmwareUpdate() {
+  if (pendingFirmwareRelease.version <= LED_PLANE_FIRMWARE_VERSION || firmwareUpdateInProgress ||
+      millis() < firmwareRetryAfterMillis || !backgroundWorkMayStart()) {
+    return;
+  }
+  firmwareUpdateInProgress = true;
+  Serial.printf("Firmware release %lu is available (current %lu).\n",
+                static_cast<unsigned long>(pendingFirmwareRelease.version),
+                static_cast<unsigned long>(LED_PLANE_FIRMWARE_VERSION));
+  if (xTaskCreatePinnedToCore(fetchFirmwareUpdateTask, "firmware-update", 12288, nullptr, 1, nullptr, 0) != pdPASS) {
+    firmwareUpdateInProgress = false;
+    Serial.println("Could not start firmware update task.");
+  }
+}
+
 void considerFirmwareRelease(JsonObject manifest) {
   const uint32_t version = manifest["version"] | 0U;
   const char* url = manifest["url"] | "";
   const char* sha256 = manifest["sha256"] | "";
-  if (version <= LED_PLANE_FIRMWARE_VERSION || firmwareUpdateInProgress || millis() < firmwareRetryAfterMillis ||
+  if (version <= LED_PLANE_FIRMWARE_VERSION || firmwareUpdateInProgress ||
       !isSecureFirmwareUrl(url) || !isSha256(sha256)) {
     return;
   }
   pendingFirmwareRelease.version = version;
   strlcpy(pendingFirmwareRelease.url, url, sizeof(pendingFirmwareRelease.url));
   strlcpy(pendingFirmwareRelease.sha256, sha256, sizeof(pendingFirmwareRelease.sha256));
-  firmwareUpdateInProgress = true;
-  Serial.printf("Firmware release %lu is available (current %lu).\n",
-                static_cast<unsigned long>(version), static_cast<unsigned long>(LED_PLANE_FIRMWARE_VERSION));
-  if (xTaskCreatePinnedToCore(fetchFirmwareUpdateTask, "firmware-update", 12288, nullptr, 1, nullptr, 0) != pdPASS) {
-    firmwareUpdateInProgress = false;
-    Serial.println("Could not start firmware update task.");
-  }
+  maybeStartFirmwareUpdate();
 }
 
 String pairingEndpoint() {
@@ -3574,7 +3617,7 @@ void processFetchedFlightResponse() {
   // animation, leaving an old aircraft in rotation (or reading a stale tail
   // slot). Hold the completed response until the handoff has settled, then
   // reconcile it in one atomic queue update.
-  if (letterTransitionActive || idleToRouteTransitionActive || routeToIdleTransitionActive) {
+  if (displayAnimationInProgress() || flightSceneTransitionIsImminent()) {
     return;
   }
   flightFetchFinished = false;
@@ -4338,19 +4381,22 @@ void setup() {
 }
 
 void loop() {
-  // HUB75 DMA refresh runs independently; handle local web update traffic here.
-  if (localUpdaterEnabled) updateServer.handleClient();
-  monitorWifiConnectivity();
+  // During a scene change the matrix owns the CPU/PSRAM budget. Matter keeps
+  // its fabric connection in its own task, while our optional Matter-facing
+  // work and local HTTP traffic wait for the settled card.
+  const bool animationWasActive = displayAnimationInProgress();
+  if (localUpdaterEnabled && !animationWasActive) updateServer.handleClient();
+  if (!animationWasActive) monitorWifiConnectivity();
   if (networkSetupPortalActive) {
     manualSetupWifiManager.process();
     handleBootButton();
     return;
   }
-  if (matterStateChangePending) {
+  if (matterStateChangePending && !animationWasActive) {
     matterStateChangePending = false;
     applyMatterDisplayState(matterRequestedEnabled, matterRequestedBrightness);
   }
-  if (matterStarted && millis() >= nextEnvironmentalRefreshMillis) {
+  if (matterStarted && !animationWasActive && millis() >= nextEnvironmentalRefreshMillis) {
     refreshEnvironmentalMeasurements();
     nextEnvironmentalRefreshMillis = millis() + kEnvironmentalRefreshMillis;
   }
@@ -4361,9 +4407,11 @@ void loop() {
     return;
   }
   handleBootButton();
-  updatePairingQrRequest();
-  processDeviceConfigResponse();
-  maybeStartDeviceConfigRefresh();
+  if (!animationWasActive) {
+    updatePairingQrRequest();
+    processDeviceConfigResponse();
+    if (backgroundWorkMayStart()) maybeStartDeviceConfigRefresh();
+  }
   if (flightFetchInProgress && flightFetchStartedMillis != 0 &&
       millis() - flightFetchStartedMillis > kFlightFetchWatchdogMillis) {
     // Restarting is safer than force-deleting a task while mbedTLS owns its
@@ -4372,8 +4420,8 @@ void loop() {
     Serial.println("Flight fetch watchdog fired; restarting network stack.");
     shouldRestart = true;
   }
-  processFetchedFlightResponse();
-  if (firmwareUpdateFinished) {
+  if (!animationWasActive) processFetchedFlightResponse();
+  if (firmwareUpdateFinished && !animationWasActive) {
     firmwareUpdateFinished = false;
     if (firmwareUpdateSucceeded) {
       // The image was fully written and its SHA-256 matched the authenticated
@@ -4383,7 +4431,7 @@ void loop() {
       firmwareRetryAfterMillis = millis() + 10UL * 60UL * 1000UL;
     }
   }
-  const bool transitionWasActive = letterTransitionActive;
+  const bool transitionWasActive = displayAnimationInProgress();
   // If the only card disappeared during its scene, honour the full scene
   // duration before falling back to the idle animation.
   if (showingFlightPage() && routeCount == 1 && routes[0].pendingRemoval &&
@@ -4417,17 +4465,28 @@ void loop() {
     // Do not start another scene while this one is gracefully winding down.
     nextFlightRotationMillis = 0xFFFFFFFFUL;
   }
-  if (letterTransitionActive) updateLetterTransition();
-  if (bootToRouteTransitionActive) updateBootToRouteTransition();
-  if (idleToRouteTransitionActive) updateIdleToRouteTransition();
-  if (routeToIdleTransitionActive) updateRouteToIdleTransition();
+  // Present animation frames at a stable cadence. In particular, do not keep
+  // clearing and repainting the PSRAM framebuffer between visible frames;
+  // that was the source of the dropped-frame look once Matter was enabled.
+  if (displayAnimationInProgress() && transitionFrameIsDue()) {
+    if (letterTransitionActive) updateLetterTransition();
+    if (bootToRouteTransitionActive) updateBootToRouteTransition();
+    if (idleToRouteTransitionActive) updateIdleToRouteTransition();
+    if (routeToIdleTransitionActive) updateRouteToIdleTransition();
+  }
+  if (!displayAnimationInProgress()) nextTransitionFrameMillis = 0;
+  maybeStartFirmwareUpdate();
   if (!deviceConfigRefreshPending && !deviceConfigFetchInProgress && millis() >= nextFlightPollMillis) {
     // Do not let a blocking network refresh erase the exit/enter frames. When
     // a refresh lands on a scene boundary, hold it until the new card has had
     // its initial marquee pause.
-    if (showingFlightPage() && (letterTransitionActive || transitionWasActive)) {
-      if (letterTransitionActive) flightRefreshDeferred = true;
+    if (showingFlightPage() && (displayAnimationInProgress() || transitionWasActive)) {
+      if (displayAnimationInProgress()) flightRefreshDeferred = true;
       else nextFlightPollMillis = millis() + 2000;
+    } else if (!backgroundWorkMayStart()) {
+      // Give a soon-to-start card change a full quiet window. The next scene
+      // is a much better time for a TLS request than its final few frames.
+      nextFlightPollMillis = nextFlightRotationMillis + kLetterTransitionMillis + 2000;
     } else {
       // Never turn a temporarily unavailable fetch slot into a lost minute.
       // A completed response is normally held for the end of an animation;
