@@ -124,10 +124,6 @@ HUB75_I2S_CFG::i2s_pins kHub75Pins = {
 HUB75_I2S_CFG makeMatrixConfig() {
   HUB75_I2S_CFG config(kPanelWidth, kPanelHeight, kPanelChain, kHub75Pins);
   config.driver = HUB75_I2S_CFG::FM6126A;
-  // Matter's BLE/Wi-Fi stack and a 128×64 HUB75 framebuffer both need DMA-capable
-  // internal RAM on this no-PSRAM S3. Four colour planes leave enough contiguous
-  // headroom for both stacks; it is still more than enough for our pixel-art UI.
-  config.setPixelColorDepthBits(4);
   config.clkphase = false;
   return config;
 }
@@ -2062,6 +2058,41 @@ enum class AircraftSprite : uint8_t {
   Unknown = 0xFF,
 };
 
+// The idle scene has its own shuffled playlist. It intentionally stops just
+// before Balloon: balloons remain a recognised aircraft category for live
+// traffic, but are not part of the flying no-planes parade. A shuffle rather
+// than independent random picks means every silhouette gets a turn before a
+// repeat, while the order changes on each new cycle.
+constexpr uint8_t kNoPlanesSpriteCount = static_cast<uint8_t>(AircraftSprite::Balloon);
+uint8_t noPlanesSpriteOrder[kNoPlanesSpriteCount] = {};
+uint8_t noPlanesSpriteOrderIndex = kNoPlanesSpriteCount;
+uint8_t noPlanesLastSprite = 0xFF;
+
+AircraftSprite selectNextNoPlanesAircraftSprite() {
+  if (noPlanesSpriteOrderIndex >= kNoPlanesSpriteCount) {
+    for (uint8_t index = 0; index < kNoPlanesSpriteCount; ++index) {
+      noPlanesSpriteOrder[index] = index;
+    }
+    for (uint8_t index = kNoPlanesSpriteCount - 1; index > 0; --index) {
+      const uint8_t swapIndex = static_cast<uint8_t>(esp_random() % (index + 1));
+      const uint8_t value = noPlanesSpriteOrder[index];
+      noPlanesSpriteOrder[index] = noPlanesSpriteOrder[swapIndex];
+      noPlanesSpriteOrder[swapIndex] = value;
+    }
+    // Do not let the boundary between two independently shuffled playlists
+    // repeat the silhouette that just crossed the screen.
+    if (kNoPlanesSpriteCount > 1 && noPlanesSpriteOrder[0] == noPlanesLastSprite) {
+      const uint8_t value = noPlanesSpriteOrder[0];
+      noPlanesSpriteOrder[0] = noPlanesSpriteOrder[1];
+      noPlanesSpriteOrder[1] = value;
+    }
+    noPlanesSpriteOrderIndex = 0;
+  }
+  const uint8_t sprite = noPlanesSpriteOrder[noPlanesSpriteOrderIndex++];
+  noPlanesLastSprite = sprite;
+  return static_cast<AircraftSprite>(sprite);
+}
+
 bool typeContains(const char* type, const char* needle) {
   return type && strstr(type, needle) != nullptr;
 }
@@ -2257,7 +2288,7 @@ void drawNoPlanes() {
   showingNoPlanes = true;
   bootTransitionPending = false;
   noPlanesSpriteX = -kNoPlanesSpriteWidth;
-  noPlanesAircraftSprite = random(0, kAircraftSpriteCount);
+  noPlanesAircraftSprite = static_cast<uint8_t>(selectNextNoPlanesAircraftSprite());
   nextNoPlanesSpriteX = -kNoPlanesSpriteWidth;
   nextNoPlanesAircraftSprite = noPlanesAircraftSprite;
   nextNoPlanesSpriteActive = false;
@@ -2353,10 +2384,7 @@ void advanceNoPlanesAnimation() {
   // Dispatch the next aircraft as soon as this one's nose reaches the right
   // edge. The two silhouettes overlap briefly rather than leaving a dead gap.
   if (!nextNoPlanesSpriteActive && noPlanesSpriteX + 32 >= static_cast<int16_t>(matrix.width() - 1)) {
-    const uint8_t spriteCount = kAircraftSpriteCount;
-    uint8_t sprite = random(0, spriteCount - 1);
-    if (sprite >= noPlanesAircraftSprite) ++sprite;
-    nextNoPlanesAircraftSprite = sprite;
+    nextNoPlanesAircraftSprite = static_cast<uint8_t>(selectNextNoPlanesAircraftSprite());
     nextNoPlanesSpriteX = -kNoPlanesSpriteWidth;
     nextNoPlanesSpriteActive = true;
   }
